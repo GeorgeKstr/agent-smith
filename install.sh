@@ -3,16 +3,16 @@
 # Agent Smith installer.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/agent-smith/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/GeorgeKstr/agent-smith/main/install.sh | bash
 #
 # Environment overrides:
-#   AGENT_SMITH_REPO   GitHub "owner/repo" slug   (default: YOUR_GITHUB_USERNAME/agent-smith)
+#   AGENT_SMITH_REPO   GitHub "owner/repo" slug   (default: GeorgeKstr/agent-smith)
 #   AGENT_SMITH_REF    git branch/tag to install  (default: main)
 #   AGENT_SMITH_DIR    install location           (default: $HOME/.agent-smith)
 #
 set -euo pipefail
 
-REPO="${AGENT_SMITH_REPO:-YOUR_GITHUB_USERNAME/agent-smith}"
+REPO="${AGENT_SMITH_REPO:-GeorgeKstr/agent-smith}"
 REF="${AGENT_SMITH_REF:-main}"
 INSTALL_DIR="${AGENT_SMITH_DIR:-$HOME/.agent-smith}"
 

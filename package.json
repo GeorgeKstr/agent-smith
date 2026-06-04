@@ -16,13 +16,13 @@
   ],
   "license": "MIT",
   "author": "",
-  "homepage": "https://github.com/YOUR_GITHUB_USERNAME/agent-smith#readme",
+  "homepage": "https://github.com/GeorgeKstr/agent-smith#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YOUR_GITHUB_USERNAME/agent-smith.git"
+    "url": "git+https://github.com/GeorgeKstr/agent-smith.git"
   },
   "bugs": {
-    "url": "https://github.com/YOUR_GITHUB_USERNAME/agent-smith/issues"
+    "url": "https://github.com/GeorgeKstr/agent-smith/issues"
   },
   "bin": {
     "smith": "./dist/main.js",

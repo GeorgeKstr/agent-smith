@@ -26,12 +26,10 @@ Instead of dumping the whole repo into a local model, Agent Smith builds a persi
 
 ## Install
 
-Replace `YOUR_GITHUB_USERNAME/agent-smith` below with the actual repo slug.
-
 ### Option 1 — npm, straight from GitHub (no publish needed)
 
 ```bash
-npm install -g github:YOUR_GITHUB_USERNAME/agent-smith
+npm install -g github:GeorgeKstr/agent-smith
 ```
 
 This clones the repo, runs the `prepare` script to build it, and puts the
@@ -40,13 +38,13 @@ This clones the repo, runs the `prepare` script to build it, and puts the
 ### Option 2 — run without installing
 
 ```bash
-npx github:YOUR_GITHUB_USERNAME/agent-smith --help
+npx github:GeorgeKstr/agent-smith --help
 ```
 
 ### Option 3 — one-line install script
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/agent-smith/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/GeorgeKstr/agent-smith/main/install.sh | bash
 ```
 
 The script clones into `~/.agent-smith`, builds, and links the command globally.
@@ -55,7 +53,7 @@ Override with `AGENT_SMITH_REPO`, `AGENT_SMITH_REF`, or `AGENT_SMITH_DIR`.
 ### Option 4 — from source (for development)
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/agent-smith.git
+git clone https://github.com/GeorgeKstr/agent-smith.git
 cd agent-smith
 npm install        # builds via the prepare script
 npm link           # exposes `smith` globally
