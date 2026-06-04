@@ -40,15 +40,19 @@ cd "$INSTALL_DIR"
 # `npm install` triggers the "prepare" script which compiles TypeScript to dist/.
 npm install
 
-# Expose the `agent-smith` command globally.
+# Expose the `smith` command globally. If system-global install fails (EACCES),
+# fall back to a user-writable prefix.
 if npm install -g . >/dev/null 2>&1; then
   info "Installed globally via npm."
+elif npm install -g --prefix "$HOME/.local" . >/dev/null 2>&1; then
+  info "Installed to user prefix at $HOME/.local."
+  info "If needed, add to PATH: export PATH=\"$HOME/.local/bin:\$PATH\""
 elif npm link >/dev/null 2>&1; then
   info "Linked globally via npm link."
 else
-  err "Could not install globally (likely a permissions issue with your npm prefix)."
+  err "Could not install globally."
   err "Run it directly instead:  $INSTALL_DIR/dist/main.js"
-  err "Or set a user-level npm prefix:  npm config set prefix \"\$HOME/.npm-global\""
+  err "Or set a user-level npm prefix:  npm config set prefix \"\$HOME/.local\""
   exit 1
 fi
 
