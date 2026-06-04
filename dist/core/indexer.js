@@ -1,0 +1,399 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { setMeta } from "./db.js";
+import { scanProjectFiles } from "./scanner.js";
+import { hashFile } from "./hashing.js";
+import { extractImports, extractSymbols, isParseableLanguage } from "./treeSitter.js";
+import { rebuildImports } from "./graph.js";
+import { isOllamaAvailable, listOllamaModels, resolveModelName } from "./ollama.js";
+import { summarizeFile } from "./summarizer.js";
+import { tagFile } from "./tagger.js";
+import { heuristicTags } from "./tags.js";
+const TIPS = [
+    "Dense context beats giant context.",
+    "The system retrieves. The model patches.",
+    "A small model with perfect context can beat a large model with noise.",
+    "The Matrix has you. Agent Smith indexes you.",
+    "Tree-sitter symbols are cheaper than blind prompting.",
+    "Never send a model what a query can answer."
+];
+export function createIndexer({ root, config, db, events, enableIntel = true }) {
+    let filesTotal = 0;
+    let filesScanned = 0;
+    let dirtyFiles = 0;
+    let symbolsIndexed = 0;
+    let tagsRefreshed = 0;
+    // Background summary/tag queue (concurrency 1).
+    const summaryQueue = [];
+    let summaryRunning = false;
+    let ollamaReady = null;
+    let intelDone = Promise.resolve();
+    let summarizerModel = config.models.summarizer;
+    let taggerModel = config.models.tagger;
+    function kickQueue() {
+        if (!enableIntel) {
+            summaryQueue.length = 0;
+            return;
+        }
+        if (!summaryRunning && summaryQueue.length > 0) {
+            intelDone = runSummaryQueue();
+        }
+    }
+    /** Resolves when the background intelligence queue is idle. */
+    async function whenIdle() {
+        await intelDone;
+    }
+    const upsertFile = db.prepare(`
+    INSERT INTO files (path, language, hash, size_bytes, mtime, is_test, is_generated, last_indexed_at, status)
+    VALUES (@path, @language, @hash, @size_bytes, @mtime, @is_test, @is_generated, @last_indexed_at, @status)
+    ON CONFLICT(path) DO UPDATE SET
+      language=excluded.language,
+      hash=excluded.hash,
+      size_bytes=excluded.size_bytes,
+      mtime=excluded.mtime,
+      is_test=excluded.is_test,
+      is_generated=excluded.is_generated,
+      last_indexed_at=excluded.last_indexed_at,
+      status=excluded.status
+  `);
+    function emitProgress(phase, extra = {}) {
+        events.emit("index:progress", {
+            phase,
+            progress: filesTotal > 0 ? Math.min(0.99, filesScanned / filesTotal) : 0,
+            filesScanned,
+            filesTotal,
+            dirtyFiles,
+            symbolsIndexed,
+            tagsRefreshed,
+            tip: TIPS[filesScanned % TIPS.length],
+            ...extra
+        });
+    }
+    function knownPathMaps() {
+        const rows = db.prepare("SELECT id, path FROM files").all();
+        const knownPaths = new Set();
+        const pathToId = new Map();
+        for (const r of rows) {
+            knownPaths.add(r.path);
+            pathToId.set(r.path, r.id);
+        }
+        return { knownPaths, pathToId };
+    }
+    /** Re-extract symbols for one file, preserving summaries of unchanged symbols. */
+    function indexSymbols(fileId, language, content) {
+        if (!isParseableLanguage(language)) {
+            db.prepare("DELETE FROM symbols WHERE file_id = ?").run(fileId);
+            return 0;
+        }
+        const previous = db.prepare("SELECT hash, summary FROM symbols WHERE file_id = ?").all(fileId);
+        const summaryByHash = new Map();
+        for (const row of previous) {
+            if (row.hash && row.summary)
+                summaryByHash.set(row.hash, row.summary);
+        }
+        const symbols = extractSymbols(language, content);
+        db.prepare("DELETE FROM symbols WHERE file_id = ?").run(fileId);
+        const insert = db.prepare(`
+      INSERT INTO symbols (file_id, name, qualified_name, kind, start_line, end_line, signature, summary, hash, status)
+      VALUES (@file_id, @name, @qualified_name, @kind, @start_line, @end_line, @signature, @summary, @hash, @status)
+    `);
+        const tx = db.transaction(() => {
+            for (const sym of symbols) {
+                insert.run({
+                    file_id: fileId,
+                    name: sym.name,
+                    qualified_name: sym.name,
+                    kind: sym.kind,
+                    start_line: sym.startLine,
+                    end_line: sym.endLine,
+                    signature: sym.signature,
+                    summary: summaryByHash.get(sym.hash) ?? null,
+                    hash: sym.hash,
+                    status: "fresh"
+                });
+            }
+        });
+        tx();
+        return symbols.length;
+    }
+    function indexImports(fileId, relPath, language, content) {
+        const { knownPaths, pathToId } = knownPathMaps();
+        const imports = extractImports(language, content);
+        rebuildImports(db, fileId, relPath, imports, knownPaths, pathToId);
+    }
+    /** Fast, deterministic keyword tagging applied synchronously during indexing. */
+    function applyHeuristicTags(fileId, relPath, content) {
+        const tagIds = heuristicTags(relPath, content);
+        if (tagIds.length === 0)
+            return false;
+        db.prepare("DELETE FROM file_tags WHERE file_id = ? AND source = 'heuristic'").run(fileId);
+        const insertTag = db.prepare("INSERT OR IGNORE INTO file_tags (file_id, tag_id, confidence, source) VALUES (?, ?, ?, ?)");
+        for (const id of tagIds)
+            insertTag.run(fileId, id, 0.6, "heuristic");
+        return true;
+    }
+    async function quickStartupScan() {
+        events.emit("index:start");
+        emitProgress("scanning");
+        const files = await scanProjectFiles(root, config.index.ignore);
+        filesTotal = files.length;
+        filesScanned = 0;
+        dirtyFiles = 0;
+        symbolsIndexed = 0;
+        emitProgress("scanning");
+        const changedParseable = [];
+        for (const absolutePath of files) {
+            const relative = path.relative(root, absolutePath);
+            let stat;
+            let hash;
+            try {
+                stat = await fs.stat(absolutePath);
+                hash = await hashFile(absolutePath);
+            }
+            catch {
+                filesScanned++;
+                continue;
+            }
+            const existing = db.prepare("SELECT id, hash FROM files WHERE path = ?").get(relative);
+            const changed = !existing || existing.hash !== hash;
+            const language = detectLanguage(relative);
+            filesScanned++;
+            if (changed)
+                dirtyFiles++;
+            upsertFile.run({
+                path: relative,
+                language,
+                hash,
+                size_bytes: stat.size,
+                mtime: Number(stat.mtimeMs),
+                is_test: isTestFile(relative) ? 1 : 0,
+                is_generated: isGeneratedFile(relative) ? 1 : 0,
+                last_indexed_at: Date.now(),
+                status: changed ? "dirty" : "fresh"
+            });
+            if (changed && isParseableLanguage(language) && stat.size < 600_000) {
+                const fileRow = db.prepare("SELECT id FROM files WHERE path = ?").get(relative);
+                try {
+                    const content = await fs.readFile(absolutePath, "utf8");
+                    changedParseable.push({ fileId: fileRow.id, relPath: relative, language, content });
+                }
+                catch {
+                    // skip unreadable file
+                }
+            }
+            events.emit("index:fileScanned", relative);
+            emitProgress("scanning", { currentFile: relative });
+        }
+        // Phase: parse symbols.
+        emitProgress("parsing");
+        for (const item of changedParseable) {
+            symbolsIndexed += indexSymbols(item.fileId, item.language, item.content);
+            if (applyHeuristicTags(item.fileId, item.relPath, item.content))
+                tagsRefreshed++;
+            emitProgress("parsing", { currentFile: item.relPath });
+        }
+        // Phase: build import graph.
+        emitProgress("graph");
+        for (const item of changedParseable) {
+            indexImports(item.fileId, item.relPath, item.language, item.content);
+        }
+        // Mark dirty files ready and queue summaries/tags.
+        db.prepare("UPDATE files SET status = 'fresh' WHERE status = 'dirty'").run();
+        emitProgress("ready");
+        events.emit("index:progress", {
+            phase: "ready",
+            progress: 1,
+            filesScanned,
+            filesTotal,
+            dirtyFiles,
+            symbolsIndexed,
+            tagsRefreshed,
+            currentFile: undefined,
+            tip: "Index core ready. Watch mode engaged."
+        });
+        events.emit("index:done");
+        // Background intelligence pass.
+        for (const item of changedParseable)
+            summaryQueue.push(item.relPath);
+        // Also (re)queue parseable files still missing intel from prior runs.
+        const missing = db
+            .prepare(`SELECT path, language FROM files f
+         WHERE (summary IS NULL OR NOT EXISTS (SELECT 1 FROM file_tags ft WHERE ft.file_id = f.id))`)
+            .all();
+        const queued = new Set(summaryQueue);
+        for (const row of missing) {
+            if (isParseableLanguage(row.language) && !queued.has(row.path)) {
+                summaryQueue.push(row.path);
+                queued.add(row.path);
+            }
+        }
+        kickQueue();
+    }
+    /** Background worker: summarize + tag files one at a time when Ollama is up. */
+    async function runSummaryQueue() {
+        summaryRunning = true;
+        if (ollamaReady === null) {
+            ollamaReady = await isOllamaAvailable(config.ollama.baseUrl);
+            setMeta(db, "ollama_available", ollamaReady ? "1" : "0");
+            if (ollamaReady) {
+                const installed = await listOllamaModels(config.ollama.baseUrl);
+                summarizerModel = resolveModelName(config.models.summarizer, installed);
+                taggerModel = resolveModelName(config.models.tagger, installed);
+            }
+            events.emit("ollama:status", ollamaReady);
+        }
+        // Heuristic tags are applied synchronously during indexing. The background
+        // pass only adds value when a model is available, so bail out when offline.
+        if (!ollamaReady) {
+            summaryQueue.length = 0;
+            summaryRunning = false;
+            events.emit("index:intel-done", { tagsRefreshed });
+            return;
+        }
+        try {
+            while (summaryQueue.length > 0) {
+                const relPath = summaryQueue.shift();
+                const fileRow = db.prepare("SELECT id, language, hash, summary FROM files WHERE path = ?").get(relPath);
+                if (!fileRow)
+                    continue;
+                const cacheKey = `summary:${fileRow.hash}`;
+                const cached = db.prepare("SELECT value FROM meta WHERE key = ?").get(cacheKey);
+                let content;
+                try {
+                    content = await fs.readFile(path.join(root, relPath), "utf8");
+                }
+                catch {
+                    continue;
+                }
+                let summary = cached?.value ?? fileRow.summary ?? "";
+                if (!summary && ollamaReady) {
+                    summary = await summarizeFile({ config, relPath, language: fileRow.language, content, model: summarizerModel });
+                    if (summary)
+                        setMeta(db, cacheKey, summary);
+                }
+                if (summary) {
+                    db.prepare("UPDATE files SET summary = ? WHERE id = ?").run(summary, fileRow.id);
+                }
+                // Model-refined tags replace the synchronous heuristic set.
+                const tagIds = await tagFile({ config, relPath, language: fileRow.language, content, model: taggerModel });
+                if (tagIds.length > 0) {
+                    db.prepare("DELETE FROM file_tags WHERE file_id = ?").run(fileRow.id);
+                    const insertTag = db.prepare("INSERT OR IGNORE INTO file_tags (file_id, tag_id, confidence, source) VALUES (?, ?, ?, ?)");
+                    for (const id of tagIds)
+                        insertTag.run(fileRow.id, id, 0.8, "model");
+                    tagsRefreshed++;
+                }
+                events.emit("index:progress", {
+                    phase: "tagging",
+                    progress: 1,
+                    filesScanned,
+                    filesTotal,
+                    dirtyFiles,
+                    symbolsIndexed,
+                    tagsRefreshed,
+                    currentFile: relPath,
+                    tip: "Model intelligence pass running."
+                });
+            }
+        }
+        finally {
+            summaryRunning = false;
+            events.emit("index:intel-done", { tagsRefreshed });
+        }
+    }
+    let debounceTimer;
+    const pendingChanges = new Set();
+    async function enqueueChangedFile(filePath) {
+        const relative = path.isAbsolute(filePath) ? path.relative(root, filePath) : filePath;
+        pendingChanges.add(relative);
+        events.emit("index:fileDirty", relative);
+        if (debounceTimer)
+            clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+            const batch = [...pendingChanges];
+            pendingChanges.clear();
+            void reindexPaths(batch);
+        }, config.index.debounceMs);
+    }
+    /** Re-index a set of files immediately (used by watcher and the patch loop). */
+    async function reindexPaths(relPaths) {
+        for (const relative of relPaths) {
+            const absolutePath = path.join(root, relative);
+            let stat;
+            let hash;
+            try {
+                stat = await fs.stat(absolutePath);
+                hash = await hashFile(absolutePath);
+            }
+            catch {
+                // File deleted -> drop from index.
+                const row = db.prepare("SELECT id FROM files WHERE path = ?").get(relative);
+                if (row) {
+                    db.prepare("DELETE FROM symbols WHERE file_id = ?").run(row.id);
+                    db.prepare("DELETE FROM imports WHERE from_file_id = ?").run(row.id);
+                    db.prepare("DELETE FROM file_tags WHERE file_id = ?").run(row.id);
+                    db.prepare("DELETE FROM files WHERE id = ?").run(row.id);
+                }
+                events.emit("index:fileRemoved", relative);
+                continue;
+            }
+            const language = detectLanguage(relative);
+            upsertFile.run({
+                path: relative,
+                language,
+                hash,
+                size_bytes: stat.size,
+                mtime: Number(stat.mtimeMs),
+                is_test: isTestFile(relative) ? 1 : 0,
+                is_generated: isGeneratedFile(relative) ? 1 : 0,
+                last_indexed_at: Date.now(),
+                status: "fresh"
+            });
+            if (isParseableLanguage(language) && stat.size < 600_000) {
+                try {
+                    const content = await fs.readFile(absolutePath, "utf8");
+                    const fileRow = db.prepare("SELECT id FROM files WHERE path = ?").get(relative);
+                    indexSymbols(fileRow.id, language, content);
+                    indexImports(fileRow.id, relative, language, content);
+                    if (applyHeuristicTags(fileRow.id, relative, content))
+                        tagsRefreshed++;
+                    summaryQueue.push(relative);
+                }
+                catch {
+                    // skip
+                }
+            }
+            events.emit("index:fileReindexed", relative);
+        }
+        kickQueue();
+    }
+    function getStats() {
+        const symbolCount = db.prepare("SELECT COUNT(*) AS c FROM symbols").get().c;
+        const tagCount = db.prepare("SELECT COUNT(DISTINCT file_id) AS c FROM file_tags").get().c;
+        return { filesTotal, filesScanned, dirtyFiles, symbolsIndexed: symbolCount, tagsRefreshed: tagCount };
+    }
+    return { quickStartupScan, enqueueChangedFile, reindexPaths, getStats, whenIdle };
+}
+export function detectLanguage(filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    const map = {
+        ".ts": "typescript",
+        ".tsx": "typescript-react",
+        ".js": "javascript",
+        ".jsx": "javascript-react",
+        ".mjs": "javascript",
+        ".cjs": "javascript",
+        ".json": "json",
+        ".py": "python",
+        ".css": "css",
+        ".html": "html",
+        ".md": "markdown"
+    };
+    return map[ext] ?? "text";
+}
+function isTestFile(filePath) {
+    return /(^|\/|\\)(test|tests|__tests__)(\/|\\)/.test(filePath) || /\.(test|spec)\.[tj]sx?$/.test(filePath);
+}
+function isGeneratedFile(filePath) {
+    return filePath.includes("generated") || filePath.endsWith(".min.js");
+}

@@ -1,0 +1,5 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { Box, Text } from "ink";
+export function TaskConsolePane({ logs, output, mode, input, busy, phase }) {
+    return (_jsxs(Box, { flexDirection: "column", width: "66%", borderStyle: "round", borderColor: "green", paddingX: 1, children: [_jsxs(Box, { justifyContent: "space-between", children: [_jsx(Text, { color: "greenBright", children: "Task Console" }), _jsxs(Text, { color: mode === "patch" ? "yellow" : "cyan", children: ["[", mode.toUpperCase(), "]"] })] }), _jsxs(Text, { color: "green", children: ["> ", input, _jsx(Text, { color: "gray", children: busy ? "" : "▋" })] }), busy ? _jsxs(Text, { color: "cyan", children: ["\u27F3 ", phase, "\u2026"] }) : _jsx(Text, { color: "gray", children: "type a task, press Enter" }), output.slice(0, 4).map((line, index) => (_jsx(Text, { color: "white", children: line.slice(0, 80) }, `o-${index}`))), logs.slice(0, 3).map((line, index) => (_jsx(Text, { color: "gray", children: line.slice(0, 80) }, `l-${index}`)))] }));
+}

@@ -40,7 +40,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "prepare": "npm run build"
+    "prepack": "npm run build"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.2",
