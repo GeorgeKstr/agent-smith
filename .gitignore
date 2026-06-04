@@ -1,0 +1,7 @@
+.agent/
+dist/
+node_modules/
+coverage/
+.env
+.env.local
+.DS_Store
