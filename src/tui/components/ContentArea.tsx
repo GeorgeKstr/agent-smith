@@ -3,6 +3,13 @@ import { Box, Text } from "ink"
 import type { ContextPacket } from "../../types/index.js"
 import { theme } from "../theme.js"
 
+type DisplayLine = {
+  text: string
+  color?: string
+  bold?: boolean
+  dimColor?: boolean
+}
+
 function lineColor(line: string): string {
   if (line.startsWith("+") && !line.startsWith("+++")) return "green"
   if (line.startsWith("-") && !line.startsWith("---")) return "red"
@@ -12,6 +19,97 @@ function lineColor(line: string): string {
 }
 
 const BG = "black"
+
+function normalizeInlineMd(line: string): string {
+  return line
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
+}
+
+function markdownLines(markdown: string): DisplayLine[] {
+  const lines = markdown.split("\n")
+  const out: DisplayLine[] = []
+  let inFence = false
+
+  for (const raw of lines) {
+    const line = raw ?? ""
+
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence
+      out.push({ text: inFence ? "┌ code" : "└ end", color: theme.dim, dimColor: true })
+      continue
+    }
+
+    if (inFence) {
+      out.push({ text: `  ${line}`, color: "yellow" })
+      continue
+    }
+
+    if (/^\s*#{1,6}\s+/.test(line)) {
+      const text = normalizeInlineMd(line.replace(/^\s*#{1,6}\s+/, ""))
+      out.push({ text, color: theme.accent, bold: true })
+      continue
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      out.push({ text: `│ ${normalizeInlineMd(line.replace(/^\s*>\s?/, ""))}`, color: theme.dim, dimColor: true })
+      continue
+    }
+
+    if (/^\s*([-*+]\s+|\d+\.\s+)/.test(line)) {
+      const text = normalizeInlineMd(line.replace(/^\s*([-*+]\s+|\d+\.\s+)/, "• "))
+      out.push({ text, color: theme.text })
+      continue
+    }
+
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
+      out.push({ text: "─".repeat(28), color: theme.dim, dimColor: true })
+      continue
+    }
+
+    out.push({ text: normalizeInlineMd(line), color: "white" })
+  }
+
+  return out
+}
+
+function wrapLine(text: string, width: number): string[] {
+  const max = Math.max(12, width)
+  if (!text) return [""]
+  if (text.length <= max) return [text]
+
+  const out: string[] = []
+  let rest = text
+  while (rest.length > max) {
+    const chunk = rest.slice(0, max + 1)
+    let cut = chunk.lastIndexOf(" ")
+    if (cut < Math.floor(max * 0.45)) cut = max
+    out.push(rest.slice(0, cut).trimEnd())
+    rest = rest.slice(cut).trimStart()
+  }
+  if (rest.length) out.push(rest)
+  return out
+}
+
+function wrapDisplayLines(lines: DisplayLine[], width: number): DisplayLine[] {
+  const out: DisplayLine[] = []
+  for (const line of lines) {
+    for (const wrapped of wrapLine(line.text, width)) {
+      out.push({ ...line, text: wrapped })
+    }
+  }
+  return out
+}
+
+function wrapPlainLines(lines: string[], width: number): string[] {
+  const out: string[] = []
+  for (const line of lines) out.push(...wrapLine(line, width))
+  return out
+}
 
 export function ContentArea({
   output,
@@ -52,8 +150,8 @@ export function ContentArea({
     return line.length > width ? `${line.slice(0, width - 1)}…` : line
   }
 
-  const answerLines = answer.split("\n")
-  const patchLines = patchText.split("\n")
+  const answerDisplay = wrapDisplayLines(markdownLines(answer), maxWidth)
+  const patchLines = wrapPlainLines(patchText.split("\n"), maxWidth)
 
   if (patchText) {
     const win = windowLines(patchLines)
@@ -73,15 +171,27 @@ export function ContentArea({
   }
 
   if (answer) {
-    const win = windowLines(answerLines)
+    const win = windowLines(answerDisplay.map((l) => l.text))
+    const safeMax = Math.max(3, maxLines)
+    const maxOffset = Math.max(0, answerDisplay.length - safeMax)
+    const offset = Math.min(scrollOffset, maxOffset)
+    const end = Math.max(0, answerDisplay.length - offset)
+    const start = Math.max(0, end - safeMax)
+    const visible = answerDisplay.slice(start, end)
     return (
       <Box flexDirection="column" paddingX={1}>
         <Text color={theme.primary} backgroundColor={BG}>Answer</Text>
         <Text color={theme.dim} backgroundColor={BG}>{"─".repeat(40)}</Text>
         {win.hasOlder && <Text color={theme.dim} backgroundColor={BG}>↑ older lines</Text>}
-        {win.visible.map((line, i) => (
-          <Text key={i} color="white" backgroundColor={BG}>
-            {truncate(line)}
+        {visible.map((line, i) => (
+          <Text
+            key={i}
+            color={line.color ?? "white"}
+            bold={line.bold}
+            dimColor={line.dimColor}
+            backgroundColor={BG}
+          >
+            {line.text}
           </Text>
         ))}
         {win.hasNewer && <Text color={theme.dim} backgroundColor={BG}>↓ newer lines</Text>}
@@ -111,13 +221,13 @@ export function ContentArea({
   }
 
   if (output.length > 0) {
-    const win = windowLines(output)
+    const win = windowLines(wrapPlainLines(output, maxWidth))
     return (
       <Box flexDirection="column" paddingX={1}>
         {win.hasOlder && <Text color={theme.dim} backgroundColor={BG}>↑ older messages</Text>}
         {win.visible.map((line, i) => (
           <Text key={i} color="white" backgroundColor={BG}>
-            {truncate(line)}
+            {line}
           </Text>
         ))}
         {win.hasNewer && <Text color={theme.dim} backgroundColor={BG}>↓ newer messages</Text>}
@@ -128,9 +238,9 @@ export function ContentArea({
   if (logs.length > 0) {
     return (
       <Box flexDirection="column" paddingX={1}>
-        {logs.slice(0, 4).map((line, i) => (
+        {wrapPlainLines(logs.slice(0, 4), maxWidth).map((line, i) => (
           <Text key={i} color={theme.dim} backgroundColor={BG}>
-            {truncate(line)}
+            {line}
           </Text>
         ))}
       </Box>

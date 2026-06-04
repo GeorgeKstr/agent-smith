@@ -5,7 +5,7 @@ import { execa } from "execa";
 import type { SmithConfig, PatchOutcome, ContextPacket, CheckResult, TaskClassification, PromptPlan } from "../types/index.js";
 import type { SmithDatabase } from "./db.js";
 import type { Indexer } from "./indexer.js";
-import { isOllamaAvailable, listOllamaModels, resolveModelName, generateWithOllama, optionsFromConfig } from "./ollama.js";
+import { isOllamaAvailable, listOllamaModels, resolveModelName, generateWithOllama, optionsFromConfig, extractJson } from "./ollama.js";
 import { classifyTask, retrieve } from "./retriever.js";
 import { packContext } from "./contextPacker.js";
 import { validateUnifiedDiff, stripFences, extractDiffFiles, countChangedLines } from "./patch.js";
@@ -74,10 +74,17 @@ export async function runAsk(deps: RunnerDeps, task: string): Promise<AskResult>
       prompt: task,
       options: optionsFromConfig(config, { num_predict: 400 })
     });
+    const answer = await finalizeAnswer({
+      config,
+      model: answerModel,
+      basePrompt: task,
+      raw: chat.text,
+      fallback: "I can help with that. Ask me about your project, architecture, or a coding task."
+    });
 
     return {
       ok: chat.ok,
-      answer: chat.text.trim(),
+      answer,
       packet: emptyPacket,
       message: `Intent=${intent.kind} (${intent.reason})${chat.error ? ` | ${chat.error}` : ""}`
     };
@@ -122,8 +129,15 @@ export async function runAsk(deps: RunnerDeps, task: string): Promise<AskResult>
     prompt: packet.prompt,
     options: optionsFromConfig(config)
   });
+  const answer = await finalizeAnswer({
+    config,
+    model: answerModel,
+    basePrompt: packet.prompt,
+    raw: result.text,
+    fallback: "I could not produce a usable answer from the model output."
+  });
 
-  return { ok: result.ok, answer: result.text.trim(), packet, message: result.error };
+  return { ok: result.ok, answer, packet, message: result.error };
 }
 
 /**
@@ -176,11 +190,18 @@ export async function runPatch(
       prompt: task,
       options: optionsFromConfig(config, { num_predict: 320 })
     });
+    const answer = await finalizeAnswer({
+      config,
+      model: patcherModel,
+      basePrompt: task,
+      raw: chat.text,
+      fallback: "This looks non-build. Tell me what code/task you want changed and I can switch into build flow."
+    });
     return {
       ok: chat.ok,
       applied: false,
       attempts: 0,
-      answer: chat.text.trim(),
+      answer,
       files: [],
       checks,
       message: `Prompt categorized as ${intent.kind} (${intent.reason}). Returned a direct response instead of patch generation.`
@@ -360,6 +381,80 @@ function truncate(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max) + "…";
 }
 
+type FinalizeAnswerArgs = {
+  config: SmithConfig;
+  model: string;
+  basePrompt: string;
+  raw: string;
+  fallback: string;
+};
+
+async function finalizeAnswer(args: FinalizeAnswerArgs): Promise<string> {
+  const first = normalizeAnswer(args.raw);
+  if (first) return first;
+
+  // Retry once with an explicit anti-wrapper instruction.
+  const retry = await generateWithOllama({
+    baseUrl: args.config.ollama.baseUrl,
+    model: args.model,
+    system:
+      "Return plain text only. Never return JSON wrappers, code fences, or placeholder expressions like obj['output'].",
+    prompt: `${args.basePrompt}\n\nPrevious output was unusable. Provide a direct final answer in plain text now.`,
+    options: optionsFromConfig(args.config, { num_predict: 350 })
+  });
+  const second = normalizeAnswer(retry.text);
+  return second || args.fallback;
+}
+
+function normalizeAnswer(raw: string): string {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return "";
+
+  // Try structured wrappers first.
+  const parsed = extractJson<unknown>(trimmed);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const rec = parsed as Record<string, unknown>;
+    for (const key of ["answer", "response", "output", "final", "text", "message", "content", "result"]) {
+      const value = rec[key];
+      if (typeof value === "string" && value.trim()) {
+        const candidate = value.trim();
+        if (!isPlaceholderJunk(candidate)) return candidate;
+      }
+    }
+
+    // Model sometimes returns planning JSON (intent/tasks/toolRequests/etc).
+    // If no explicit answer-like field exists, force a plain-text retry.
+    if (looksLikeJsonEnvelope(trimmed)) return "";
+  }
+
+  const unfenced = stripFences(trimmed).trim();
+  if (looksLikeJsonEnvelope(unfenced)) return "";
+  if (!unfenced || isPlaceholderJunk(unfenced)) return "";
+  return unfenced;
+}
+
+function looksLikeJsonEnvelope(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  const jsonish = (t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"));
+  if (!jsonish) return false;
+  try {
+    JSON.parse(t);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isPlaceholderJunk(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  if (/^obj\[['"]output['"]\]$/i.test(t)) return true;
+  if (/^output$/i.test(t)) return true;
+  if (/^\{\s*"?(output|response|answer)"?\s*:\s*null\s*\}$/i.test(t)) return true;
+  return false;
+}
+
 function mergeClassification(base: TaskClassification, plan: PromptPlan): TaskClassification {
   const uniq = (values: string[], max: number) => [...new Set(values.map((v) => v.trim()).filter(Boolean))].slice(0, max);
   return {
@@ -398,4 +493,17 @@ function runPlanningTools(db: SmithDatabase, plan: PromptPlan): string[] {
     }
   }
   return notes;
+}
+
+export async function undoPatchFromDiff(
+  deps: RunnerDeps,
+  diff: string
+): Promise<{ ok: boolean; files: string[]; message: string }> {
+  const files = extractDiffFiles(diff);
+  const reversed = await gitApply(deps.root, diff, false, true);
+  if (!reversed.ok) {
+    return { ok: false, files, message: `git apply --reverse failed: ${reversed.stderr}` };
+  }
+  await reindexAffected(deps.indexer, files);
+  return { ok: true, files, message: `Reverted ${files.length} file(s).` };
 }

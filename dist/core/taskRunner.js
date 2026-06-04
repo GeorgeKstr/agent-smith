@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execa } from "execa";
-import { isOllamaAvailable, listOllamaModels, resolveModelName, generateWithOllama, optionsFromConfig } from "./ollama.js";
+import { isOllamaAvailable, listOllamaModels, resolveModelName, generateWithOllama, optionsFromConfig, extractJson } from "./ollama.js";
 import { classifyTask, retrieve } from "./retriever.js";
 import { packContext } from "./contextPacker.js";
 import { validateUnifiedDiff, stripFences, extractDiffFiles, countChangedLines } from "./patch.js";
@@ -51,9 +51,16 @@ export async function runAsk(deps, task) {
             prompt: task,
             options: optionsFromConfig(config, { num_predict: 400 })
         });
+        const answer = await finalizeAnswer({
+            config,
+            model: answerModel,
+            basePrompt: task,
+            raw: chat.text,
+            fallback: "I can help with that. Ask me about your project, architecture, or a coding task."
+        });
         return {
             ok: chat.ok,
-            answer: chat.text.trim(),
+            answer,
             packet: emptyPacket,
             message: `Intent=${intent.kind} (${intent.reason})${chat.error ? ` | ${chat.error}` : ""}`
         };
@@ -92,7 +99,14 @@ export async function runAsk(deps, task) {
         prompt: packet.prompt,
         options: optionsFromConfig(config)
     });
-    return { ok: result.ok, answer: result.text.trim(), packet, message: result.error };
+    const answer = await finalizeAnswer({
+        config,
+        model: answerModel,
+        basePrompt: packet.prompt,
+        raw: result.text,
+        fallback: "I could not produce a usable answer from the model output."
+    });
+    return { ok: result.ok, answer, packet, message: result.error };
 }
 /**
  * Full patch loop:
@@ -136,11 +150,18 @@ export async function runPatch(deps, task, options = { apply: true }) {
             prompt: task,
             options: optionsFromConfig(config, { num_predict: 320 })
         });
+        const answer = await finalizeAnswer({
+            config,
+            model: patcherModel,
+            basePrompt: task,
+            raw: chat.text,
+            fallback: "This looks non-build. Tell me what code/task you want changed and I can switch into build flow."
+        });
         return {
             ok: chat.ok,
             applied: false,
             attempts: 0,
-            answer: chat.text.trim(),
+            answer,
             files: [],
             checks,
             message: `Prompt categorized as ${intent.kind} (${intent.reason}). Returned a direct response instead of patch generation.`
@@ -299,6 +320,76 @@ async function gitApply(root, diff, checkOnly, reverse = false) {
 function truncate(text, max) {
     return text.length <= max ? text : text.slice(0, max) + "…";
 }
+async function finalizeAnswer(args) {
+    const first = normalizeAnswer(args.raw);
+    if (first)
+        return first;
+    // Retry once with an explicit anti-wrapper instruction.
+    const retry = await generateWithOllama({
+        baseUrl: args.config.ollama.baseUrl,
+        model: args.model,
+        system: "Return plain text only. Never return JSON wrappers, code fences, or placeholder expressions like obj['output'].",
+        prompt: `${args.basePrompt}\n\nPrevious output was unusable. Provide a direct final answer in plain text now.`,
+        options: optionsFromConfig(args.config, { num_predict: 350 })
+    });
+    const second = normalizeAnswer(retry.text);
+    return second || args.fallback;
+}
+function normalizeAnswer(raw) {
+    const trimmed = (raw ?? "").trim();
+    if (!trimmed)
+        return "";
+    // Try structured wrappers first.
+    const parsed = extractJson(trimmed);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const rec = parsed;
+        for (const key of ["answer", "response", "output", "final", "text", "message", "content", "result"]) {
+            const value = rec[key];
+            if (typeof value === "string" && value.trim()) {
+                const candidate = value.trim();
+                if (!isPlaceholderJunk(candidate))
+                    return candidate;
+            }
+        }
+        // Model sometimes returns planning JSON (intent/tasks/toolRequests/etc).
+        // If no explicit answer-like field exists, force a plain-text retry.
+        if (looksLikeJsonEnvelope(trimmed))
+            return "";
+    }
+    const unfenced = stripFences(trimmed).trim();
+    if (looksLikeJsonEnvelope(unfenced))
+        return "";
+    if (!unfenced || isPlaceholderJunk(unfenced))
+        return "";
+    return unfenced;
+}
+function looksLikeJsonEnvelope(text) {
+    const t = text.trim();
+    if (!t)
+        return false;
+    const jsonish = (t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"));
+    if (!jsonish)
+        return false;
+    try {
+        JSON.parse(t);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+function isPlaceholderJunk(text) {
+    const t = text.trim();
+    if (!t)
+        return true;
+    if (/^obj\[['"]output['"]\]$/i.test(t))
+        return true;
+    if (/^output$/i.test(t))
+        return true;
+    if (/^\{\s*"?(output|response|answer)"?\s*:\s*null\s*\}$/i.test(t))
+        return true;
+    return false;
+}
 function mergeClassification(base, plan) {
     const uniq = (values, max) => [...new Set(values.map((v) => v.trim()).filter(Boolean))].slice(0, max);
     return {
@@ -330,4 +421,13 @@ function runPlanningTools(db, plan) {
         }
     }
     return notes;
+}
+export async function undoPatchFromDiff(deps, diff) {
+    const files = extractDiffFiles(diff);
+    const reversed = await gitApply(deps.root, diff, false, true);
+    if (!reversed.ok) {
+        return { ok: false, files, message: `git apply --reverse failed: ${reversed.stderr}` };
+    }
+    await reindexAffected(deps.indexer, files);
+    return { ok: true, files, message: `Reverted ${files.length} file(s).` };
 }

@@ -3,7 +3,7 @@ import { useApp, useInput, useStdout } from "ink"
 import type { BootState, SmithConfig, ContextPacket, PromptIntent } from "../types/index.js"
 import type { SmithDatabase } from "../core/db.js"
 import type { Indexer } from "../core/indexer.js"
-import { runAsk, runPatch } from "../core/taskRunner.js"
+import { runAsk, runPatch, undoPatchFromDiff } from "../core/taskRunner.js"
 import { BootScreen } from "./screens/BootScreen.js"
 import { MainScreen } from "./screens/MainScreen.js"
 
@@ -23,6 +23,16 @@ export type AppProps = {
   db: SmithDatabase
   events: NodeJS.EventEmitter
   indexer: Indexer
+}
+
+type ExecutionRecord = {
+  prompt: string
+  outputStart: number
+  prevAnswer: string
+  prevPatchText: string
+  prevPacket: ContextPacket | null
+  prevIntent: PromptIntent | null
+  undoDiff?: string
 }
 
 export function App({ root, config, db, events, indexer }: AppProps) {
@@ -47,6 +57,9 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   const [patchText, setPatchText] = useState("")
   const [output, setOutput] = useState<string[]>([])
   const [logs, setLogs] = useState<string[]>([])
+  const [promptHistory, setPromptHistory] = useState<string[]>([])
+  const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null)
+  const [executions, setExecutions] = useState<ExecutionRecord[]>([])
 
   useEffect(() => {
     // Use alternate screen buffer so the UI owns a bounded area and does not
@@ -106,7 +119,34 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     }
   }, [events])
 
-  const handleSlashCommand = useCallback((input: string): boolean => {
+  const undoLast = useCallback(async () => {
+    const last = executions[executions.length - 1]
+    if (!last) {
+      setOutput((o) => [...o, "Nothing to undo."])
+      return
+    }
+
+    setBusy(true)
+    setPhase("undoing")
+    let fileNote = ""
+    if (last.undoDiff) {
+      const reverted = await undoPatchFromDiff({ db, root, config, events, indexer }, last.undoDiff)
+      fileNote = reverted.ok ? ` | files: ${reverted.files.length} reverted` : ` | ${reverted.message}`
+    }
+
+    setOutput((o) => [...o.slice(0, last.outputStart), `↶ undo: ${last.prompt}${fileNote}`])
+    setAnswer(last.prevAnswer)
+    setPatchText(last.prevPatchText)
+    setPacket(last.prevPacket)
+    setIntent(last.prevIntent)
+    setExecutions((e) => e.slice(0, -1))
+    setPromptHistory((h) => (h[h.length - 1] === last.prompt ? h.slice(0, -1) : h))
+    setPromptHistoryIndex(null)
+    setBusy(false)
+    setPhase("idle")
+  }, [executions, db, root, config, events, indexer])
+
+  const handleSlashCommand = useCallback(async (input: string): Promise<boolean> => {
     const parts = input.trim().toLowerCase().split(/\s+/)
     const cmd = parts[0]
 
@@ -151,11 +191,12 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           "  /ask         Alias for /mode discuss",
           "  /patch       Alias for /mode build",
           "  /reindex     Re-index the project",
+          "  /undo        Undo last prompt result (files + convo)",
           "  /clear       Clear the output area",
           "  /help        Show this help message",
           "  /exit        Exit the application",
           "",
-          "  Keys:  Enter submit · Esc clear · Ctrl+C quit",
+          "  Keys:  Enter submit · Esc clear · ↑/↓ scroll · Ctrl+↑/↓ prompt history · PgUp/PgDn fast scroll · Ctrl+C quit",
           "",
         ])
         return true
@@ -171,6 +212,11 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         setAnswer("")
         setPatchText("")
         setIntent(null)
+        setExecutions([])
+        return true
+      }
+      case "/undo": {
+        await undoLast()
         return true
       }
       case "/exit":
@@ -186,7 +232,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         return false
       }
     }
-  }, [quit, indexer, mode])
+  }, [quit, indexer, mode, undoLast])
 
   const submit = useCallback(async () => {
     const task = input.trim()
@@ -194,9 +240,21 @@ export function App({ root, config, db, events, indexer }: AppProps) {
 
     if (task.startsWith("/")) {
       setInput("")
-      handleSlashCommand(task)
+      await handleSlashCommand(task)
       return
     }
+
+    const outputStart = output.length
+    const prevAnswer = answer
+    const prevPatchText = patchText
+    const prevPacket = packet
+    const prevIntent = intent
+
+    setPromptHistory((h) => {
+      if (h[h.length - 1] === task) return h
+      return [...h, task].slice(-120)
+    })
+    setPromptHistoryIndex(null)
 
     setBusy(true)
     setAnswer("")
@@ -204,7 +262,9 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     setPacket(null)
     setIntent(null)
     setScrollOffset(0)
-    setOutput([`▶ ${mode}: ${task}`])
+    setOutput((o) => [...o, `▶ ${mode}: ${task}`])
+
+    let undoDiff: string | undefined
 
     try {
       if (mode === "discuss") {
@@ -215,29 +275,69 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         const outcome = await runPatch({ db, root, config, events, indexer }, task, { apply: true })
         if (outcome.diff) setPatchText(outcome.diff)
         if (outcome.answer) setAnswer(outcome.answer)
+        if (outcome.applied && outcome.diff) undoDiff = outcome.diff
         const lines = [outcome.message, ...outcome.checks.map((c) => `[${c.name}] ${c.ok ? "PASS" : "FAIL"} (exit ${c.exitCode})`)]
         setOutput((o) => [...o, ...lines.filter(Boolean) as string[]])
       }
     } catch (error) {
       setOutput((o) => [...o, `error: ${error instanceof Error ? error.message : String(error)}`])
     } finally {
+      setExecutions((e) => [
+        ...e,
+        {
+          prompt: task,
+          outputStart,
+          prevAnswer,
+          prevPatchText,
+          prevPacket,
+          prevIntent,
+          undoDiff
+        }
+      ])
       setBusy(false)
       setPhase("idle")
       setInput("")
     }
-  }, [input, busy, mode, db, root, config, events, indexer, handleSlashCommand])
+  }, [input, busy, mode, db, root, config, events, indexer, handleSlashCommand, output.length, answer, patchText, packet, intent])
 
   useInput((char, key) => {
     if (key.ctrl && char === "c") { quit(); return }
     if (busy) return
-    if (key.upArrow) { setScrollOffset((v) => v + 1); return }
-    if (key.downArrow) { setScrollOffset((v) => Math.max(0, v - 1)); return }
-    if (key.pageUp) { setScrollOffset((v) => v + 8); return }
-    if (key.pageDown) { setScrollOffset((v) => Math.max(0, v - 8)); return }
+
+    if (key.ctrl && key.upArrow) {
+      if (promptHistory.length === 0) return
+      const next = promptHistoryIndex === null ? promptHistory.length - 1 : Math.max(0, promptHistoryIndex - 1)
+      setPromptHistoryIndex(next)
+      setInput(promptHistory[next] ?? "")
+      return
+    }
+    if (key.ctrl && key.downArrow) {
+      if (promptHistory.length === 0 || promptHistoryIndex === null) return
+      const next = promptHistoryIndex + 1
+      if (next >= promptHistory.length) {
+        setPromptHistoryIndex(null)
+        setInput("")
+      } else {
+        setPromptHistoryIndex(next)
+        setInput(promptHistory[next] ?? "")
+      }
+      return
+    }
+
+    if (key.upArrow) {
+      setScrollOffset((v) => v + 2)
+      return
+    }
+    if (key.downArrow) {
+      setScrollOffset((v) => Math.max(0, v - 2))
+      return
+    }
+    if (key.pageUp) { setScrollOffset((v) => v + 12); return }
+    if (key.pageDown) { setScrollOffset((v) => Math.max(0, v - 12)); return }
     if (key.escape) { setInput(""); return }
     if (key.return) { void submit(); return }
-    if (key.backspace || key.delete) { setInput((v) => v.slice(0, -1)); return }
-    if (char && !key.ctrl && !key.meta) { setInput((v) => v + char) }
+    if (key.backspace || key.delete) { setPromptHistoryIndex(null); setInput((v) => v.slice(0, -1)); return }
+    if (char && !key.ctrl && !key.meta) { setPromptHistoryIndex(null); setInput((v) => v + char) }
   })
 
   if (!ready && config.theme.showBootAnimation) {

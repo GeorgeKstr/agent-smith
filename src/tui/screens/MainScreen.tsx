@@ -38,6 +38,8 @@ export function MainScreen(props: MainScreenProps) {
   const contentWidth = Math.max(1, termCols - 2)
   const contentLines = Math.max(6, termRows - 13)
   const rainHeight = Math.max(1, termRows - 6)
+  const footer = "/help · Enter submit · Esc clear · ↑/↓ scroll · Ctrl+↑/↓ prompt history · PgUp/PgDn fast scroll · Ctrl+C quit"
+  const footerPad = " ".repeat(Math.max(0, contentWidth - footer.length))
 
   return (
     <Box position="relative" flexDirection="column" height="100%">
@@ -86,10 +88,11 @@ export function MainScreen(props: MainScreenProps) {
           busy={props.busy}
           mode={props.mode}
           intent={props.intent}
+          width={contentWidth}
         />
 
         <Text color={theme.dim} backgroundColor="black">
-          /help · Enter submit · Esc clear · ↑/↓ scroll · Ctrl+C quit{" ".repeat(Math.max(0, contentWidth - 65))}
+          {footer}{footerPad}
         </Text>
       </Box>
     </Box>

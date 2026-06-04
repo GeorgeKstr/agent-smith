@@ -20,7 +20,7 @@ export function InputBar({
   const border = busy ? theme.accent : isSlash ? theme.accent : theme.border
 
   return (
-    <Box borderStyle="round" borderColor={border} paddingX={1} paddingY={0} minHeight={3}>
+    <Box borderStyle="round" borderColor={border} paddingX={1} paddingY={0} minHeight={3} width="100%">
       <Box flexGrow={1}>
         <Text color={isSlash ? theme.accent : theme.dim} backgroundColor={BG}>{promptGlyph} </Text>
         <Text color={isSlash ? "cyan" : "white"} backgroundColor={BG}>{input}</Text>
