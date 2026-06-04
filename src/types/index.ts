@@ -122,6 +122,14 @@ export type TaskClassification = {
   needsTypes: boolean;
 };
 
+export type PromptIntentKind = "task" | "chat" | "meta";
+
+export type PromptIntent = {
+  kind: PromptIntentKind;
+  confidence: number;
+  reason: string;
+};
+
 export type ScoredFile = {
   fileId: number;
   path: string;

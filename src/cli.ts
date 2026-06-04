@@ -183,6 +183,8 @@ export function createCli() {
   program.action(async () => {
     const { root, config, db, events } = await bootstrap();
 
+    console.clear();
+
     const indexer = createIndexer({ root, config, db, events });
     const watcher = createWatcher({
       root,

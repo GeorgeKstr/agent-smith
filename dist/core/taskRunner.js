@@ -10,6 +10,7 @@ import { checkPatchSafety } from "./safety.js";
 import { runChecks } from "./checks.js";
 import { reindexAffected } from "./reindexer.js";
 import { createTask, recordEdit, recordTestRun, finishTask } from "./memory.js";
+import { classifyPromptIntent } from "./intent.js";
 /** Classify -> retrieve -> pack -> (optionally) answer with the local model. */
 export async function runAsk(deps, task) {
     const { db, root, config, events } = deps;
@@ -17,6 +18,45 @@ export async function runAsk(deps, task) {
     const installed = ollamaReady ? await listOllamaModels(config.ollama.baseUrl) : [];
     const answerModel = resolveModelName(config.models.patcher, installed);
     const classifierModel = resolveModelName(config.models.tagger, installed);
+    const emptyPacket = {
+        task,
+        prompt: task,
+        estimatedTokens: 0,
+        files: [],
+        symbols: []
+    };
+    events.emit("task:phase", "triaging");
+    const intent = await classifyPromptIntent({
+        config,
+        prompt: task,
+        ollamaReady,
+        model: classifierModel
+    });
+    events.emit("task:intent", intent);
+    if (intent.kind !== "task") {
+        if (!ollamaReady) {
+            return {
+                ok: true,
+                answer: "",
+                packet: emptyPacket,
+                message: `Intent=${intent.kind} (${intent.reason}). Ollama offline — no chat/meta reply generated.`
+            };
+        }
+        events.emit("task:phase", "thinking");
+        const chat = await generateWithOllama({
+            baseUrl: config.ollama.baseUrl,
+            model: answerModel,
+            system: "You are Smith. For chat/meta prompts, respond concisely and helpfully. Do not propose patches or diffs unless asked.",
+            prompt: task,
+            options: optionsFromConfig(config, { num_predict: 400 })
+        });
+        return {
+            ok: chat.ok,
+            answer: chat.text.trim(),
+            packet: emptyPacket,
+            message: `Intent=${intent.kind} (${intent.reason})${chat.error ? ` | ${chat.error}` : ""}`
+        };
+    }
     events.emit("task:phase", "classifying");
     const classification = await classifyTask({ config, task, ollamaReady, model: classifierModel });
     events.emit("task:phase", "retrieving");
@@ -75,6 +115,24 @@ export async function runPatch(deps, task, options = { apply: true }) {
     const patcherModel = resolveModelName(config.models.patcher, installed);
     const debuggerModel = resolveModelName(config.models.debugger || config.models.patcher, installed);
     const classifierModel = resolveModelName(config.models.tagger, installed);
+    events.emit("task:phase", "triaging");
+    const intent = await classifyPromptIntent({
+        config,
+        prompt: task,
+        ollamaReady,
+        model: classifierModel
+    });
+    events.emit("task:intent", intent);
+    if (intent.kind !== "task") {
+        return {
+            ok: false,
+            applied: false,
+            attempts: 0,
+            files: [],
+            checks,
+            message: `Prompt categorized as ${intent.kind} (${intent.reason}). Patch mode only runs on task-like prompts.`
+        };
+    }
     events.emit("task:phase", "classifying");
     const classification = await classifyTask({ config, task, ollamaReady, model: classifierModel });
     events.emit("task:phase", "retrieving");

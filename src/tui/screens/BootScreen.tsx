@@ -1,62 +1,50 @@
-import React, { useEffect, useState } from "react";
-import { Box, Text } from "ink";
-import type { BootState } from "../../types/index.js";
-import { smithTheme } from "../theme.js";
-import { ProgressBar } from "../components/ProgressBar.js";
+import React, { useEffect, useMemo, useState } from "react"
+import { Box, Text } from "ink"
+import type { BootState } from "../../types/index.js"
+import { theme } from "../theme.js"
+
+const spinner = ["▖", "▘", "▝", "▗"]
 
 export function BootScreen({ state, animate = true }: { state: BootState; animate?: boolean }) {
-  const [tick, setTick] = useState(0);
+  const [tick, setTick] = useState(0)
+  const [startAt] = useState(() => Date.now())
 
   useEffect(() => {
-    if (!animate) return;
-    const timer = setInterval(() => setTick((value) => value + 1), 120);
-    return () => clearInterval(timer);
-  }, [animate]);
+    if (!animate) return
+    const id = setInterval(() => setTick((v) => v + 1), 80)
+    return () => clearInterval(id)
+  }, [animate])
 
-  const spinner = animate ? smithTheme.spinnerFrames[tick % smithTheme.spinnerFrames.length] : "●";
-  const rain = smithTheme.rain.map((row, i) =>
-    animate ? rotate(row, (tick + i * 7) % Math.max(1, row.length)) : row
-  );
+  const frame = spinner[tick % spinner.length]
+  const elapsed = Date.now() - startAt
+  const introFrames = [
+    "wake up, smith",
+    "loading matrix kernel",
+    "stabilizing context channels",
+  ]
+  const intro = introFrames[Math.min(introFrames.length - 1, Math.floor(elapsed / 350))]
+  const pulseWidth = 18
+  const pulseCount = (tick % (pulseWidth + 1))
+  const pulseBar = useMemo(() => "█".repeat(pulseCount).padEnd(pulseWidth, "░"), [pulseCount])
 
   return (
-    <Box flexDirection="column" borderStyle="double" borderColor="green" paddingX={2} paddingY={1}>
-      <Text color="greenBright">░▒▓ AGENT SMITH ▓▒░</Text>
-      <Text color="green">SYSTEM BOOT // MATRIX INDEX CORE</Text>
-      <Text color="gray">{rain[0]}</Text>
-      <Text color="gray">{rain[1]}</Text>
-
-      <Box marginTop={1}>
-        <Text color="greenBright">{"///`.::::.`\\\\\\  "}</Text>
-        <Text color="green"> sunglasses protocol loaded</Text>
-      </Box>
-      <Text color="greenBright">||| ::/  \:: ;|||</Text>
-      <Text color="greenBright">||| ::\__/:: ;|||</Text>
-      <Text color="greenBright">{"\\\\\\ '::::' ///"}</Text>
-
-      <Box marginTop={1}>
-        <Text color="green">
-          {spinner} Phase: {state.phase.toUpperCase()}
-        </Text>
-      </Box>
-      <ProgressBar progress={state.progress} />
-
-      <Text color="green">
-        Files scanned: {state.filesScanned} / {state.filesTotal}
+    <Box flexDirection="column" paddingX={2} paddingY={1} minHeight={10}>
+      <Text color={theme.primary}>smith — indexing project</Text>
+      <Text color={theme.dim}>{"─".repeat(30)}</Text>
+      <Text color={theme.accent}>{intro}</Text>
+      <Text color={theme.dim}>{pulseBar}</Text>
+      <Text color={theme.text}>
+        {frame} {state.phase.toUpperCase()} · {state.filesScanned} files
+        {state.filesTotal > 0 && ` / ${state.filesTotal}`}
       </Text>
-      <Text color="yellow">Dirty files: {state.dirtyFiles}</Text>
-      <Text color="green">Symbols indexed: {state.symbolsIndexed}</Text>
-      <Text color="cyan">Tags refreshed: {state.tagsRefreshed}</Text>
-      <Text color="gray">Current file: {state.currentFile ?? "-"}</Text>
-
-      <Box marginTop={1}>
-        <Text color="cyan">Tip: {state.tip}</Text>
-      </Box>
-      <Text color="gray">{rain[2]}</Text>
-      <Text color="greenBright">AGENT SMITH ONLINE</Text>
+      {state.dirtyFiles > 0 && (
+        <Text color={theme.warn}>{state.dirtyFiles} dirty files</Text>
+      )}
+      <Text color={theme.dim}>symbols: {state.symbolsIndexed}</Text>
+      <Text color={theme.dim}>tags: {state.tagsRefreshed}</Text>
+      {state.currentFile && (
+        <Text color={theme.dim}>{state.currentFile}</Text>
+      )}
     </Box>
-  );
-}
-
-function rotate(input: string, amount: number) {
-  return input.slice(amount) + input.slice(0, amount);
+  )
 }
