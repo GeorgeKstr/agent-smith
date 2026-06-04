@@ -7,6 +7,22 @@ Rules:
 - chat: greeting, small talk, opinion, general non-action conversation.
 - meta: asks about the agent itself, usage, commands, setup, capabilities.
 No prose outside JSON.`;
+const PLAN_SYSTEM = `You triage a coding-agent prompt and produce an actionable plan.
+Reply ONLY JSON with this exact shape:
+{
+  "intent":{"kind":"task|chat|meta","confidence":0..1,"reason":"short"},
+  "objective":"one-sentence objective",
+  "tasks":["atomic step", "atomic step"],
+  "keywords":["search terms"],
+  "likelyFiles":["path hints"],
+  "likelySymbols":["symbol hints"],
+  "toolRequests":[{"tool":"find_files|find_symbols","query":"query text"}]
+}
+Rules:
+- For non-task prompts, keep tasks minimal and toolRequests empty.
+- For task prompts, create 2-5 concrete steps and focused keywords.
+- Only request tools that help narrow file/symbol discovery.
+- No prose outside JSON.`;
 const CHAT_PATTERNS = [
     /^(hi|hello|hey|yo)\b/i,
     /\bhow are you\b/i,
@@ -43,27 +59,81 @@ function heuristicIntent(prompt) {
     // Default to task so normal coding questions still get retrieval/context.
     return { kind: "task", confidence: 0.6, reason: "default coding intent" };
 }
-export async function classifyPromptIntent(args) {
-    const fallback = heuristicIntent(args.prompt);
+function clampConfidence(value, fallback) {
+    return typeof value === "number" && Number.isFinite(value)
+        ? Math.max(0, Math.min(1, value))
+        : fallback;
+}
+function cleanList(values, max) {
+    if (!Array.isArray(values))
+        return [];
+    return [...new Set(values.map((v) => String(v).trim()).filter(Boolean))].slice(0, max);
+}
+function cleanToolRequests(values) {
+    if (!Array.isArray(values))
+        return [];
+    const out = [];
+    for (const item of values) {
+        if (!item || typeof item !== "object")
+            continue;
+        const tool = String(item.tool ?? "").trim();
+        const query = String(item.query ?? "").trim();
+        if (!query)
+            continue;
+        if (tool === "find_files" || tool === "find_symbols")
+            out.push({ tool, query });
+        if (out.length >= 4)
+            break;
+    }
+    return out;
+}
+export async function evaluatePrompt(args) {
+    const fallbackIntent = heuristicIntent(args.prompt);
+    const fallback = {
+        intent: fallbackIntent,
+        objective: args.prompt.trim() || "Respond to user",
+        tasks: fallbackIntent.kind === "task"
+            ? ["Identify relevant files/symbols", "Implement or explain requested change", "Validate result"]
+            : ["Respond concisely to the user"],
+        keywords: cleanList(args.prompt
+            .split(/[^A-Za-z0-9_$.]+/)
+            .filter((w) => w.length >= 3), 10),
+        likelyFiles: [],
+        likelySymbols: [],
+        toolRequests: []
+    };
     if (!args.ollamaReady)
         return fallback;
     const result = await generateWithOllama({
         baseUrl: args.config.ollama.baseUrl,
         model: args.model,
-        system: INTENT_SYSTEM,
-        prompt: `PROMPT: ${args.prompt}\n\nReturn JSON intent classification:`,
-        options: optionsFromConfig(args.config, { num_predict: 120 })
+        system: PLAN_SYSTEM,
+        prompt: `PROMPT: ${args.prompt}\n\nReturn JSON plan:`,
+        options: optionsFromConfig(args.config, { num_predict: 320 })
     });
     if (!result.ok)
         return fallback;
     const parsed = extractJson(result.text);
-    if (!parsed?.kind || !["task", "chat", "meta"].includes(parsed.kind))
+    if (!parsed?.intent?.kind || !["task", "chat", "meta"].includes(parsed.intent.kind))
         return fallback;
-    return {
-        kind: parsed.kind,
-        confidence: typeof parsed.confidence === "number" && Number.isFinite(parsed.confidence)
-            ? Math.max(0, Math.min(1, parsed.confidence))
-            : fallback.confidence,
-        reason: typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : fallback.reason
+    const intent = {
+        kind: parsed.intent.kind,
+        confidence: clampConfidence(parsed.intent.confidence, fallback.intent.confidence),
+        reason: typeof parsed.intent.reason === "string" && parsed.intent.reason.trim()
+            ? parsed.intent.reason.trim()
+            : fallback.intent.reason
     };
+    return {
+        intent,
+        objective: typeof parsed.objective === "string" && parsed.objective.trim() ? parsed.objective.trim() : fallback.objective,
+        tasks: cleanList(parsed.tasks, 6).length ? cleanList(parsed.tasks, 6) : fallback.tasks,
+        keywords: cleanList(parsed.keywords, 12).length ? cleanList(parsed.keywords, 12) : fallback.keywords,
+        likelyFiles: cleanList(parsed.likelyFiles, 8),
+        likelySymbols: cleanList(parsed.likelySymbols, 8),
+        toolRequests: cleanToolRequests(parsed.toolRequests)
+    };
+}
+export async function classifyPromptIntent(args) {
+    const plan = await evaluatePrompt(args);
+    return plan.intent;
 }

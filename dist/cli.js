@@ -94,6 +94,10 @@ export function createCli() {
         const outcome = await runPatch({ db, root, config, events, indexer }, task, { apply: !opts.dryRun });
         console.log(`\n— PATCH (${outcome.attempts} attempt(s)) —`);
         console.log(outcome.message);
+        if (outcome.answer) {
+            console.log("\n— ANSWER —");
+            console.log(outcome.answer);
+        }
         if (outcome.files.length)
             console.log(`files: ${outcome.files.join(", ")}`);
         if (outcome.diff) {

@@ -196,6 +196,8 @@ export function App({ root, config, db, events, indexer }) {
                 const outcome = await runPatch({ db, root, config, events, indexer }, task, { apply: true });
                 if (outcome.diff)
                     setPatchText(outcome.diff);
+                if (outcome.answer)
+                    setAnswer(outcome.answer);
                 const lines = [outcome.message, ...outcome.checks.map((c) => `[${c.name}] ${c.ok ? "PASS" : "FAIL"} (exit ${c.exitCode})`)];
                 setOutput((o) => [...o, ...lines.filter(Boolean)]);
             }

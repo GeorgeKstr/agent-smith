@@ -10,7 +10,7 @@ import { checkPatchSafety } from "./safety.js";
 import { runChecks } from "./checks.js";
 import { reindexAffected } from "./reindexer.js";
 import { createTask, recordEdit, recordTestRun, finishTask } from "./memory.js";
-import { classifyPromptIntent } from "./intent.js";
+import { evaluatePrompt } from "./intent.js";
 /** Classify -> retrieve -> pack -> (optionally) answer with the local model. */
 export async function runAsk(deps, task) {
     const { db, root, config, events } = deps;
@@ -26,12 +26,13 @@ export async function runAsk(deps, task) {
         symbols: []
     };
     events.emit("task:phase", "triaging");
-    const intent = await classifyPromptIntent({
+    const plan = await evaluatePrompt({
         config,
         prompt: task,
         ollamaReady,
         model: classifierModel
     });
+    const intent = plan.intent;
     events.emit("task:intent", intent);
     if (intent.kind !== "task") {
         if (!ollamaReady) {
@@ -57,16 +58,19 @@ export async function runAsk(deps, task) {
             message: `Intent=${intent.kind} (${intent.reason})${chat.error ? ` | ${chat.error}` : ""}`
         };
     }
+    const toolNotes = runPlanningTools(db, plan);
+    const effectiveTask = composeEffectiveTask(task, plan, toolNotes);
     events.emit("task:phase", "classifying");
-    const classification = await classifyTask({ config, task, ollamaReady, model: classifierModel });
+    const baseClassification = await classifyTask({ config, task: effectiveTask, ollamaReady, model: classifierModel });
+    const classification = mergeClassification(baseClassification, plan);
     events.emit("task:phase", "retrieving");
-    const { files, seedSymbols } = await retrieve({ db, root, config, task, classification });
+    const { files, seedSymbols } = await retrieve({ db, root, config, task: effectiveTask, classification });
     events.emit("task:phase", "packing");
     const packet = await packContext({
         db,
         root,
         config,
-        task,
+        task: effectiveTask,
         mode: "ask",
         classification,
         files,
@@ -116,33 +120,45 @@ export async function runPatch(deps, task, options = { apply: true }) {
     const debuggerModel = resolveModelName(config.models.debugger || config.models.patcher, installed);
     const classifierModel = resolveModelName(config.models.tagger, installed);
     events.emit("task:phase", "triaging");
-    const intent = await classifyPromptIntent({
+    const plan = await evaluatePrompt({
         config,
         prompt: task,
         ollamaReady,
         model: classifierModel
     });
+    const intent = plan.intent;
     events.emit("task:intent", intent);
     if (intent.kind !== "task") {
+        const chat = await generateWithOllama({
+            baseUrl: config.ollama.baseUrl,
+            model: patcherModel,
+            system: "You are Smith. User is in build mode but prompt is non-task. Reply helpfully and ask a concise follow-up if needed.",
+            prompt: task,
+            options: optionsFromConfig(config, { num_predict: 320 })
+        });
         return {
-            ok: false,
+            ok: chat.ok,
             applied: false,
             attempts: 0,
+            answer: chat.text.trim(),
             files: [],
             checks,
-            message: `Prompt categorized as ${intent.kind} (${intent.reason}). Patch mode only runs on task-like prompts.`
+            message: `Prompt categorized as ${intent.kind} (${intent.reason}). Returned a direct response instead of patch generation.`
         };
     }
+    const toolNotes = runPlanningTools(db, plan);
+    const effectiveTask = composeEffectiveTask(task, plan, toolNotes);
     events.emit("task:phase", "classifying");
-    const classification = await classifyTask({ config, task, ollamaReady, model: classifierModel });
+    const baseClassification = await classifyTask({ config, task: effectiveTask, ollamaReady, model: classifierModel });
+    const classification = mergeClassification(baseClassification, plan);
     events.emit("task:phase", "retrieving");
-    const retrieval = await retrieve({ db, root, config, task, classification });
+    const retrieval = await retrieve({ db, root, config, task: effectiveTask, classification });
     events.emit("task:phase", "packing");
     const packet = await packContext({
         db,
         root,
         config,
-        task,
+        task: effectiveTask,
         mode: "patch",
         classification,
         files: retrieval.files,
@@ -282,4 +298,36 @@ async function gitApply(root, diff, checkOnly, reverse = false) {
 }
 function truncate(text, max) {
     return text.length <= max ? text : text.slice(0, max) + "…";
+}
+function mergeClassification(base, plan) {
+    const uniq = (values, max) => [...new Set(values.map((v) => v.trim()).filter(Boolean))].slice(0, max);
+    return {
+        ...base,
+        keywords: uniq([...plan.keywords, ...base.keywords], 14),
+        likelyFiles: uniq([...plan.likelyFiles, ...base.likelyFiles], 10),
+        likelySymbols: uniq([...plan.likelySymbols, ...base.likelySymbols], 10)
+    };
+}
+function composeEffectiveTask(original, plan, toolNotes) {
+    const checklist = plan.tasks.map((t, i) => `${i + 1}. ${t}`).join("\n");
+    const notes = toolNotes.length ? `\n## TOOL RESULTS\n${toolNotes.join("\n")}` : "";
+    return `${original}\n\n## OBJECTIVE\n${plan.objective}\n\n## EXECUTION CHECKLIST\n${checklist}${notes}`;
+}
+function runPlanningTools(db, plan) {
+    const notes = [];
+    for (const request of plan.toolRequests.slice(0, 4)) {
+        if (request.tool === "find_files") {
+            const rows = db
+                .prepare("SELECT path FROM files WHERE path LIKE ? ORDER BY path LIMIT 6")
+                .all(`%${request.query}%`);
+            notes.push(`[find_files:${request.query}] ${rows.length ? rows.map((r) => r.path).join(", ") : "no matches"}`);
+        }
+        else if (request.tool === "find_symbols") {
+            const rows = db
+                .prepare("SELECT s.name, f.path FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.name LIKE ? ORDER BY s.name LIMIT 8")
+                .all(`%${request.query}%`);
+            notes.push(`[find_symbols:${request.query}] ${rows.length ? rows.map((r) => `${r.name}@${r.path}`).join(", ") : "no matches"}`);
+        }
+    }
+    return notes;
 }

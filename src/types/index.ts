@@ -130,6 +130,21 @@ export type PromptIntent = {
   reason: string;
 };
 
+export type PromptToolRequest = {
+  tool: "find_files" | "find_symbols";
+  query: string;
+};
+
+export type PromptPlan = {
+  intent: PromptIntent;
+  objective: string;
+  tasks: string[];
+  keywords: string[];
+  likelyFiles: string[];
+  likelySymbols: string[];
+  toolRequests: PromptToolRequest[];
+};
+
 export type ScoredFile = {
   fileId: number;
   path: string;
@@ -167,6 +182,7 @@ export type PatchOutcome = {
   applied: boolean;
   attempts: number;
   diff?: string;
+  answer?: string;
   files: string[];
   checks: CheckResult[];
   message: string;
