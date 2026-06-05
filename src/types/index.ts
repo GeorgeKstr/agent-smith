@@ -38,6 +38,9 @@ export type SmithConfig = {
     maxPatchFiles: number;
     maxPatchLines: number;
   };
+  lan: {
+    port: number;
+  };
   theme: {
     mode: "matrix";
     showBootAnimation: boolean;

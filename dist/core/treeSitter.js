@@ -9,14 +9,30 @@ import crypto from "node:crypto";
  * block detection, so the index works everywhere out of the box.
  */
 const TS_LIKE = new Set(["typescript", "typescript-react", "javascript", "javascript-react"]);
+const PARSEABLE_LANGUAGES = new Set([
+    "typescript", "typescript-react", "javascript", "javascript-react",
+    "python",
+    "cpp", "c-header", "cpp-header", "c",
+    "csharp", "java", "kotlin", "scala", "swift", "go", "rust",
+    "ruby", "php", "r", "objective-c", "objective-cpp", "dart",
+    "lua", "perl", "shell",
+    "yaml", "toml", "sql", "graphql", "protobuf",
+    "vue", "svelte", "astro",
+    "ocaml", "fsharp", "elixir", "erlang", "haskell",
+    "nim", "zig", "clojure", "terraform", "dockerfile",
+    "sass", "scss", "less", "css", "html",
+]);
 export function isParseableLanguage(language) {
-    return TS_LIKE.has(language) || language === "python";
+    return PARSEABLE_LANGUAGES.has(language);
 }
+const C_LIKE = new Set(["c", "c-header", "cpp", "cpp-header", "objective-c", "objective-cpp"]);
 export function extractSymbols(language, content) {
     if (TS_LIKE.has(language))
         return extractTsSymbols(content);
     if (language === "python")
         return extractPythonSymbols(content);
+    if (C_LIKE.has(language))
+        return extractCSymbols(content);
     return [];
 }
 export function extractImports(language, content) {
@@ -24,6 +40,8 @@ export function extractImports(language, content) {
         return extractTsImports(content);
     if (language === "python")
         return extractPythonImports(content);
+    if (C_LIKE.has(language))
+        return extractCImports(content);
     return [];
 }
 function hashSlice(slice) {
@@ -298,6 +316,97 @@ function extractPythonImports(content) {
     const lineRe = /^[ \t]*(?:from\s+([.\w]+)\s+import|import\s+([.\w]+))/gm;
     for (let m; (m = lineRe.exec(content));) {
         const specifier = (m[1] ?? m[2] ?? "").trim();
+        if (!specifier || seen.has(specifier))
+            continue;
+        seen.add(specifier);
+        imports.push({ importText: m[0].trim().slice(0, 200), specifier });
+    }
+    return imports;
+}
+function extractCSymbols(content) {
+    const symbols = [];
+    const seen = new Set();
+    const push = (name, kind, start, end) => {
+        const slice = content.slice(start, end);
+        const startLine = lineAt(content, start);
+        const endLine = lineAt(content, end);
+        const key = `${name}:${kind}:${startLine}`;
+        if (seen.has(key))
+            return;
+        seen.add(key);
+        symbols.push({
+            name,
+            kind,
+            startLine,
+            endLine,
+            signature: slice.split("\n")[0].trim().slice(0, 200),
+            hash: hashSlice(slice)
+        });
+    };
+    // Functions: return_type name(params) { or return_type\nname(params) {
+    const fnRe = /(?:^|\n)(?:(?:static|inline|virtual|explicit|friend|constexpr|extern)\s+)*(?:[\w:*&<>,\s]+[\s*&])?\s*(\w+)\s*\(([^)]*)\)\s*(?:const|override|final|noexcept|throw\s*\([^)]*\)|\s)*\s*\{/g;
+    for (let m; (m = fnRe.exec(content));) {
+        const name = m[1];
+        if (/^(?:if|for|while|switch|catch|return|delete|new|sizeof|typedef|using|namespace|template|operator)$/.test(name))
+            continue;
+        const start = m.index + (m[0].startsWith("\n") ? 1 : 0);
+        const end = matchBraceBlock(content, m.index + m[0].indexOf("{", 0));
+        push(name, "function", start, end === -1 ? start + m[0].length : end);
+    }
+    // Classes
+    const classRe = /(?:^|\n)(?:(?:class|struct)\s+)(\w+)(?:\s*:\s*public\s+\w+)?\s*\{/g;
+    for (let m; (m = classRe.exec(content));) {
+        const name = m[1];
+        const start = m.index + (m[0].startsWith("\n") ? 1 : 0);
+        const braceIdx = content.indexOf("{", m.index);
+        const end = matchBraceBlock(content, braceIdx);
+        const kind = m[0].trimStart().startsWith("struct") ? "type" : "class";
+        push(name, kind, start, end === -1 ? start + m[0].length : end);
+    }
+    // Enums
+    const enumRe = /(?:^|\n)(?:enum\s+(?:class\s+)?)(\w+)\s*\{/g;
+    for (let m; (m = enumRe.exec(content));) {
+        const start = m.index + (m[0].startsWith("\n") ? 1 : 0);
+        const braceIdx = content.indexOf("{", m.index);
+        const end = matchBraceBlock(content, braceIdx);
+        push(m[1], "enum", start, end === -1 ? start + m[0].length : end);
+    }
+    // Methods inside class/struct bodies
+    const methodRe = /(?:^|\n)[ \t]+(?:virtual\s+|static\s+|inline\s+)?(?:[\w:*&<>,\s]+[\s*&])?\s*(\w+)\s*\(([^)]*)\)\s*(?:const|override|final|noexcept)?\s*\{/g;
+    const reserved = new Set(["if", "for", "while", "switch", "catch", "return", "delete", "new"]);
+    const classNames = [];
+    const classBodyStarts = [];
+    const classBodyMap = [];
+    // Find class bodies first
+    const classFinder = /(?:^|\n)(?:(?:class|struct)\s+)(\w+)(?:\s*:\s*public\s+\w+)?\s*\{/g;
+    for (let m; (m = classFinder.exec(content));) {
+        const braceIdx = content.indexOf("{", m.index);
+        const end = matchBraceBlock(content, braceIdx);
+        if (end !== -1) {
+            classBodyMap.push({ start: braceIdx, end, name: m[1] });
+        }
+    }
+    for (let m; (m = methodRe.exec(content));) {
+        const name = m[1];
+        if (reserved.has(name))
+            continue;
+        // Check if this method is inside a class body
+        const offset = m.index;
+        const container = classBodyMap.find(c => offset > c.start && offset < c.end);
+        if (!container)
+            continue;
+        const braceIdx = content.indexOf("{", m.index);
+        const end = matchBraceBlock(content, braceIdx);
+        push(`${container.name}.${name}`, "method", offset + 1, end === -1 ? offset + m[0].length : end);
+    }
+    return symbols.sort((a, b) => a.startLine - b.startLine);
+}
+function extractCImports(content) {
+    const imports = [];
+    const seen = new Set();
+    const lineRe = /^[ \t]*#\s*include\s+[<"]([^>"]+)[>"]/gm;
+    for (let m; (m = lineRe.exec(content));) {
+        const specifier = m[1].trim();
         if (!specifier || seen.has(specifier))
             continue;
         seen.add(specifier);

@@ -5,6 +5,7 @@ import { theme } from "../theme.js"
 import { Header } from "../components/Header.js"
 import { ContentArea } from "../components/ContentArea.js"
 import { MatrixRain } from "../components/MatrixRain.js"
+import { LiveOutputPane, LIVE_PANE_ROWS } from "../components/LiveOutputPane.js"
 
 export type MainView = "context" | "patch" | "answer"
 
@@ -31,6 +32,10 @@ export type MainScreenProps = {
   scanProgress?: number
   scanScanned?: number
   scanTotal?: number
+  streamText: string
+  streamTokens: number
+  streamStartMs: number
+  pendingPrompt: string | null
 }
 
 function fitLine(text: string, width: number): string {
@@ -199,8 +204,10 @@ export function MainScreen(props: MainScreenProps) {
   const contentMaxWidth = Math.max(20, frameInnerWidth - 4)
 
   // Fixed chrome, roughly: border + header + input + status + footer.
+  // When busy, reserve rows for the live output pane above history.
   // Keep ContentArea bounded so it cannot push the footer past the viewport.
-  const contentLines = Math.max(3, termRows - 14)
+  const livePaneRows = props.busy ? LIVE_PANE_ROWS : 0
+  const contentLines = Math.max(3, termRows - 14 - livePaneRows)
   const rainHeight = Math.max(1, termRows - 6)
 
   const footer = fitLine(
@@ -237,6 +244,18 @@ export function MainScreen(props: MainScreenProps) {
         </Box>
 
         <Box flexGrow={1} flexShrink={1} flexDirection="column" overflow="hidden">
+          {props.busy && (
+            <Box flexShrink={0} flexDirection="column" height={LIVE_PANE_ROWS} width={frameInnerWidth} overflow="hidden">
+              <LiveOutputPane
+                text={props.streamText}
+                tokens={props.streamTokens}
+                startMs={props.streamStartMs}
+                model={props.model}
+                phase={props.phase}
+                width={frameInnerWidth}
+              />
+            </Box>
+          )}
           <ContentArea
             output={props.output}
             logs={props.logs}
@@ -247,6 +266,7 @@ export function MainScreen(props: MainScreenProps) {
             scrollOffset={props.scrollOffset}
             maxLines={contentLines}
             maxWidth={contentMaxWidth}
+            pendingPrompt={props.pendingPrompt}
           />
         </Box>
 

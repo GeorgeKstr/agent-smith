@@ -1,7 +1,10 @@
 const DEFAULT_TIMEOUT_MS = 120_000;
-async function fetchWithTimeout(url, init, timeoutMs) {
+async function fetchWithTimeout(url, init, timeoutMs, externalSignal) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    if (externalSignal) {
+        externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
     try {
         return await fetch(url, { ...init, signal: controller.signal });
     }
@@ -176,6 +179,7 @@ export function resolveModelName(preferred, installed) {
  * so the agent degrades gracefully when the model or server is unavailable.
  */
 export async function generateWithOllama(args) {
+    const useStream = Boolean(args.onToken);
     try {
         const response = await fetchWithTimeout(`${apiBase(args.baseUrl)}/api/generate`, {
             method: "POST",
@@ -184,15 +188,59 @@ export async function generateWithOllama(args) {
                 model: args.model,
                 prompt: args.prompt,
                 system: args.system,
-                stream: false,
+                stream: useStream,
                 options: args.options ?? {}
             })
-        }, args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+        }, args.timeoutMs ?? DEFAULT_TIMEOUT_MS, args.signal);
         if (!response.ok) {
             return { ok: false, text: "", error: `Ollama ${response.status} ${response.statusText}` };
         }
-        const data = (await response.json());
-        return { ok: true, text: data.response ?? "" };
+        if (!useStream) {
+            const data = (await response.json());
+            return { ok: true, text: data.response ?? "" };
+        }
+        // Streaming mode — parse NDJSON line by line
+        if (!response.body) {
+            return { ok: false, text: "", error: "No response body for streaming" };
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let fullText = "";
+        let tokenCount = 0;
+        let evalDurationMs = 0;
+        outer: while (true) {
+            const { done, value } = await reader.read();
+            if (done)
+                break;
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split("\n");
+            buf = lines.pop() ?? "";
+            for (const line of lines) {
+                if (!line.trim())
+                    continue;
+                if (args.signal?.aborted) {
+                    reader.cancel().catch(() => undefined);
+                    break outer;
+                }
+                try {
+                    const chunk = JSON.parse(line);
+                    if (typeof chunk.response === "string" && chunk.response) {
+                        fullText += chunk.response;
+                        tokenCount++;
+                        args.onToken(chunk.response, fullText);
+                    }
+                    if (chunk.done) {
+                        if (typeof chunk.eval_count === "number")
+                            tokenCount = chunk.eval_count;
+                        if (typeof chunk.eval_duration === "number")
+                            evalDurationMs = Math.round(chunk.eval_duration / 1_000_000);
+                    }
+                }
+                catch { /* skip malformed chunk */ }
+            }
+        }
+        return { ok: true, text: fullText, tokenCount, evalDurationMs };
     }
     catch (error) {
         return { ok: false, text: "", error: error instanceof Error ? error.message : String(error) };

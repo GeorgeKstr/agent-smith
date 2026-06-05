@@ -18,12 +18,15 @@ function lineColor(line: string): string {
   return theme.dim
 }
 
-function outputLineColor(line: string): string {
+function outputLineColor(line: string, busy: boolean, isLastPrompt: boolean): string {
   if (line.startsWith("error:")) return "red"
   if (line.startsWith("✓") || line.includes(" PASS ")) return "green"
   if (line.includes(" FAIL ")) return "red"
   if (line.startsWith("⌘ ")) return "cyan"
-  if (line.startsWith("▶ ")) return theme.accent
+  if (line.startsWith("▶ ")) {
+    if (busy && isLastPrompt) return "yellow"
+    return theme.accent
+  }
   if (line.startsWith("AI:")) return theme.primary
   if (line.startsWith("↻") || line.startsWith("↶")) return "yellow"
   if (line.startsWith("Active model:") || line.startsWith("* ")) return "magenta"
@@ -99,7 +102,16 @@ function wrapLine(text: string, width: number): string[] {
   while (rest.length > max) {
     const chunk = rest.slice(0, max + 1)
     let cut = chunk.lastIndexOf(" ")
-    if (cut < Math.floor(max * 0.45)) cut = max
+    if (cut < Math.floor(max * 0.45)) {
+      const nextSpace = rest.indexOf(" ", max)
+      if (nextSpace > 0) {
+        cut = nextSpace
+      } else {
+        out.push(rest)
+        rest = ""
+        break
+      }
+    }
     out.push(rest.slice(0, cut).trimEnd())
     rest = rest.slice(cut).trimStart()
   }
@@ -133,6 +145,7 @@ export const ContentArea = React.memo(function ContentArea({
   scrollOffset,
   maxLines,
   maxWidth,
+  pendingPrompt,
 }: {
   output: string[]
   logs: string[]
@@ -143,9 +156,10 @@ export const ContentArea = React.memo(function ContentArea({
   scrollOffset: number
   maxLines: number
   maxWidth: number
+  pendingPrompt?: string | null
 }) {
-  const windowLines = (lines: string[]) => {
-    const safeMax = Math.max(3, maxLines)
+  const windowLines = <T,>(lines: T[], overrideMax?: number) => {
+    const safeMax = Math.max(3, overrideMax ?? maxLines)
     const maxOffset = Math.max(0, lines.length - safeMax)
     const offset = Math.min(scrollOffset, maxOffset)
     const end = Math.max(0, lines.length - offset)
@@ -165,19 +179,153 @@ export const ContentArea = React.memo(function ContentArea({
   const answerDisplay = wrapDisplayLines(markdownLines(answer), maxWidth)
   const patchLines = wrapPlainLines(patchText.split("\n"), maxWidth)
 
-  if (output.length > 0) {
-    const win = windowLines(wrapPlainLines(output, maxWidth))
+  // Reserve 2 rows for the pinned pending-prompt row when it is active
+  const pendingRows = pendingPrompt ? 2 : 0
+  const historyMaxLines = Math.max(2, maxLines - pendingRows)
+
+  type Bubble = {
+    role: "user" | "assistant" | "system" | "patch" | "info"
+    lines: string[]
+  }
+
+  type BubbleRow = {
+    id: string
+    kind: "HEAD" | "BODY"
+    text: string
+    labelColor: string
+    bodyColor: string
+    bg: string
+    border: string
+  }
+
+  const parseBubbles = (lines: string[]): Bubble[] => {
+    const bubbles: Bubble[] = []
+    let cur: Bubble | null = null
+
+    const push = () => {
+      if (!cur || cur.lines.length === 0) return
+      bubbles.push(cur)
+      cur = null
+    }
+
+    for (const raw of lines) {
+      if (raw.startsWith("▶ ")) {
+        push()
+        cur = { role: "user", lines: [raw.slice(2)] }
+        continue
+      }
+      if (raw.startsWith("AI: ")) {
+        push()
+        cur = { role: "assistant", lines: [raw.slice(4)] }
+        continue
+      }
+      if (raw.startsWith("PATCH: ")) {
+        push()
+        cur = { role: "patch", lines: [raw.slice(7)] }
+        continue
+      }
+      if (raw.startsWith("⌘ ")) {
+        push()
+        cur = { role: "system", lines: [raw.slice(2)] }
+        continue
+      }
+      if (raw.startsWith("error:")) {
+        push()
+        cur = { role: "info", lines: [raw] }
+        continue
+      }
+      if (raw.startsWith("  ") && cur) {
+        cur.lines.push(raw.trimStart())
+        continue
+      }
+      if (!cur) {
+        cur = { role: "info", lines: [raw] }
+      } else {
+        cur.lines.push(raw)
+      }
+    }
+    push()
+
+    return bubbles
+  }
+
+  const bubbleStyle = (role: Bubble["role"]) => {
+    if (role === "user") return { label: "You", labelColor: theme.accent, text: "#c8ffd8", bg: "#0b3d23", border: theme.accent }
+    if (role === "assistant") return { label: "Smith", labelColor: theme.primary, text: "white", bg: "#1a1a1a", border: theme.primary }
+    if (role === "patch") return { label: "Patch", labelColor: "magenta", text: "#f3d1ff", bg: "#2a1038", border: "magenta" }
+    if (role === "system") return { label: "System", labelColor: "cyan", text: theme.dim, bg: "#111827", border: "cyan" }
+    return { label: "Info", labelColor: "yellow", text: "white", bg: "#2a220f", border: "yellow" }
+  }
+
+  const buildBubbleRows = (bubbles: Bubble[]): BubbleRow[] => {
+    return bubbles.flatMap((b, i): BubbleRow[] => {
+      const style = bubbleStyle(b.role)
+      const head = ` ${style.label} `
+      const content = b.lines.flatMap((ln) => wrapLine(ln, Math.max(20, maxWidth - 6)))
+      const bodyWidth = Math.max(head.length, ...content.map((ln) => ln.length))
+      const paddedHead = head.padEnd(bodyWidth, " ")
+      const paddedContent = content.map((ln) => ln.padEnd(bodyWidth, " "))
+      return [
+        {
+          id: `b-${i}-h`,
+          kind: "HEAD",
+          text: paddedHead,
+          labelColor: style.labelColor,
+          bodyColor: style.text,
+          bg: style.bg,
+          border: style.border,
+        },
+        ...paddedContent.map((ln, lineIndex) => ({
+          id: `b-${i}-l-${lineIndex}`,
+          kind: "BODY" as const,
+          text: ln,
+          labelColor: style.labelColor,
+          bodyColor: style.text,
+          bg: style.bg,
+          border: style.border,
+        })),
+      ]
+    })
+  }
+
+  const historyRows = React.useMemo(() => buildBubbleRows(parseBubbles(output)), [output, maxWidth])
+
+  if (output.length > 0 || pendingPrompt) {
+    const win = windowLines(historyRows, historyMaxLines)
     return (
       <Box flexDirection="column" paddingX={1}>
         <Text color={theme.primary} backgroundColor={BG}>History</Text>
         <Text color={theme.dim} backgroundColor={BG}>{"─".repeat(40)}</Text>
         {win.hasOlder && <Text color={theme.dim} backgroundColor={BG}>↑ older messages</Text>}
-        {win.visible.map((line, i) => (
-          <Text key={i} color={outputLineColor(line)} backgroundColor={BG}>
-            {line}
-          </Text>
-        ))}
+        {win.visible.map((row) => {
+          if (row.kind === "HEAD") {
+            return (
+              <Text key={row.id} backgroundColor={row.bg} color={row.labelColor} bold>
+                <Text color={row.border} backgroundColor={row.bg}>┌ </Text>
+                {row.text}
+                <Text color={row.border} backgroundColor={row.bg}> ┐</Text>
+              </Text>
+            )
+          }
+          return (
+            <Text key={row.id} backgroundColor={row.bg} color={row.bodyColor}>
+              <Text color={row.border} backgroundColor={row.bg}>│ </Text>
+              {row.text}
+              <Text color={row.border} backgroundColor={row.bg}> │</Text>
+            </Text>
+          )
+        })}
         {win.hasNewer && <Text color={theme.dim} backgroundColor={BG}>↓ newer messages</Text>}
+        {pendingPrompt && (
+          <>
+            <Text color={theme.dim} backgroundColor={BG}>{"─".repeat(40)}</Text>
+            <Text backgroundColor="#002800">
+              <Text color="#00ff44" bold backgroundColor="#002800">{"┃ ▶ "}</Text>
+              <Text color="#00ff44" bold backgroundColor="#002800">{pendingPrompt}</Text>
+              <Text color="#00ff44" backgroundColor="#002800">{" ⟳"}</Text>
+            </Text>
+          </>
+        )}
       </Box>
     )
   }

@@ -24,20 +24,25 @@ Rules:
 - Only request tools that help narrow file/symbol discovery.
 - No prose outside JSON.`;
 const CHAT_PATTERNS = [
-    /^(hi|hello|hey|yo)\b/i,
+    /^(hi|hello|hey|yo|sup|howdy)\b/i,
     /\bhow are you\b/i,
     /\bwhat'?s up\b/i,
     /\bthank(s| you)\b/i,
     /\bwho are you\b/i,
-    /\btell me a joke\b/i
+    /\btell me a joke\b/i,
+    /^(good (morning|afternoon|evening|night))\b/i,
+    /^(lol|haha|ok|okay|cool|nice|great|awesome|alright|sure)\b/i
 ];
 const TASK_PATTERNS = [
     /\b(fix|implement|add|remove|update|change|refactor|rename|debug|optimi[sz]e)\b/i,
-    /\b(patch|diff|apply|compile|build|test|failing|error|bug)\b/i,
+    /\b(patch|diff|apply|compile|build|test|failing|error|bug|issue|broken)\b/i,
     /\b(where|how|why)\b.*\b(code|function|class|file|symbol|module)\b/i,
-    /\b(write|generate)\b.*\b(code|function|class|test)\b/i
+    /\b(write|generate|create)\b.*\b(code|function|class|test|component)\b/i,
+    /\b(explain|show|find|list|search)\b.*\b(code|function|class|file|symbol)\b/i,
+    /\bwhat (does|is|are)\b.*\b(function|class|module|file|variable)\b/i
 ];
 const META_PATTERNS = [
+    /^\/[a-z]/i,
     /\b(help|usage|command|shortcut|mode|config|setting|capabilit(y|ies))\b/i,
     /\bwhat can you do\b/i,
     /\bhow do i use\b/i,
@@ -47,11 +52,15 @@ function heuristicIntent(prompt) {
     const text = prompt.trim();
     if (!text)
         return { kind: "chat", confidence: 0.9, reason: "empty prompt" };
+    // Slash commands are always meta — skip Ollama entirely
+    if (/^\/[a-z]/i.test(text)) {
+        return { kind: "meta", confidence: 0.97, reason: "slash command" };
+    }
     if (CHAT_PATTERNS.some((p) => p.test(text))) {
-        return { kind: "chat", confidence: 0.88, reason: "small-talk cue" };
+        return { kind: "chat", confidence: 0.92, reason: "small-talk cue" };
     }
     if (META_PATTERNS.some((p) => p.test(text))) {
-        return { kind: "meta", confidence: 0.78, reason: "agent-usage cue" };
+        return { kind: "meta", confidence: 0.85, reason: "agent-usage cue" };
     }
     if (TASK_PATTERNS.some((p) => p.test(text))) {
         return { kind: "task", confidence: 0.82, reason: "code-task cue" };
@@ -104,12 +113,17 @@ export async function evaluatePrompt(args) {
     };
     if (!args.ollamaReady)
         return fallback;
+    // Skip Ollama for high-confidence non-task heuristic hits — they don't
+    // use the plan fields anyway, and the heuristics are reliable here.
+    if (fallbackIntent.kind !== "task" && fallbackIntent.confidence >= 0.85) {
+        return fallback;
+    }
     const result = await generateWithOllama({
         baseUrl: args.config.ollama.baseUrl,
         model: args.model,
         system: PLAN_SYSTEM,
         prompt: `PROMPT: ${args.prompt}\n\nReturn JSON plan:`,
-        options: optionsFromConfig(args.config, { num_predict: 320 })
+        options: optionsFromConfig(args.config, { num_predict: 180 })
     });
     if (!result.ok)
         return fallback;

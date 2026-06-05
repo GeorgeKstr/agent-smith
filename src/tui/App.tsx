@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react"
+import React, { useEffect, useState, useCallback, useRef } from "react"
 import { useApp, useInput, useStdout } from "ink"
 import fs from "node:fs/promises"
 import path from "node:path"
@@ -7,6 +7,7 @@ import type { SmithDatabase } from "../core/db.js"
 import type { Indexer } from "../core/indexer.js"
 import { runAsk, runPatch, undoPatchFromDiff } from "../core/taskRunner.js"
 import { isOllamaAvailable, listOllamaModels, resolveModelName } from "../core/ollama.js"
+import { startLanServer } from "../core/lanServer.js"
 import { BootScreen } from "./screens/BootScreen.js"
 import { MainScreen } from "./screens/MainScreen.js"
 import { IndexDashboard } from "./screens/IndexDashboard.js"
@@ -37,6 +38,16 @@ type ExecutionRecord = {
   prevPacket: ContextPacket | null
   prevIntent: PromptIntent | null
   undoDiff?: string
+}
+
+type UiSyncChatEvent = {
+  entry: {
+    role: "user" | "assistant" | "system" | "patch"
+    content: string
+    ts: number
+  }
+  source?: "web" | "cli" | "system"
+  mode?: "discuss" | "build"
 }
 
 type PersistedUiState = {
@@ -119,6 +130,19 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   const [executions, setExecutions] = useState<ExecutionRecord[]>([])
   const [uiStateLoaded, setUiStateLoaded] = useState(false)
   const [view, setView] = useState<"main" | "index">("main")
+  const [streamText, setStreamText] = useState("")
+  const [streamTokens, setStreamTokens] = useState(0)
+  const streamStartRef = useRef<number>(0)
+  // Streaming: write to refs synchronously on every token, flush to state at ~12fps.
+  // This prevents React/Ink from dropping rapid-fire setState calls.
+  const streamBuf = useRef<string>("")
+  const streamTokRef = useRef<number>(0)
+  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null)
+  const lanRef = useRef<{ port: number; stop: () => void } | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const escTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const seenWebChatRef = useRef<Set<string>>(new Set())
+  const webTaskActiveRef = useRef(false)
 
   const appendOutput = useCallback((lines: string | string[]) => {
     const next = Array.isArray(lines) ? lines : [lines]
@@ -199,6 +223,27 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     }
   }, [events])
 
+  useEffect(() => {
+    return () => {
+      lanRef.current?.stop()
+    }
+  }, [])
+
+  // Flush streaming refs to rendered state at ~12fps while busy.
+  // Using refs avoids overwhelming Ink's reconciler with per-token setState calls.
+  useEffect(() => {
+    if (!busy) {
+      setStreamText(streamBuf.current)
+      setStreamTokens(streamTokRef.current)
+      return
+    }
+    const tick = setInterval(() => {
+      setStreamText(streamBuf.current)
+      setStreamTokens(streamTokRef.current)
+    }, 80)
+    return () => clearInterval(tick)
+  }, [busy])
+
   const refreshModels = useCallback(async () => {
     const online = await isOllamaAvailable(config.ollama.baseUrl)
     setOllamaReady(online)
@@ -226,21 +271,133 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   }, [])
 
   useEffect(() => {
-    const onPhase = (p: string) => setPhase(p)
+    const onPhase = (p: string) => {
+      setPhase(p)
+      if (webTaskActiveRef.current) {
+        if (p === "idle") {
+          setBusy(false)
+          setPendingPrompt(null)
+          webTaskActiveRef.current = false
+        } else {
+          setBusy(true)
+        }
+      }
+      // Reset streaming buffer on each new phase so the pane shows only current generation
+      streamBuf.current = ""
+      streamTokRef.current = 0
+      streamStartRef.current = Date.now()
+      setStreamText("")
+      setStreamTokens(0)
+    }
     const onIntent = (i: PromptIntent) => setIntent(i)
     const onContext = (pkt: ContextPacket) => setPacket(pkt)
+    const onAnswer = (text: string) => setAnswer(text)
     const onPatch = (d: string) => setPatchText(d)
+    const onStream = (data: { text: string }) => {
+      // Write to refs only — ticker flushes to state at 80ms
+      streamBuf.current = data.text
+      streamTokRef.current++
+    }
     events.on("task:phase", onPhase)
     events.on("task:intent", onIntent)
     events.on("task:context", onContext)
+    events.on("task:answer", onAnswer)
     events.on("task:patch", onPatch)
+    events.on("task:stream", onStream)
     return () => {
       events.off("task:phase", onPhase)
       events.off("task:intent", onIntent)
       events.off("task:context", onContext)
+      events.off("task:answer", onAnswer)
       events.off("task:patch", onPatch)
+      events.off("task:stream", onStream)
     }
   }, [events])
+
+  useEffect(() => {
+    const onModeSet = (payload: { mode?: "discuss" | "build"; source?: "web" | "cli" | "system" }) => {
+      if (payload?.mode === "build" || payload?.mode === "discuss") {
+        setMode(payload.mode)
+      }
+    }
+
+    const onModelSet = (payload: { model?: string | null; source?: "web" | "cli" | "system" }) => {
+      if (typeof payload?.model === "string") {
+        const trimmed = payload.model.trim()
+        setModelOverride(trimmed || null)
+      } else if (payload?.model === null) {
+        setModelOverride(null)
+      }
+    }
+
+    const onChatCleared = () => {
+      setOutput([])
+      setAnswer("")
+      setPatchText("")
+      setPacket(null)
+      setIntent(null)
+      setExecutions([])
+      setScrollOffset(0)
+      setBusy(false)
+      setPendingPrompt(null)
+      webTaskActiveRef.current = false
+      seenWebChatRef.current.clear()
+    }
+
+    const onChatEntry = (payload: UiSyncChatEvent) => {
+      if (payload?.source !== "web" || !payload.entry?.content) return
+      const key = `${payload.entry.ts}|${payload.entry.role}|${payload.entry.content}`
+      if (seenWebChatRef.current.has(key)) return
+      seenWebChatRef.current.add(key)
+
+      if (payload.entry.role === "user") {
+        webTaskActiveRef.current = true
+        setBusy(true)
+        setPendingPrompt(payload.entry.content)
+        streamBuf.current = ""
+        streamTokRef.current = 0
+        streamStartRef.current = Date.now()
+        setStreamText("")
+        setStreamTokens(0)
+        if (payload.mode === "build" || payload.mode === "discuss") {
+          setMode(payload.mode)
+        }
+        const promptLine = `▶ ${payload.mode === "discuss" ? "discuss" : "build"}: ${payload.entry.content}`
+        appendOutput(promptLine)
+        return
+      }
+      if (payload.entry.role === "assistant") {
+        setPendingPrompt(null)
+        appendOutput(toChatLines("AI: ", payload.entry.content))
+        return
+      }
+      if (payload.entry.role === "patch") {
+        setPendingPrompt(null)
+        appendOutput(toChatLines("PATCH: ", payload.entry.content))
+        return
+      }
+      appendOutput(`⌘ ${payload.entry.content}`)
+    }
+
+    events.on("ui:mode:set", onModeSet)
+    events.on("ui:model:set", onModelSet)
+    events.on("chat:cleared", onChatCleared)
+    events.on("chat:entry", onChatEntry)
+    return () => {
+      events.off("ui:mode:set", onModeSet)
+      events.off("ui:model:set", onModelSet)
+      events.off("chat:cleared", onChatCleared)
+      events.off("chat:entry", onChatEntry)
+    }
+  }, [events, appendOutput])
+
+  useEffect(() => {
+    events.emit("ui:mode:set", { mode, source: "cli" })
+  }, [events, mode])
+
+  useEffect(() => {
+    events.emit("ui:model:set", { model: modelOverride, source: "cli" })
+  }, [events, modelOverride])
 
   const undoLast = useCallback(async () => {
     const last = executions[executions.length - 1]
@@ -317,6 +474,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           "  /index       Show the index dashboard (file summaries, graph, stats)",
           "  /model [name|list|reset]  List or switch Ollama model",
           "  /tools       Show Qwen tool-calling integration notes",
+          "  /lan         Start/stop LAN web server",
           "  /undo        Undo last prompt result (files + convo)",
           "  /clear       Clear the output area",
           "  /help        Show this help message",
@@ -397,6 +555,35 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         setIntent(null)
         setExecutions([])
         setScrollOffset(0)
+        seenWebChatRef.current.clear()
+        events.emit("chat:cleared", { source: "cli" })
+        return true
+      }
+      case "/lan": {
+        if (lanRef.current) {
+          lanRef.current.stop()
+          lanRef.current = null
+          appendOutput("✓ LAN server stopped")
+        } else {
+          try {
+            const lan = startLanServer({
+              root,
+              config,
+              db,
+              events,
+              indexer,
+              port: config.lan.port,
+              initialOutput: output,
+              initialMode: mode,
+              initialModelOverride: modelOverride
+            })
+            lanRef.current = lan
+            const url = `http://localhost:${lan.port}`
+            appendOutput(`✓ LAN server started at ${url}`)
+          } catch (err) {
+            appendOutput(`✗ Failed to start LAN server: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
         return true
       }
       case "/undo": {
@@ -422,11 +609,16 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     mode,
     undoLast,
     appendOutput,
+    config,
     config.models.patcher,
     config.models.summarizer,
     modelOverride,
     refreshModels,
-    pickModel
+    pickModel,
+    root,
+    db,
+    events,
+    output
   ])
 
   const submit = useCallback(async () => {
@@ -458,35 +650,56 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     setPacket(null)
     setIntent(null)
     setScrollOffset(0)
-    appendOutput(`▶ ${mode}: ${task}`)
+    // Show the active prompt as a pinned row at the bottom of history immediately
+    setPendingPrompt(task)
+    // Reset stream state via refs (ticker will flush to state)
+    streamBuf.current = ""
+    streamTokRef.current = 0
+    streamStartRef.current = Date.now()
 
     let undoDiff: string | undefined
 
+    abortRef.current = new AbortController()
+    const signal = abortRef.current.signal
+
+    // Pause background indexer summarization so the model is fully available
+    indexer.pause()
     try {
       const activeModel = modelOverride
         ? resolveModelName(modelOverride, availableModels)
         : undefined
+
+      const promptLine = `▶ ${mode}: ${task}`
+
       if (mode === "discuss") {
-        const result = await runAsk({ db, root, config, events, indexer }, task, { modelOverride: activeModel })
+        const result = await runAsk({ db, root, config, events, indexer }, task, { modelOverride: activeModel, signal })
         const answerText = result.answer || result.message || "(no answer)"
         setAnswer(answerText)
-        appendOutput(toChatLines("AI: ", answerText))
+        // Append prompt + response together so history is consistent
+        appendOutput([promptLine, ...toChatLines("AI: ", answerText)])
       } else {
         const outcome = await runPatch(
           { db, root, config, events, indexer },
           task,
-          { apply: true, modelOverride: activeModel }
+          { apply: true, modelOverride: activeModel, signal }
         )
         if (outcome.diff) setPatchText(outcome.diff)
         if (outcome.answer) setAnswer(outcome.answer)
-        if (outcome.answer) appendOutput(toChatLines("AI: ", outcome.answer))
         if (outcome.applied && outcome.diff) undoDiff = outcome.diff
-        const lines = [outcome.message, ...outcome.checks.map((c) => `[${c.name}] ${c.ok ? "PASS" : "FAIL"} (exit ${c.exitCode})`)]
-        appendOutput(lines.filter(Boolean) as string[])
+        const statusLines = [outcome.message, ...outcome.checks.map((c) => `[${c.name}] ${c.ok ? "PASS" : "FAIL"} (exit ${c.exitCode})`)]
+        appendOutput([
+          promptLine,
+          ...(outcome.answer ? toChatLines("AI: ", outcome.answer) : []),
+          ...(statusLines.filter(Boolean) as string[])
+        ])
       }
     } catch (error) {
-      appendOutput(`error: ${error instanceof Error ? error.message : String(error)}`)
+      const promptLine = `▶ ${mode}: ${task}`
+      appendOutput([promptLine, `error: ${error instanceof Error ? error.message : String(error)}`])
     } finally {
+      indexer.resume()
+      setPendingPrompt(null)
+      abortRef.current = null
       setExecutions((e) => [
         ...e,
         {
@@ -524,6 +737,27 @@ export function App({ root, config, db, events, indexer }: AppProps) {
 
   useInput((char, key) => {
     if (key.ctrl && char === "c") { quit(); return }
+
+    // Escape handling — works even when busy (for abort)
+    if (key.escape) {
+      if (input) { setInput(""); return }
+      if (busy) {
+        if (escTimerRef.current) {
+          clearTimeout(escTimerRef.current)
+          escTimerRef.current = null
+          abortRef.current?.abort()
+          abortRef.current = null
+          setBusy(false)
+          setPhase("idle")
+          appendOutput("⏹ Cancelled")
+          return
+        }
+        escTimerRef.current = setTimeout(() => { escTimerRef.current = null }, 400)
+        return
+      }
+      return
+    }
+
     if (busy) return
 
     if (key.ctrl && key.upArrow) {
@@ -556,7 +790,6 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     }
     if (key.pageUp) { setScrollOffset((v) => v + 12); return }
     if (key.pageDown) { setScrollOffset((v) => Math.max(0, v - 12)); return }
-    if (key.escape) { setInput(""); return }
     if (key.return) { void submit(); return }
     if (key.backspace || key.delete) { setPromptHistoryIndex(null); setInput((v) => v.slice(0, -1)); return }
     if (char && !key.ctrl && !key.meta) { setPromptHistoryIndex(null); setInput((v) => v + char) }
@@ -606,6 +839,10 @@ export function App({ root, config, db, events, indexer }: AppProps) {
       scanProgress={boot.progress}
       scanScanned={boot.filesScanned}
       scanTotal={boot.filesTotal}
+      streamText={streamText}
+      streamTokens={streamTokens}
+      streamStartMs={streamStartRef.current}
+      pendingPrompt={pendingPrompt}
     />
   )
 }

@@ -43,6 +43,9 @@ const configSchema = z.object({
     maxPatchFiles: z.number(),
     maxPatchLines: z.number()
   }),
+  lan: z.object({
+    port: z.number()
+  }).optional(),
   theme: z.object({
     mode: z.literal("matrix"),
     showBootAnimation: z.boolean(),
@@ -100,6 +103,9 @@ const DEFAULT_CONFIG: SmithConfig = {
     maxPatchFiles: 6,
     maxPatchLines: 500
   },
+  lan: {
+    port: 3000
+  },
   theme: {
     mode: "matrix",
     showBootAnimation: true,
@@ -122,5 +128,9 @@ export async function ensureConfig(root: string): Promise<void> {
 export async function loadConfig(root: string): Promise<SmithConfig> {
   const configPath = path.join(root, ".agent", "config.json");
   const raw = await fs.readFile(configPath, "utf8");
-  return configSchema.parse(JSON.parse(raw));
+  const parsed = configSchema.parse(JSON.parse(raw));
+  return {
+    ...parsed,
+    lan: parsed.lan ?? { port: 3000 }
+  };
 }

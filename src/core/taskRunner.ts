@@ -36,7 +36,7 @@ export type AskResult = {
 export async function runAsk(
   deps: RunnerDeps,
   task: string,
-  options: { modelOverride?: string } = {}
+  options: { modelOverride?: string; signal?: AbortSignal } = {}
 ): Promise<AskResult> {
   const { db, root, config, events } = deps;
   const ollamaReady = await isOllamaAvailable(config.ollama.baseUrl);
@@ -65,6 +65,7 @@ export async function runAsk(
 
   if (intent.kind !== "task") {
     if (!ollamaReady) {
+      events.emit("task:context", emptyPacket)
       return {
         ok: true,
         answer: "",
@@ -75,14 +76,17 @@ export async function runAsk(
 
     events.emit("task:phase", "thinking");
     const chat = await generateWithOllama({
+      signal: options.signal,
       baseUrl: config.ollama.baseUrl,
       model: answerModel,
       system:
         "You are Smith. For chat/meta prompts, respond concisely and helpfully. Do not propose patches or diffs unless asked.",
       prompt: task,
-      options: optionsFromConfig(config, { num_predict: 400 })
+      options: optionsFromConfig(config, { num_predict: 400 }),
+      onToken: (_, text) => { events.emit("task:stream", { text }); }
     });
     const answer = await finalizeAnswer({
+      signal: options.signal,
       config,
       model: answerModel,
       basePrompt: task,
@@ -90,6 +94,8 @@ export async function runAsk(
       fallback: "I can help with that. Ask me about your project, architecture, or a coding task."
     });
 
+    events.emit("task:context", emptyPacket)
+    events.emit("task:answer", answer)
     return {
       ok: chat.ok,
       answer,
@@ -107,7 +113,10 @@ export async function runAsk(
   events.emit("task:phase", "classifying");
 
   const baseClassification = await classifyTask({ config, task: effectiveTask, ollamaReady, model: classifierModel });
-  const classification = mergeClassification(baseClassification, plan);
+  let classification = mergeClassification(baseClassification, plan);
+  if (isTechnicalPromptPlan(effectiveTask, plan)) {
+    classification = enrichClassificationWithImportantFiles(db, classification, effectiveTask, plan);
+  }
   events.emit("task:phase", "retrieving");
   const { files, seedSymbols } = await retrieve({ db, root, config, task: effectiveTask, classification });
 
@@ -135,18 +144,22 @@ export async function runAsk(
 
   events.emit("task:phase", "thinking");
   const result = await generateWithOllama({
+    signal: options.signal,
     baseUrl: config.ollama.baseUrl,
     model: answerModel,
     prompt: packet.prompt,
-    options: optionsFromConfig(config)
+    options: optionsFromConfig(config),
+    onToken: (_, text) => { events.emit("task:stream", { text }); }
   });
   const answer = await finalizeAnswer({
+    signal: options.signal,
     config,
     model: answerModel,
     basePrompt: packet.prompt,
     raw: result.text,
     fallback: buildAskFallback(task, packet)
   });
+  events.emit("task:answer", answer);
 
   return { ok: result.ok, answer, packet, message: result.error };
 }
@@ -159,13 +172,14 @@ export async function runAsk(
 export async function runPatch(
   deps: RunnerDeps,
   task: string,
-  options: { apply: boolean; modelOverride?: string } = { apply: true }
+  options: { apply: boolean; modelOverride?: string; signal?: AbortSignal } = { apply: true }
 ): Promise<PatchOutcome> {
   const { db, root, config, events } = deps;
   const checks: CheckResult[] = [];
 
   const ollamaReady = await isOllamaAvailable(config.ollama.baseUrl);
   if (!ollamaReady) {
+    events.emit("task:context", { task, prompt: task, estimatedTokens: 0, files: [], symbols: [] });
     return {
       ok: false,
       applied: false,
@@ -197,21 +211,26 @@ export async function runPatch(
   const intent = plan.intent;
   events.emit("task:intent", intent);
   if (intent.kind !== "task") {
+    events.emit("task:context", { task, prompt: task, estimatedTokens: 0, files: [], symbols: [] });
     const chat = await generateWithOllama({
+      signal: options.signal,
       baseUrl: config.ollama.baseUrl,
       model: patcherModel,
       system:
         "You are Smith. User is in build mode but prompt is non-task. Reply helpfully and ask a concise follow-up if needed.",
       prompt: task,
-      options: optionsFromConfig(config, { num_predict: 320 })
+      options: optionsFromConfig(config, { num_predict: 320 }),
+      onToken: (_, text) => { events.emit("task:stream", { text }); }
     });
     const answer = await finalizeAnswer({
+      signal: options.signal,
       config,
       model: patcherModel,
       basePrompt: task,
       raw: chat.text,
       fallback: "This looks non-build. Tell me what code/task you want changed and I can switch into build flow."
     });
+    events.emit("task:answer", answer);
     return {
       ok: chat.ok,
       applied: false,
@@ -231,7 +250,10 @@ export async function runPatch(
 
   events.emit("task:phase", "classifying");
   const baseClassification = await classifyTask({ config, task: effectiveTask, ollamaReady, model: classifierModel });
-  const classification = mergeClassification(baseClassification, plan);
+  let classification = mergeClassification(baseClassification, plan);
+  if (isTechnicalPromptPlan(effectiveTask, plan)) {
+    classification = enrichClassificationWithImportantFiles(db, classification, effectiveTask, plan);
+  }
   events.emit("task:phase", "retrieving");
   const retrieval = await retrieve({ db, root, config, task: effectiveTask, classification });
 
@@ -257,10 +279,12 @@ export async function runPatch(
     events.emit("task:phase", attempt === 1 ? "patching" : `repairing (${attempt - 1})`);
 
     const generation = await generateWithOllama({
+      signal: options.signal,
       baseUrl: config.ollama.baseUrl,
       model: attempt === 1 ? patcherModel : debuggerModel,
       prompt,
-      options: optionsFromConfig(config)
+      options: optionsFromConfig(config),
+      onToken: (_, text) => { events.emit("task:stream", { text }); }
     });
 
     if (!generation.ok) {
@@ -405,6 +429,7 @@ type FinalizeAnswerArgs = {
   basePrompt: string;
   raw: string;
   fallback: string;
+  signal?: AbortSignal;
 };
 
 async function finalizeAnswer(args: FinalizeAnswerArgs): Promise<string> {
@@ -416,6 +441,7 @@ async function finalizeAnswer(args: FinalizeAnswerArgs): Promise<string> {
 
   // Retry once with an explicit anti-wrapper instruction.
   const retry = await generateWithOllama({
+    signal: args.signal,
     baseUrl: args.config.ollama.baseUrl,
     model: args.model,
     system:
@@ -527,6 +553,82 @@ function mergeClassification(base: TaskClassification, plan: PromptPlan): TaskCl
     likelyFiles: uniq([...plan.likelyFiles, ...base.likelyFiles], 10),
     likelySymbols: uniq([...plan.likelySymbols, ...base.likelySymbols], 10)
   };
+}
+
+function isTechnicalPromptPlan(task: string, plan: PromptPlan): boolean {
+  if (plan.intent.kind !== "task") return false;
+  const text = `${task}\n${plan.objective}\n${plan.tasks.join(" ")}\n${plan.keywords.join(" ")}`.toLowerCase();
+  return /(code|function|class|module|file|symbol|bug|error|fix|refactor|implement|patch|test|type|schema|api|query|database|build|compile|debug|architecture|design|performance|optimi[sz]e)/i.test(
+    text
+  );
+}
+
+function enrichClassificationWithImportantFiles(
+  db: SmithDatabase,
+  classification: TaskClassification,
+  task: string,
+  plan: PromptPlan
+): TaskClassification {
+  const important = importantFileHints(db, task, plan);
+  if (important.length === 0) return classification;
+  return {
+    ...classification,
+    likelyFiles: [...new Set([...important, ...classification.likelyFiles])].slice(0, 12)
+  };
+}
+
+function importantFileHints(db: SmithDatabase, task: string, plan: PromptPlan): string[] {
+  const hints: string[] = [];
+
+  const weighted = db
+    .prepare(
+      `SELECT
+         f.path AS path,
+         (CASE WHEN f.path LIKE 'src/%' THEN 4 ELSE 0 END) +
+         IFNULL(inb.c,0) * 3 +
+         IFNULL(outb.c,0) +
+         IFNULL(sym.c,0) * 0.5 AS score
+       FROM files f
+       LEFT JOIN (SELECT to_file_id AS fid, COUNT(*) AS c FROM imports GROUP BY to_file_id) inb ON inb.fid = f.id
+       LEFT JOIN (SELECT from_file_id AS fid, COUNT(*) AS c FROM imports GROUP BY from_file_id) outb ON outb.fid = f.id
+       LEFT JOIN (SELECT file_id AS fid, COUNT(*) AS c FROM symbols GROUP BY file_id) sym ON sym.fid = f.id
+       WHERE f.path NOT LIKE '.agent/%'
+       ORDER BY score DESC, f.path
+       LIMIT 8`
+    )
+    .all() as Array<{ path: string; score: number }>;
+  for (const row of weighted) {
+    if (row.path) hints.push(row.path);
+  }
+
+  const text = `${task}\n${plan.objective}\n${plan.tasks.join(" ")}\n${plan.keywords.join(" ")}`.toLowerCase();
+
+  if (/(architect|design|system|overview|plan|structure|flow)/.test(text)) {
+    hints.push(
+      ...existingPaths(db, [
+        "README.md",
+        "docs/00-product-vision.md",
+        "docs/01-architecture.md",
+        "docs/04-implementation-plan.md"
+      ])
+    );
+  }
+
+  if (/(model|mode|history|state|sync|ui|web|cli|server|lan|prompt|chat)/.test(text)) {
+    hints.push(...existingPaths(db, ["src/core/lanServer.ts", "src/tui/App.tsx", "src/core/taskRunner.ts", "src/cli.ts"]));
+  }
+
+  return [...new Set(hints)].slice(0, 12);
+}
+
+function existingPaths(db: SmithDatabase, paths: string[]): string[] {
+  const unique = [...new Set(paths.map((p) => p.trim()).filter(Boolean))];
+  if (unique.length === 0) return [];
+  const placeholders = unique.map(() => "?").join(",");
+  const rows = db
+    .prepare(`SELECT path FROM files WHERE path IN (${placeholders})`)
+    .all(...unique) as Array<{ path: string }>;
+  return rows.map((r) => r.path);
 }
 
 function composeEffectiveTask(original: string, plan: PromptPlan, toolNotes: string[]): string {

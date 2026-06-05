@@ -160,11 +160,17 @@ export async function retrieve(args) {
     }
     // 5. likely files hint.
     for (const hint of classification.likelyFiles) {
+        const normalizedHint = hint.toLowerCase();
         for (const f of files) {
-            if (f.path.includes(hint)) {
+            const p = f.path.toLowerCase();
+            const exact = p === normalizedHint;
+            const basename = p.split("/").pop() ?? "";
+            const basenameMatch = basename === normalizedHint;
+            const partial = p.includes(normalizedHint);
+            if (exact || basenameMatch || partial) {
                 const entry = ensure(f.id);
                 if (entry) {
-                    entry.score += 3;
+                    entry.score += exact ? 12 : basenameMatch ? 10 : 7;
                     entry.reasons.push("hint");
                 }
             }

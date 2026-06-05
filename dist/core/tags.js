@@ -70,26 +70,26 @@ export function heuristicTags(relativePath, content) {
     const haystack = `${relativePath}\n${content.slice(0, 4000)}`.toLowerCase();
     const hits = new Set();
     const signals = [
-        [1, /\b(auth|login|logout|session|token|jwt|password|oauth|permission)\b/],
-        [2, /\b(router\.|app\.(get|post|put|delete)|endpoint|controller|@get|@post|fastify|express|handler)\b/],
-        [3, /\b(component|render|jsx|tsx|view|screen|widget|<\/?[a-z])\b/],
-        [4, /\b(sql|select |insert |update |delete |schema|migration|prisma|sequelize|mongoose|database|sqlite)\b/],
-        [5, /\b(usestate|usereducer|store|reducer|dispatch|zustand|redux|signal)\b/],
-        [6, /\b(route|navigate|navigation|link|history|usenavigate)\b/],
-        [7, /\b(config|\.env|process\.env|settings|options)\b/],
-        [8, /\b(test|describe\(|it\(|expect\(|spec|mock|fixture)\b/],
-        [9, /\b(webpack|vite|rollup|esbuild|tsconfig|build|bundle)\b/],
-        [11, /\b(interface |type [a-z]|enum |declare |\.d\.ts)\b/],
-        [12, /\b(css|style|theme|tailwind|styled|className)\b/],
-        [13, /\b(fetch\(|axios|websocket|http|request|client)\b/],
-        [14, /\b(validate|zod|yup|joi|schema\.parse|sanitiz)\b/],
-        [15, /\b(logger|console\.log|pino|winston|telemetry|metric)\b/],
-        [16, /\b(try\s*{|catch\s*\(|throw |error|exception)\b/],
-        [17, /\b(payment|checkout|stripe|billing|invoice|price|discount|cart)\b/],
-        [19, /\b(commander|yargs|argv|process\.argv|cli|command)\b/],
-        [21, /\b(async |await |promise|queue|worker|concurren|settimeout)\b/],
-        [24, /\b(index|retriev|search|query|embedding|rank|score)\b/],
-        [25, /\b(emit\(|eventemitter|on\(|addeventlistener|pub|subscribe)\b/]
+        [1, /\b(auth|login|logout|session|token|jwt|password|oauth|permission|authenticat|authoriz)\b/],
+        [2, /\b(router|app\.(get|post|put|delete)|endpoint|controller|handler|request|response|@(get|post|put|delete|route)|get\s*\(|post\s*\(|put\s*\(|delete\s*\()\b/],
+        [3, /\b(component|render|view|screen|widget|ui\b.*\b|layout|window|dialog|button|menu)\b/],
+        [4, /\b(sql|select |insert |update |delete |schema|migration|database|sqlite|mysql|postgres|orm|transaction|query|db\.|repository)\b/],
+        [5, /\b(state|store|reducer|dispatch|signal|mutable|stateful)\b/],
+        [6, /\b(route|navigate|navigation|link|history|router)\b/],
+        [7, /\b(config|settings|options|env|environment|properties|\.ini|\.cfg|\.conf)\b/],
+        [8, /\b(test|describe|it\(|expect|spec|mock|fixture|assert|should|before_each|after_each|setup|teardown)\b/],
+        [9, /\b(build|compile|makefile|cmake|meson|bazel|webpack|vite|rollup|esbuild|tsconfig|bundle|gradle|maven|cargo|go\s+build|package|dist)\b/],
+        [11, /\b(interface|type\s+\w|enum|struct|typedef|class\s+\w|template|generic|trait|protocol|extension)\b/],
+        [12, /\b(css|style|theme|tailwind|styled|className|stylesheet|sass|scss|less|font|color|layout)\b/],
+        [13, /\b(fetch|axios|websocket|socket|http|request|client|connect|listen|tcp|udp|server|endpoint)\b/],
+        [14, /\b(validate|sanitiz|parse|check\b|assert|verify|ensure)\b/],
+        [15, /\b(logger|log\.|console|pino|winston|telemetry|metric|tracing|debug|info\(|warn\(|error\()\b/],
+        [16, /\b(try\s*{|catch\s*\(|throw |error|exception|panic|unwrap|expect\(|err\b|fail\b)\b/],
+        [17, /\b(payment|checkout|stripe|billing|invoice|price|discount|cart|wallet|charge|refund)\b/],
+        [19, /\b(cli|command|commander|yargs|argv|argparse|main\(|int\s+main|fn\s+main|terminal|stdin|stdout)\b/],
+        [21, /\b(async|await|promise|future|queue|worker|concurren|parallel|thread|mutex|semaphore|lock|goroutine|tokio|rayon)\b/],
+        [24, /\b(index|retriev|search|query|embedding|rank|score|lookup|find|filter|sorted)\b/],
+        [25, /\b(emit|event|publish|subscribe|listener|observer|callback|signal|notify)\b/]
     ];
     for (const [id, pattern] of signals) {
         if (pattern.test(haystack))

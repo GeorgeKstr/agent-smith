@@ -68,6 +68,24 @@ export function createIndexer({ root, config, db, events, enableIntel = true }) 
     let summaryRunning = false;
     let ollamaReady = null;
     let intelDone = Promise.resolve();
+    // Pause/resume support: callers (e.g. TUI during a prompt) can suspend the
+    // background intel queue so the model is fully available for generation.
+    let paused = false;
+    const resumeCallbacks = [];
+    function pause() { paused = true; }
+    function resume() {
+        if (!paused)
+            return;
+        paused = false;
+        const cbs = resumeCallbacks.splice(0);
+        for (const cb of cbs)
+            cb();
+    }
+    function waitForResume() {
+        if (!paused)
+            return Promise.resolve();
+        return new Promise((resolve) => { resumeCallbacks.push(resolve); });
+    }
     let summarizerModel = config.models.summarizer;
     let taggerModel = config.models.tagger;
     function kickQueue() {
@@ -292,6 +310,8 @@ export function createIndexer({ root, config, db, events, enableIntel = true }) 
         }
         try {
             while (summaryQueue.length > 0) {
+                // Yield to caller if indexer is paused (e.g. during a user prompt)
+                await waitForResume();
                 const relPath = summaryQueue.shift();
                 const fileRow = db.prepare("SELECT id, language, hash, summary FROM files WHERE path = ?").get(relPath);
                 if (!fileRow)
@@ -434,7 +454,7 @@ export function createIndexer({ root, config, db, events, enableIntel = true }) 
         const tagCount = db.prepare("SELECT COUNT(DISTINCT file_id) AS c FROM file_tags").get().c;
         return { filesTotal, filesScanned, dirtyFiles, symbolsIndexed: symbolCount, tagsRefreshed: tagCount };
     }
-    return { quickStartupScan, enqueueChangedFile, reindexPaths, getStats, whenIdle };
+    return { quickStartupScan, enqueueChangedFile, reindexPaths, getStats, whenIdle, pause, resume };
 }
 export function detectLanguage(filePath) {
     const ext = path.extname(filePath).toLowerCase();
@@ -449,12 +469,76 @@ export function detectLanguage(filePath) {
         ".py": "python",
         ".css": "css",
         ".html": "html",
-        ".md": "markdown"
+        ".md": "markdown",
+        ".cpp": "cpp",
+        ".cxx": "cpp",
+        ".cc": "cpp",
+        ".c++": "cpp",
+        ".h": "c-header",
+        ".hpp": "cpp-header",
+        ".hxx": "cpp-header",
+        ".hh": "cpp-header",
+        ".c": "c",
+        ".cs": "csharp",
+        ".java": "java",
+        ".kt": "kotlin",
+        ".kts": "kotlin",
+        ".scala": "scala",
+        ".swift": "swift",
+        ".go": "go",
+        ".rs": "rust",
+        ".rb": "ruby",
+        ".php": "php",
+        ".r": "r",
+        ".m": "objective-c",
+        ".mm": "objective-cpp",
+        ".dart": "dart",
+        ".lua": "lua",
+        ".pl": "perl",
+        ".pm": "perl",
+        ".sh": "shell",
+        ".bash": "shell",
+        ".zsh": "shell",
+        ".yaml": "yaml",
+        ".yml": "yaml",
+        ".toml": "toml",
+        ".sql": "sql",
+        ".graphql": "graphql",
+        ".gql": "graphql",
+        ".proto": "protobuf",
+        ".vue": "vue",
+        ".svelte": "svelte",
+        ".astro": "astro",
+        ".tex": "latex",
+        ".ml": "ocaml",
+        ".fs": "fsharp",
+        ".ex": "elixir",
+        ".exs": "elixir",
+        ".erl": "erlang",
+        ".hrl": "erlang",
+        ".hs": "haskell",
+        ".lhs": "haskell",
+        ".nim": "nim",
+        ".zig": "zig",
+        ".clj": "clojure",
+        ".cljs": "clojure",
+        ".edn": "clojure",
+        ".tf": "terraform",
+        ".tfvars": "terraform",
+        ".dockerfile": "dockerfile",
+        ".sass": "sass",
+        ".scss": "scss",
+        ".less": "less"
     };
     return map[ext] ?? "text";
 }
 function isTestFile(filePath) {
-    return /(^|\/|\\)(test|tests|__tests__)(\/|\\)/.test(filePath) || /\.(test|spec)\.[tj]sx?$/.test(filePath);
+    return /(^|\/|\\)(test|tests|__tests__)(\/|\\)/.test(filePath)
+        || /\.(test|spec)\.[a-z]+$/.test(filePath)
+        || /_test\.(cpp|c|h|hpp|cc)$/.test(filePath)
+        || /_spec\.(rb|rs)$/.test(filePath)
+        || /_test\.go$/.test(filePath)
+        || /test_\w+\.(py|rb)$/.test(filePath);
 }
 function isGeneratedFile(filePath) {
     return filePath.includes("generated") || filePath.endsWith(".min.js");

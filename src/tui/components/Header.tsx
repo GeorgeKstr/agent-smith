@@ -17,9 +17,9 @@ export const Header = React.memo(function Header({
   return (
     <Box justifyContent="space-between" paddingX={1}>
       <Text>
-        <Text color={theme.primary} backgroundColor="black">{modelName}</Text>
-        <Text color={theme.dim} backgroundColor="black">@</Text>
-        <Text color={theme.text} backgroundColor="black">{root.split("/").pop()}</Text>
+        <Text color="greenBright" bold backgroundColor="black">{root.split("/").pop()}</Text>
+        <Text color={theme.dim} backgroundColor="black"> · </Text>
+        <Text color={theme.dim} backgroundColor="black">{modelName}</Text>
       </Text>
       <Text color={led} backgroundColor="black">
         {ledText} ollama
