@@ -18,6 +18,18 @@ function lineColor(line: string): string {
   return theme.dim
 }
 
+function outputLineColor(line: string): string {
+  if (line.startsWith("error:")) return "red"
+  if (line.startsWith("✓") || line.includes(" PASS ")) return "green"
+  if (line.includes(" FAIL ")) return "red"
+  if (line.startsWith("⌘ ")) return "cyan"
+  if (line.startsWith("▶ ")) return theme.accent
+  if (line.startsWith("AI:")) return theme.primary
+  if (line.startsWith("↻") || line.startsWith("↶")) return "yellow"
+  if (line.startsWith("Active model:") || line.startsWith("* ")) return "magenta"
+  return "white"
+}
+
 const BG = "black"
 
 function normalizeInlineMd(line: string): string {
@@ -111,7 +123,7 @@ function wrapPlainLines(lines: string[], width: number): string[] {
   return out
 }
 
-export function ContentArea({
+export const ContentArea = React.memo(function ContentArea({
   output,
   logs,
   packet,
@@ -152,6 +164,23 @@ export function ContentArea({
 
   const answerDisplay = wrapDisplayLines(markdownLines(answer), maxWidth)
   const patchLines = wrapPlainLines(patchText.split("\n"), maxWidth)
+
+  if (output.length > 0) {
+    const win = windowLines(wrapPlainLines(output, maxWidth))
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        <Text color={theme.primary} backgroundColor={BG}>History</Text>
+        <Text color={theme.dim} backgroundColor={BG}>{"─".repeat(40)}</Text>
+        {win.hasOlder && <Text color={theme.dim} backgroundColor={BG}>↑ older messages</Text>}
+        {win.visible.map((line, i) => (
+          <Text key={i} color={outputLineColor(line)} backgroundColor={BG}>
+            {line}
+          </Text>
+        ))}
+        {win.hasNewer && <Text color={theme.dim} backgroundColor={BG}>↓ newer messages</Text>}
+      </Box>
+    )
+  }
 
   if (patchText) {
     const win = windowLines(patchLines)
@@ -220,21 +249,6 @@ export function ContentArea({
     )
   }
 
-  if (output.length > 0) {
-    const win = windowLines(wrapPlainLines(output, maxWidth))
-    return (
-      <Box flexDirection="column" paddingX={1}>
-        {win.hasOlder && <Text color={theme.dim} backgroundColor={BG}>↑ older messages</Text>}
-        {win.visible.map((line, i) => (
-          <Text key={i} color="white" backgroundColor={BG}>
-            {line}
-          </Text>
-        ))}
-        {win.hasNewer && <Text color={theme.dim} backgroundColor={BG}>↓ newer messages</Text>}
-      </Box>
-    )
-  }
-
   if (logs.length > 0) {
     return (
       <Box flexDirection="column" paddingX={1}>
@@ -258,4 +272,4 @@ export function ContentArea({
       </Box>
     </Box>
   )
-}
+})

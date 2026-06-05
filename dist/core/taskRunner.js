@@ -11,12 +11,16 @@ import { runChecks } from "./checks.js";
 import { reindexAffected } from "./reindexer.js";
 import { createTask, recordEdit, recordTestRun, finishTask } from "./memory.js";
 import { evaluatePrompt } from "./intent.js";
+import { runQwenFunctionLoop } from "./qwenTools.js";
+import { createLocalProjectTools } from "./localProjectTools.js";
 /** Classify -> retrieve -> pack -> (optionally) answer with the local model. */
-export async function runAsk(deps, task) {
+export async function runAsk(deps, task, options = {}) {
     const { db, root, config, events } = deps;
     const ollamaReady = await isOllamaAvailable(config.ollama.baseUrl);
     const installed = ollamaReady ? await listOllamaModels(config.ollama.baseUrl) : [];
-    const answerModel = resolveModelName(config.models.patcher, installed);
+    const answerModel = options.modelOverride
+        ? resolveModelName(options.modelOverride, installed)
+        : resolveModelName(config.models.patcher, installed);
     const classifierModel = resolveModelName(config.models.tagger, installed);
     const emptyPacket = {
         task,
@@ -65,7 +69,10 @@ export async function runAsk(deps, task) {
             message: `Intent=${intent.kind} (${intent.reason})${chat.error ? ` | ${chat.error}` : ""}`
         };
     }
-    const toolNotes = runPlanningTools(db, plan);
+    const toolNotes = [
+        ...runPlanningTools(db, plan),
+        ...(await runQwenPlanningTools(deps, task, plan, answerModel))
+    ];
     const effectiveTask = composeEffectiveTask(task, plan, toolNotes);
     events.emit("task:phase", "classifying");
     const baseClassification = await classifyTask({ config, task: effectiveTask, ollamaReady, model: classifierModel });
@@ -104,7 +111,7 @@ export async function runAsk(deps, task) {
         model: answerModel,
         basePrompt: packet.prompt,
         raw: result.text,
-        fallback: "I could not produce a usable answer from the model output."
+        fallback: buildAskFallback(task, packet)
     });
     return { ok: result.ok, answer, packet, message: result.error };
 }
@@ -130,8 +137,12 @@ export async function runPatch(deps, task, options = { apply: true }) {
     const taskId = createTask(db, task, config.models.patcher);
     const maxAttempts = 3; // 1 initial attempt + up to 2 repairs
     const installed = await listOllamaModels(config.ollama.baseUrl);
-    const patcherModel = resolveModelName(config.models.patcher, installed);
-    const debuggerModel = resolveModelName(config.models.debugger || config.models.patcher, installed);
+    const patcherModel = options.modelOverride
+        ? resolveModelName(options.modelOverride, installed)
+        : resolveModelName(config.models.patcher, installed);
+    const debuggerModel = options.modelOverride
+        ? resolveModelName(options.modelOverride, installed)
+        : resolveModelName(config.models.debugger || config.models.patcher, installed);
     const classifierModel = resolveModelName(config.models.tagger, installed);
     events.emit("task:phase", "triaging");
     const plan = await evaluatePrompt({
@@ -167,7 +178,10 @@ export async function runPatch(deps, task, options = { apply: true }) {
             message: `Prompt categorized as ${intent.kind} (${intent.reason}). Returned a direct response instead of patch generation.`
         };
     }
-    const toolNotes = runPlanningTools(db, plan);
+    const toolNotes = [
+        ...runPlanningTools(db, plan),
+        ...(await runQwenPlanningTools(deps, task, plan, patcherModel))
+    ];
     const effectiveTask = composeEffectiveTask(task, plan, toolNotes);
     events.emit("task:phase", "classifying");
     const baseClassification = await classifyTask({ config, task: effectiveTask, ollamaReady, model: classifierModel });
@@ -324,6 +338,9 @@ async function finalizeAnswer(args) {
     const first = normalizeAnswer(args.raw);
     if (first)
         return first;
+    const structured = summarizeStructuredPayload(args.raw);
+    if (structured)
+        return structured;
     // Retry once with an explicit anti-wrapper instruction.
     const retry = await generateWithOllama({
         baseUrl: args.config.ollama.baseUrl,
@@ -333,7 +350,10 @@ async function finalizeAnswer(args) {
         options: optionsFromConfig(args.config, { num_predict: 350 })
     });
     const second = normalizeAnswer(retry.text);
-    return second || args.fallback;
+    if (second)
+        return second;
+    const retryStructured = summarizeStructuredPayload(retry.text);
+    return retryStructured || args.fallback;
 }
 function normalizeAnswer(raw) {
     const trimmed = (raw ?? "").trim();
@@ -378,6 +398,48 @@ function looksLikeJsonEnvelope(text) {
         return false;
     }
 }
+function summarizeStructuredPayload(raw) {
+    const parsed = extractJson((raw ?? "").trim());
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return "";
+    const rec = parsed;
+    const objective = typeof rec.objective === "string" ? rec.objective.trim() : "";
+    const tasks = Array.isArray(rec.tasks)
+        ? rec.tasks.map((t) => String(t).trim()).filter(Boolean).slice(0, 5)
+        : [];
+    const likelyFiles = Array.isArray(rec.likelyFiles)
+        ? rec.likelyFiles.map((f) => String(f).trim()).filter(Boolean).slice(0, 6)
+        : [];
+    const likelySymbols = Array.isArray(rec.likelySymbols)
+        ? rec.likelySymbols.map((s) => String(s).trim()).filter(Boolean).slice(0, 6)
+        : [];
+    if (!objective && tasks.length === 0 && likelyFiles.length === 0 && likelySymbols.length === 0)
+        return "";
+    const lines = [];
+    lines.push("I got a structured planner payload instead of a direct answer. Here is the useful part:");
+    if (objective)
+        lines.push(`Objective: ${objective}`);
+    if (tasks.length)
+        lines.push(`Steps: ${tasks.join(" | ")}`);
+    if (likelyFiles.length)
+        lines.push(`Likely files: ${likelyFiles.join(", ")}`);
+    if (likelySymbols.length)
+        lines.push(`Likely symbols: ${likelySymbols.join(", ")}`);
+    return lines.join("\n");
+}
+function buildAskFallback(task, packet) {
+    const files = packet.files.slice(0, 6).map((f) => f.path);
+    const symbols = packet.symbols.slice(0, 6).map((s) => `${s.name} (${s.path})`);
+    const lines = [];
+    lines.push("Model output was unusable, but retrieval/context succeeded.");
+    lines.push(`Task: ${task}`);
+    if (files.length)
+        lines.push(`Most relevant files: ${files.join(", ")}`);
+    if (symbols.length)
+        lines.push(`Relevant symbols: ${symbols.join(" | ")}`);
+    lines.push("Run the same prompt again, or ask a narrower question against one of the files above.");
+    return lines.join("\n");
+}
 function isPlaceholderJunk(text) {
     const t = text.trim();
     if (!t)
@@ -403,6 +465,60 @@ function composeEffectiveTask(original, plan, toolNotes) {
     const checklist = plan.tasks.map((t, i) => `${i + 1}. ${t}`).join("\n");
     const notes = toolNotes.length ? `\n## TOOL RESULTS\n${toolNotes.join("\n")}` : "";
     return `${original}\n\n## OBJECTIVE\n${plan.objective}\n\n## EXECUTION CHECKLIST\n${checklist}${notes}`;
+}
+async function runQwenPlanningTools(deps, originalTask, plan, model) {
+    const { config, db, root, events } = deps;
+    const tools = createLocalProjectTools({ root, db });
+    events.emit("task:phase", "tooling");
+    const planSummary = {
+        objective: plan.objective,
+        tasks: plan.tasks,
+        keywords: plan.keywords,
+        likelyFiles: plan.likelyFiles,
+        likelySymbols: plan.likelySymbols,
+        toolRequests: plan.toolRequests
+    };
+    const result = await runQwenFunctionLoop({
+        baseUrl: config.ollama.baseUrl,
+        model,
+        think: false,
+        maxToolRounds: 3,
+        options: optionsFromConfig(config, { num_predict: 650 }),
+        tools,
+        messages: [
+            {
+                role: "system",
+                content: "You are the navigation layer of a local coding agent. Use tools only when they help identify relevant project files, symbols, or nearby imports. Do not generate patches. After using tools, return concise plain-text notes with: relevant files, relevant symbols, and why they matter. If the initial plan is enough, answer without tool calls."
+            },
+            {
+                role: "user",
+                content: `USER TASK:
+${originalTask}
+
+INITIAL PLAN JSON:
+${JSON.stringify(planSummary, null, 2)}
+
+Inspect the project only as needed, then return navigation notes for the main agent.`
+            }
+        ],
+        onToolCall: (call) => events.emit("task:phase", `tool:${call.name}`)
+    });
+    if (!result.ok) {
+        return result.error ? [`[qwen_tools:error] ${truncate(result.error, 400)}`] : [];
+    }
+    const notes = [];
+    const used = result.messages
+        .filter((message) => message.role === "function" && message.name)
+        .map((message) => message.name);
+    if (used.length > 0) {
+        notes.push(`[qwen_tools] used ${result.toolCallCount} call(s): ${[...new Set(used)].join(", ")}`);
+    }
+    const finalText = result.finalText.trim();
+    if (finalText) {
+        notes.push(`[qwen_navigation_notes]
+${truncate(finalText, 1800)}`);
+    }
+    return notes;
 }
 function runPlanningTools(db, plan) {
     const notes = [];

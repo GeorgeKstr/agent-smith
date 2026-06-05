@@ -9,8 +9,11 @@ import { extractImports, extractSymbols, isParseableLanguage } from "./treeSitte
 import { rebuildImports } from "./graph.js";
 import { isOllamaAvailable, listOllamaModels, resolveModelName } from "./ollama.js";
 import { summarizeFile } from "./summarizer.js";
+import { generateWithOllama, optionsFromConfig } from "./ollama.js";
 import { tagFile } from "./tagger.js";
 import { heuristicTags } from "./tags.js";
+
+const PROJECT_SUM_SYSTEM = `You describe a software project. Given high-level stats and key tags, write a concise 2-3 sentence overview describing what the project does overall, its architecture, and its key technologies. No preamble, no markdown, no quotes.`;
 
 type IndexerArgs = {
   root: string;
@@ -31,6 +34,52 @@ const TIPS = [
   "Tree-sitter symbols are cheaper than blind prompting.",
   "Never send a model what a query can answer."
 ];
+
+async function generateProjectSummary(db: SmithDatabase, root: string, config: SmithConfig, model: string): Promise<void> {
+  const countRow = db.prepare("SELECT COUNT(*) AS c FROM files").get() as { c: number }
+  const symRow = db.prepare("SELECT COUNT(*) AS c FROM symbols").get() as { c: number }
+  const impRow = db.prepare("SELECT COUNT(*) AS c FROM imports").get() as { c: number }
+  const totalFiles = countRow?.c ?? 0
+  const totalSymbols = symRow?.c ?? 0
+  const totalImports = impRow?.c ?? 0
+
+  const langRows = db
+    .prepare("SELECT language, COUNT(*) AS count FROM files WHERE language IS NOT NULL AND language != '' GROUP BY language ORDER BY count DESC LIMIT 5")
+    .all() as Array<{ language: string; count: number }>
+
+  const tagRows = db
+    .prepare("SELECT t.name, COUNT(ft.file_id) AS count FROM file_tags ft JOIN tags t ON t.id = ft.tag_id GROUP BY ft.tag_id ORDER BY count DESC LIMIT 6")
+    .all() as Array<{ name: string; count: number }>
+
+  if (totalFiles <= 5) return
+
+  const prevCount = (db.prepare("SELECT value FROM meta WHERE key = 'project_summary_file_count'").get() as { value: string } | undefined)?.value
+  if (prevCount === String(totalFiles)) return
+
+  setMeta(db, "project_summary_file_count", String(totalFiles))
+
+  const langStr = langRows.map((l) => `${l.language} (${l.count})`).join(", ") || "unknown"
+  const tagStr = tagRows.map((t) => t.name).join(", ") || "none"
+
+  const prompt = `Stats: ${totalFiles} files, ${totalSymbols} symbols, ${totalImports} imports.
+Languages: ${langStr}
+Key tags: ${tagStr}
+
+Describe this project in 2-3 concise sentences:`
+
+  const result = await generateWithOllama({
+    baseUrl: config.ollama.baseUrl,
+    model,
+    system: PROJECT_SUM_SYSTEM,
+    prompt,
+    options: optionsFromConfig(config, { num_predict: 400 })
+  })
+
+  if (result.ok && result.text.trim()) {
+    const text = result.text.replace(/\s+/g, " ").trim().slice(0, 1000)
+    setMeta(db, "project_summary", text)
+  }
+}
 
 export function createIndexer({ root, config, db, events, enableIntel = true }: IndexerArgs) {
   let filesTotal = 0;
@@ -304,7 +353,9 @@ export function createIndexer({ root, config, db, events, enableIntel = true }: 
         if (!fileRow) continue;
 
         const cacheKey = `summary:${fileRow.hash}`;
+        const impKey = `importance:${fileRow.hash}`;
         const cached = db.prepare("SELECT value FROM meta WHERE key = ?").get(cacheKey) as { value: string } | undefined;
+        const cachedImp = db.prepare("SELECT value FROM meta WHERE key = ?").get(impKey) as { value: string } | undefined;
 
         let content: string;
         try {
@@ -314,9 +365,15 @@ export function createIndexer({ root, config, db, events, enableIntel = true }: 
         }
 
         let summary = cached?.value ?? fileRow.summary ?? "";
-        if (!summary && ollamaReady) {
-          summary = await summarizeFile({ config, relPath, language: fileRow.language, content, model: summarizerModel });
-          if (summary) setMeta(db, cacheKey, summary);
+        let importance = cachedImp ? parseInt(cachedImp.value, 10) : 0;
+        if ((!summary || !importance) && ollamaReady) {
+          const result = await summarizeFile({ config, relPath, language: fileRow.language, content, model: summarizerModel });
+          if (result.summary) {
+            summary = result.summary;
+            setMeta(db, cacheKey, summary);
+          }
+          importance = result.importance > 0 ? result.importance : 0;
+          setMeta(db, impKey, String(importance));
         }
         if (summary) {
           db.prepare("UPDATE files SET summary = ? WHERE id = ?").run(summary, fileRow.id);
@@ -344,6 +401,11 @@ export function createIndexer({ root, config, db, events, enableIntel = true }: 
           currentFile: relPath,
           tip: "Model intelligence pass running."
         });
+
+        // Generate/regenerate project summary early (≥10 important files) and on each update.
+        if (ollamaReady) {
+          await generateProjectSummary(db, root, config, summarizerModel);
+        }
       }
     } finally {
       summaryRunning = false;
@@ -390,6 +452,11 @@ export function createIndexer({ root, config, db, events, enableIntel = true }: 
       }
 
       const language = detectLanguage(relative);
+
+      // Check if the file content changed since the last index.
+      const oldRow = db.prepare("SELECT hash, summary FROM files WHERE path = ?").get(relative) as { hash: string; summary: string | null } | undefined;
+      const changed = !oldRow || oldRow.hash !== hash;
+
       upsertFile.run({
         path: relative,
         language,
@@ -409,6 +476,14 @@ export function createIndexer({ root, config, db, events, enableIntel = true }: 
           indexSymbols(fileRow.id, language, content);
           indexImports(fileRow.id, relative, language, content);
           if (applyHeuristicTags(fileRow.id, relative, content)) tagsRefreshed++;
+          if (changed) {
+            // File content changed: clear cached intel so summary + importance are
+            // regenerated from scratch on the next intelligence pass.
+            db.prepare("DELETE FROM meta WHERE key = ?").run(`summary:${oldRow ? oldRow.hash : hash}`);
+            db.prepare("DELETE FROM meta WHERE key = ?").run(`importance:${oldRow ? oldRow.hash : hash}`);
+            // Invalidate project summary since a top-20 file's summary may change.
+            db.prepare("DELETE FROM meta WHERE key IN ('project_summary','project_summary_file_count')").run();
+          }
           summaryQueue.push(relative);
         } catch {
           // skip

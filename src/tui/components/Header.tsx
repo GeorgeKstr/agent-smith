@@ -2,7 +2,7 @@ import React from "react"
 import { Box, Text } from "ink"
 import { theme } from "../theme.js"
 
-export function Header({
+export const Header = React.memo(function Header({
   root,
   model,
   ollamaReady,
@@ -26,4 +26,4 @@ export function Header({
       </Text>
     </Box>
   )
-}
+})

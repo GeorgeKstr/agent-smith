@@ -1,14 +1,14 @@
 import type { SmithConfig } from "../types/index.js";
 import { generateWithOllama, optionsFromConfig } from "./ollama.js";
 
-const SYSTEM = `You summarize source files for a code index.
-Reply with ONE dense sentence (max 30 words) describing what the file does and its key responsibilities.
-No preamble, no markdown, no quotes.`;
+const SYSTEM = `You analyze source files for a code index.
+Reply with a one-sentence summary (max 30 words) and a numeric importance score (1-10).
+Importance reflects how central the file is to the project: 1-3 peripheral/config, 4-6 utility/middleware, 7-8 core logic/data model, 9-10 architectural entry point.
+Format exactly: SUMMARY: <one sentence> | IMPORTANCE: <number>`;
 
 /**
- * Produce a one-line file summary via Ollama.
- * Returns an empty string when the model/server is unavailable so callers can
- * cache "no summary" without crashing.
+ * Produce a one-line file summary and importance rating via Ollama.
+ * Returns an empty summary and 0 when the model/server is unavailable.
  */
 export async function summarizeFile(args: {
   config: SmithConfig;
@@ -16,25 +16,35 @@ export async function summarizeFile(args: {
   language: string;
   content: string;
   model?: string;
-}): Promise<string> {
+}): Promise<{ summary: string; importance: number }> {
   const snippet = args.content.slice(0, 6000);
   const prompt = `File: ${args.relPath}
 Language: ${args.language}
 
 --- CONTENT ---
 ${snippet}
---- END ---
-
-One-sentence summary:`;
+--- END ---`;
 
   const result = await generateWithOllama({
     baseUrl: args.config.ollama.baseUrl,
     model: args.model ?? args.config.models.summarizer,
     system: SYSTEM,
     prompt,
-    options: optionsFromConfig(args.config, { num_predict: 120 })
+    options: optionsFromConfig(args.config, { num_predict: 160 })
   });
 
-  if (!result.ok) return "";
-  return result.text.replace(/\s+/g, " ").trim().slice(0, 240);
+  if (!result.ok) return { summary: "", importance: 0 };
+
+  const text = result.text.replace(/\s+/g, " ").trim();
+  const summaryMatch = text.match(/SUMMARY:\s*(.+?)(?:\s*\|\s*IMPORTANCE:|$)/i);
+  const importanceMatch = text.match(/IMPORTANCE:\s*(\d+)/i);
+
+  const summary = summaryMatch
+    ? summaryMatch[1].trim().slice(0, 240)
+    : text.slice(0, 240);
+  const importance = importanceMatch
+    ? Math.max(1, Math.min(10, parseInt(importanceMatch[1], 10)))
+    : 0;
+
+  return { summary, importance };
 }

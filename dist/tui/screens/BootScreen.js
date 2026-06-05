@@ -18,6 +18,7 @@ export function BootScreen({ state, animate = true }) {
         "wake up, smith",
         "loading matrix kernel",
         "stabilizing context channels",
+        "you are needed in the real world",
     ];
     const intro = introFrames[Math.min(introFrames.length - 1, Math.floor(elapsed / 350))];
     const pulseWidth = 18;

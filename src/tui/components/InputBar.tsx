@@ -4,7 +4,7 @@ import { theme } from "../theme.js"
 
 const BG = "black"
 
-export function InputBar({
+export const InputBar = React.memo(function InputBar({
   input,
   busy,
   mode,
@@ -39,4 +39,4 @@ export function InputBar({
       </Box>
     </Box>
   )
-}
+})

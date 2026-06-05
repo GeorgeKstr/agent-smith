@@ -1,4 +1,5 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import React from "react";
 import { Box, Text } from "ink";
 import { theme } from "../theme.js";
 function lineColor(line) {
@@ -11,6 +12,25 @@ function lineColor(line) {
     if (line.startsWith("diff ") || line.startsWith("+++") || line.startsWith("---"))
         return "yellow";
     return theme.dim;
+}
+function outputLineColor(line) {
+    if (line.startsWith("error:"))
+        return "red";
+    if (line.startsWith("✓") || line.includes(" PASS "))
+        return "green";
+    if (line.includes(" FAIL "))
+        return "red";
+    if (line.startsWith("⌘ "))
+        return "cyan";
+    if (line.startsWith("▶ "))
+        return theme.accent;
+    if (line.startsWith("AI:"))
+        return theme.primary;
+    if (line.startsWith("↻") || line.startsWith("↶"))
+        return "yellow";
+    if (line.startsWith("Active model:") || line.startsWith("* "))
+        return "magenta";
+    return "white";
 }
 const BG = "black";
 function normalizeInlineMd(line) {
@@ -94,7 +114,7 @@ function wrapPlainLines(lines, width) {
         out.push(...wrapLine(line, width));
     return out;
 }
-export function ContentArea({ output, logs, packet, answer, patchText, busy, scrollOffset, maxLines, maxWidth, }) {
+export const ContentArea = React.memo(function ContentArea({ output, logs, packet, answer, patchText, busy, scrollOffset, maxLines, maxWidth, }) {
     const windowLines = (lines) => {
         const safeMax = Math.max(3, maxLines);
         const maxOffset = Math.max(0, lines.length - safeMax);
@@ -113,6 +133,10 @@ export function ContentArea({ output, logs, packet, answer, patchText, busy, scr
     };
     const answerDisplay = wrapDisplayLines(markdownLines(answer), maxWidth);
     const patchLines = wrapPlainLines(patchText.split("\n"), maxWidth);
+    if (output.length > 0) {
+        const win = windowLines(wrapPlainLines(output, maxWidth));
+        return (_jsxs(Box, { flexDirection: "column", paddingX: 1, children: [_jsx(Text, { color: theme.primary, backgroundColor: BG, children: "History" }), _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "─".repeat(40) }), win.hasOlder && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2191 older messages" }), win.visible.map((line, i) => (_jsx(Text, { color: outputLineColor(line), backgroundColor: BG, children: line }, i))), win.hasNewer && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2193 newer messages" })] }));
+    }
     if (patchText) {
         const win = windowLines(patchLines);
         return (_jsxs(Box, { flexDirection: "column", paddingX: 1, children: [_jsx(Text, { color: theme.primary, backgroundColor: BG, children: "Patch" }), _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "─".repeat(40) }), win.hasOlder && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2191 older lines" }), win.visible.map((line, i) => (_jsx(Text, { color: lineColor(line), backgroundColor: BG, children: truncate(line) }, i))), win.hasNewer && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2193 newer lines" })] }));
@@ -130,12 +154,8 @@ export function ContentArea({ output, logs, packet, answer, patchText, busy, scr
     if (packet) {
         return (_jsxs(Box, { flexDirection: "column", paddingX: 1, children: [_jsxs(Text, { color: theme.accent, backgroundColor: BG, children: ["Context \u00B7 ~", packet.estimatedTokens, " tokens \u00B7 ", packet.files.length, " files"] }), _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "─".repeat(40) }), packet.files.slice(0, Math.max(3, maxLines - 6)).map((f, i) => (_jsxs(Text, { color: theme.text, backgroundColor: BG, children: ["\u00B7 ", truncate(f.path)] }, i))), packet.symbols.slice(0, 5).map((s, i) => (_jsxs(Text, { color: theme.dim, backgroundColor: BG, children: ["\u25C7 ", s.kind, " ", s.name] }, `s-${i}`)))] }));
     }
-    if (output.length > 0) {
-        const win = windowLines(wrapPlainLines(output, maxWidth));
-        return (_jsxs(Box, { flexDirection: "column", paddingX: 1, children: [win.hasOlder && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2191 older messages" }), win.visible.map((line, i) => (_jsx(Text, { color: "white", backgroundColor: BG, children: line }, i))), win.hasNewer && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2193 newer messages" })] }));
-    }
     if (logs.length > 0) {
         return (_jsx(Box, { flexDirection: "column", paddingX: 1, children: wrapPlainLines(logs.slice(0, 4), maxWidth).map((line, i) => (_jsx(Text, { color: theme.dim, backgroundColor: BG, children: line }, i))) }));
     }
     return (_jsx(Box, { flexGrow: 1, alignItems: "center", justifyContent: "center", flexDirection: "column", children: _jsxs(Box, { flexDirection: "column", alignItems: "center", children: [_jsx(Text, { color: theme.primary, backgroundColor: "#001a00", children: "\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557" }), _jsx(Text, { color: theme.primary, backgroundColor: "#001a00", children: "\u2551                        \u2551" }), _jsx(Text, { color: theme.primary, backgroundColor: "#001a00", bold: true, children: "\u2551      Agent Smith       \u2551" }), _jsx(Text, { color: theme.primary, backgroundColor: "#001a00", children: "\u2551                        \u2551" }), _jsx(Text, { color: theme.primary, backgroundColor: "#001a00", children: "\u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D" })] }) }));
-}
+});
