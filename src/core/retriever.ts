@@ -1,67 +1,155 @@
 import { execa } from "execa";
 import type { SmithConfig, TaskClassification, ScoredFile } from "../types/index.js";
 import type { SmithDatabase } from "./db.js";
-import { generateWithOllama, extractJson, optionsFromConfig } from "./ollama.js";
-import { GLOBAL_TAGS, heuristicTags, tagMapForPrompt } from "./tags.js";
+import { heuristicTags } from "./tags.js";
 import { expandGraph } from "./graph.js";
 
-const VALID_IDS = new Set(GLOBAL_TAGS.map((t) => t.id));
+const FILE_EXT_PATTERN = /\b([\w./-]+\.[a-z]{2,6})\b/gi;
+const SYMBOL_PATTERN = /\b([A-Z][a-zA-Z0-9]{2,}(?:\.[A-Z][a-zA-Z0-9]{2,})*)\b/g;
+const IDENTIFIER_PATTERN = /\b([a-zA-Z_$][\w.$]{2,})\b/g;
 
-const CLASSIFY_SYSTEM = `You classify a coding task for a retrieval system.
-Reply ONLY with JSON of this exact shape:
-{"tagIds":[numbers],"keywords":[strings],"likelyFiles":[strings],"likelySymbols":[strings],"needsTests":bool,"needsTypes":bool}
-tagIds must come from the provided tag map. keywords are concrete identifiers/terms to grep for. No prose.`;
-
-/** Classify a task into tags, keywords and hints. Falls back to heuristics. */
-export async function classifyTask(args: {
-  config: SmithConfig;
-  task: string;
-  ollamaReady: boolean;
-  model?: string;
-}): Promise<TaskClassification> {
-  const fallback = heuristicClassification(args.task);
-  if (!args.ollamaReady) return fallback;
-
-  const prompt = `TAG MAP: ${tagMapForPrompt()}
-
-TASK: ${args.task}
-
-Return the JSON classification:`;
-
-  const result = await generateWithOllama({
-    baseUrl: args.config.ollama.baseUrl,
-    model: args.model ?? args.config.models.tagger,
-    system: CLASSIFY_SYSTEM,
-    prompt,
-    options: optionsFromConfig(args.config, { num_predict: 220 })
-  });
-
-  if (!result.ok) return fallback;
-  const parsed = extractJson<Partial<TaskClassification>>(result.text);
-  if (!parsed) return fallback;
-
-  return {
-    tagIds: (parsed.tagIds ?? []).map(Number).filter((n) => VALID_IDS.has(n)),
-    keywords: dedupeStrings([...(parsed.keywords ?? []), ...fallback.keywords]).slice(0, 12),
-    likelyFiles: dedupeStrings(parsed.likelyFiles ?? []).slice(0, 8),
-    likelySymbols: dedupeStrings(parsed.likelySymbols ?? []).slice(0, 8),
-    needsTests: parsed.needsTests ?? fallback.needsTests,
-    needsTypes: parsed.needsTypes ?? fallback.needsTypes
-  };
+function extractFileHints(task: string): string[] {
+  const hints: string[] = [];
+  let m: RegExpExecArray | null;
+  FILE_EXT_PATTERN.lastIndex = 0;
+  while ((m = FILE_EXT_PATTERN.exec(task)) !== null) {
+    hints.push(m[1]);
+  }
+  return dedupeStrings(hints);
 }
 
-function heuristicClassification(task: string): TaskClassification {
-  const keywords = dedupeStrings(
-    task
-      .split(/[^A-Za-z0-9_$.]+/)
+function extractSymbolHints(task: string): string[] {
+  const hints: string[] = [];
+  let m: RegExpExecArray | null;
+  SYMBOL_PATTERN.lastIndex = 0;
+  while ((m = SYMBOL_PATTERN.exec(task)) !== null) {
+    hints.push(m[1]);
+  }
+  return dedupeStrings(hints);
+}
+
+function extractKeywords(task: string): string[] {
+  const raw = dedupeStrings(
+    task.split(/[^A-Za-z0-9_$.]+/)
       .filter((w) => w.length >= 3 && !STOP_WORDS.has(w.toLowerCase()))
-  ).slice(0, 10);
+  );
+
+  const symbolHints = extractSymbolHints(task);
+  const fileHints = extractFileHints(task);
+
+  const all = new Set<string>();
+  for (const w of raw) all.add(w);
+  for (const s of symbolHints) all.add(s);
+  for (const f of fileHints) all.add(f);
+
+  return [...all].slice(0, 16);
+}
+
+function findLikelyFiles(db: SmithDatabase, keywords: string[], fileHints: string[]): string[] {
+  const results = new Set<string>();
+
+  for (const hint of fileHints) {
+    const lower = hint.toLowerCase();
+    const rows = db.prepare(
+      "SELECT path FROM files WHERE lower(path) LIKE ? OR lower(path) = ? LIMIT 5"
+    ).all(`%${lower}%`, lower) as Array<{ path: string }>;
+    for (const r of rows) results.add(r.path);
+  }
+
+  for (const kw of keywords.slice(0, 8)) {
+    if (kw.length < 3) continue;
+    const rows = db.prepare(
+      "SELECT path FROM files WHERE lower(path) LIKE ? LIMIT 3"
+    ).all(`%${kw.toLowerCase()}%`) as Array<{ path: string }>;
+    for (const r of rows) results.add(r.path);
+  }
+
+  for (const kw of keywords.slice(0, 8)) {
+    if (kw.length < 3) continue;
+    const rows = db.prepare(
+      "SELECT path FROM files WHERE summary IS NOT NULL AND lower(summary) LIKE ? LIMIT 3"
+    ).all(`%${kw.toLowerCase()}%`) as Array<{ path: string }>;
+    for (const r of rows) results.add(r.path);
+  }
+
+  return [...results].slice(0, 10);
+}
+
+function findLikelySymbols(db: SmithDatabase, keywords: string[], symbolHints: string[]): string[] {
+  const results = new Set<string>();
+
+  for (const hint of symbolHints) {
+    const rows = db.prepare(
+      "SELECT name FROM symbols WHERE lower(name) = ? LIMIT 5"
+    ).all(hint.toLowerCase()) as Array<{ name: string }>;
+    for (const r of rows) results.add(r.name);
+  }
+
+  for (const kw of keywords.slice(0, 10)) {
+    if (kw.length < 3) continue;
+    const rows = db.prepare(
+      "SELECT name FROM symbols WHERE lower(name) LIKE ? LIMIT 5"
+    ).all(`%${kw.toLowerCase()}%`) as Array<{ name: string }>;
+    for (const r of rows) results.add(r.name);
+  }
+
+  return [...results].slice(0, 10);
+}
+
+function inferTags(task: string): number[] {
+  const idSet = new Set(heuristicTags(task, task));
+
+  const patterns: Array<[number, RegExp]> = [
+    [1, /\b(auth|login|logout|session|token|jwt|oauth|permission|credential)\b/i],
+    [2, /\b(api|endpoint|route|handler|controller|middleware|request|response|express|fastify)\b/i],
+    [3, /\b(ui|component|render|screen|page|view|layout|style|modal|button|widget|frontend|react|vue)\b/i],
+    [4, /\b(database|sql|query|schema|migration|orm|prisma|sequelize|pg|postgres|mongo|redis|table)\b/i],
+    [5, /\b(state|store|redux|context|signal|recoil|pinia|vuex|zustand|mobx)\b/i],
+    [7, /\b(config|env|settings|environment|\.json|\.yaml|\.toml|\.ini|options)\b/i],
+    [8, /\b(test|spec|mock|stub|fixture|assert|expect|jest|vitest|mocha|coverage)\b/i],
+    [9, /\b(build|compile|bundle|webpack|vite|esbuild|package|tsconfig|dist|deploy)\b/i],
+    [11, /\b(type|interface|enum|typedef|struct|schema|dto|model)\b/i],
+    [13, /\b(fetch|axios|http|websocket|socket|sse|stream|network|client|server)\b/i],
+    [16, /\b(error|exception|bug|crash|fail|fix|debug|handle|catch|throw)\b/i],
+    [19, /\b(cli|command|terminal|stdin|stdout|argv|args|flag|option|parse)\b/i],
+    [22, /\b(secret|encrypt|decrypt|hash|salt|security|vuln|csrf|xss|inject)\b/i],
+    [24, /\b(search|find|filter|sort|index|lookup|query|grep|scan)\b/i],
+  ];
+
+  for (const [id, pattern] of patterns) {
+    if (pattern.test(task)) idSet.add(id);
+  }
+
+  return [...idSet].slice(0, 6);
+}
+
+/** Fully algorithmic task classification — no LLM needed. */
+export async function classifyTask(args: {
+  db?: SmithDatabase;
+  config?: SmithConfig;
+  task: string;
+  ollamaReady?: boolean;
+  model?: string;
+}): Promise<TaskClassification> {
+  const task = args.task;
+  const keywords = extractKeywords(task);
+  const fileHints = extractFileHints(task);
+  const symbolHints = extractSymbolHints(task);
+  const tagIds = inferTags(task);
+
+  let likelyFiles: string[] = [];
+  let likelySymbols: string[] = [];
+
+  if (args.db) {
+    likelyFiles = findLikelyFiles(args.db, keywords, fileHints);
+    likelySymbols = findLikelySymbols(args.db, keywords, symbolHints);
+  }
 
   return {
-    tagIds: heuristicTags(task, task),
-    keywords,
-    likelyFiles: [],
-    likelySymbols: keywords.filter((k) => /[A-Z]/.test(k) || k.includes(".")),
+    tagIds,
+    keywords: keywords.slice(0, 12),
+    likelyFiles: dedupeStrings([...fileHints, ...likelyFiles]).slice(0, 10),
+    likelySymbols: dedupeStrings([...symbolHints, ...likelySymbols]).slice(0, 10),
     needsTests: /\btest|spec|coverage\b/i.test(task),
     needsTypes: /\btype|interface|schema|model\b/i.test(task)
   };

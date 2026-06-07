@@ -1,3 +1,14 @@
+export type ProviderType = "ollama" | "openai" | "anthropic";
+
+export type ProviderEntry = {
+  type: ProviderType;
+  baseUrl: string;
+  apiKey?: string;
+  apiKeyEnv?: string;
+};
+
+export type ProviderMap = Record<string, ProviderEntry>;
+
 export type SmithConfig = {
   models: {
     tagger: string;
@@ -5,8 +16,14 @@ export type SmithConfig = {
     patcher: string;
     debugger: string;
   };
+  providers: ProviderMap;
+  defaultProvider: string;
   ollama: {
     baseUrl: string;
+    temperature: number;
+    numPredict: number;
+  };
+  options: {
     temperature: number;
     numPredict: number;
   };

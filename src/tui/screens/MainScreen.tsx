@@ -5,7 +5,7 @@ import { theme } from "../theme.js"
 import { Header } from "../components/Header.js"
 import { ContentArea } from "../components/ContentArea.js"
 import { MatrixRain } from "../components/MatrixRain.js"
-import { LiveOutputPane, LIVE_PANE_ROWS } from "../components/LiveOutputPane.js"
+import { InfoPanel } from "../components/InfoPanel.js"
 
 export type MainView = "context" | "patch" | "answer"
 
@@ -36,6 +36,13 @@ export type MainScreenProps = {
   streamTokens: number
   streamStartMs: number
   pendingPrompt: string | null
+  activeQuestion: { question: string; options: string[]; selectedIndex: number; command: string | null } | null
+  setupPrompt: string | null
+  textInputModal: { prompt: string; onSubmit: string; onCancel?: string } | null
+  textInputModalValue: string
+  answerMetrics: { totalTimeMs: number; totalTokens: number } | null
+  autocomplete: { suggestions: string[]; top: string } | null
+  autocompleteIndex: number
 }
 
 function fitLine(text: string, width: number): string {
@@ -56,41 +63,74 @@ function PromptBar({
   busy,
   mode,
   width,
+  setupPrompt,
+  autocomplete,
+  autocompleteIndex,
 }: {
   input: string
   busy: boolean
   mode: "discuss" | "build"
   width: number
+  setupPrompt?: string | null
+  autocomplete?: { suggestions: string[]; top: string } | null
+  autocompleteIndex?: number
 }) {
   const gutter = 2
   const barWidth = Math.max(8, width - gutter * 2)
-  const fieldInnerWidth = Math.max(1, barWidth - 2)
-  const modeTag = `[${mode.toUpperCase()}]`
-  const modeColor = mode === "build" ? theme.warn : theme.accent
-  const leftRaw = `${busy ? "..." : ">"} ${input}`
-  const maxLeft = Math.max(1, fieldInnerWidth - modeTag.length - 1)
-  const left = leftRaw.length > maxLeft ? leftRaw.slice(0, Math.max(0, maxLeft - 1)) + "..." : leftRaw
-  const gap = Math.max(0, fieldInnerWidth - left.length - modeTag.length)
+  const contentWidth = Math.max(4, barWidth - 4)
+  const modeTag = setupPrompt ? `[SETUP]` : `[${mode.toUpperCase()}]`
+  const modeColor = setupPrompt ? theme.accent : mode === "build" ? theme.warn : theme.accent
+
+  const segments = input ? input.split("\n") : [""]
+  const lines: string[] = []
+  for (const seg of segments) {
+    if (!seg) { lines.push(""); continue }
+    let pos = 0
+    while (pos < seg.length) {
+      lines.push(seg.slice(pos, pos + contentWidth))
+      pos += contentWidth
+    }
+  }
+  const totalLines = Math.max(1, lines.length)
+  const maxVisible = 8
+  const visible = lines.slice(-maxVisible)
+  const boxHeight = Math.max(3, Math.min(visible.length, maxVisible) + 2)
 
   return (
-    <Box flexDirection="row" width={width} height={3} overflow="hidden">
-      <Box width={gutter} height={3} overflow="hidden" />
+    <Box flexDirection="row" width={width} height={boxHeight} overflow="hidden">
+      <Box width={gutter} height={boxHeight} overflow="hidden" />
 
       <Box
         width={barWidth}
-        height={3}
+        height={boxHeight}
         borderStyle="round"
-        borderColor={mode === "build" ? theme.warn : theme.accent}
+        borderColor={modeColor}
         overflow="hidden"
       >
-        <Text backgroundColor="#002200">
-          <Text color={theme.text} backgroundColor="#002200">{left}</Text>
-          {gap > 0 && <Text backgroundColor="#002200">{" ".repeat(gap)}</Text>}
-          <Text color={modeColor} bold backgroundColor="#002200">{modeTag}</Text>
-        </Text>
+        <Box flexDirection="column" width={contentWidth} paddingX={1}>
+          {visible.map((line, i) => {
+            const isLast = i === visible.length - 1
+            const prefix = i === 0 ? (busy ? "⟳ " : "> ") : "  "
+            return (
+              <Box key={i} width={contentWidth} flexDirection="row">
+                <Text backgroundColor="#002200">
+                  <Text color={theme.dim} backgroundColor="#002200">{prefix}</Text>
+                  <Text color={theme.text} backgroundColor="#002200">{line}</Text>
+                </Text>
+                {isLast && (
+                  <>
+                    <Box flexGrow={1}><Text backgroundColor="#002200"> </Text></Box>
+                    <Text color={modeColor} bold backgroundColor="#002200">{modeTag}</Text>
+                    {!busy && <Text color={theme.dim} backgroundColor="#002200">▊</Text>}
+                  </>
+                )}
+              </Box>
+            )
+          })}
+        </Box>
       </Box>
 
-      <Box width={gutter} height={3} overflow="hidden" />
+      <Box width={gutter} height={boxHeight} overflow="hidden" />
     </Box>
   )
 }
@@ -201,14 +241,15 @@ export function MainScreen(props: MainScreenProps) {
   // The outer border consumes two columns and two rows. Keep all manual padding/fill
   // inside that interior width so Ink never wraps into an extra terminal line.
   const frameInnerWidth = Math.max(1, termCols - 2)
-  const contentMaxWidth = Math.max(20, frameInnerWidth - 4)
 
-  // Fixed chrome, roughly: border + header + input + status + footer.
-  // When busy, reserve rows for the live output pane above history.
   // Keep ContentArea bounded so it cannot push the footer past the viewport.
-  const livePaneRows = props.busy ? LIVE_PANE_ROWS : 0
-  const contentLines = Math.max(3, termRows - 14 - livePaneRows)
+  const sidebarWidth = Math.min(22, Math.floor(termCols * 0.22))
+  const contentWidth = frameInnerWidth - sidebarWidth - 2
+  const contentMaxWidth = Math.max(20, contentWidth - 4)
+  const contentLines = Math.max(3, termRows - 14)
   const rainHeight = Math.max(1, termRows - 6)
+  const popupWidth = Math.min(frameInnerWidth - 4, Math.max(40, Math.floor(frameInnerWidth * 0.55)))
+  const aq = props.activeQuestion
 
   const footer = fitLine(
     "/help · Enter submit · Esc clear · ↑/↓ scroll · Ctrl+↑/↓ prompt history · PgUp/PgDn fast scroll · Ctrl+C quit",
@@ -243,32 +284,115 @@ export function MainScreen(props: MainScreenProps) {
           />
         </Box>
 
-        <Box flexGrow={1} flexShrink={1} flexDirection="column" overflow="hidden">
-          {props.busy && (
-            <Box flexShrink={0} flexDirection="column" height={LIVE_PANE_ROWS} width={frameInnerWidth} overflow="hidden">
-              <LiveOutputPane
-                text={props.streamText}
-                tokens={props.streamTokens}
-                startMs={props.streamStartMs}
-                model={props.model}
-                phase={props.phase}
-                width={frameInnerWidth}
-              />
-            </Box>
-          )}
-          <ContentArea
-            output={props.output}
-            logs={props.logs}
-            packet={props.packet}
-            answer={props.answer}
-            patchText={props.patchText}
-            busy={props.busy}
-            scrollOffset={props.scrollOffset}
-            maxLines={contentLines}
-            maxWidth={contentMaxWidth}
-            pendingPrompt={props.pendingPrompt}
-          />
+        <Box flexGrow={1} flexShrink={1} position="relative" overflow="hidden" flexDirection="row">
+          <Box flexGrow={1} flexShrink={1} position="relative" overflow="hidden">
+            <ContentArea
+              output={props.output}
+              logs={props.logs}
+              packet={props.packet}
+              answer={props.answer}
+              patchText={props.patchText}
+              busy={props.busy}
+              scrollOffset={props.scrollOffset}
+              maxLines={contentLines}
+              maxWidth={contentMaxWidth}
+              pendingPrompt={props.pendingPrompt}
+              streamText={props.streamText}
+              streamTokens={props.streamTokens}
+              streamStartMs={props.streamStartMs}
+              phase={props.phase}
+              model={props.model}
+              activeQuestion={props.activeQuestion}
+              answerMetrics={props.answerMetrics}
+            />
+            {aq && !props.busy && (() => {
+              const cw = popupWidth - 2
+              const MAX_VISIBLE = Math.min(12, termRows - 10)
+              let startIdx = Math.max(0, aq.selectedIndex - Math.floor(MAX_VISIBLE / 2))
+              let endIdx = Math.min(aq.options.length, startIdx + MAX_VISIBLE)
+              if (endIdx - startIdx < MAX_VISIBLE && startIdx > 0) {
+                startIdx = Math.max(0, endIdx - MAX_VISIBLE)
+              }
+              return (
+                <Box position="absolute" width="100%" height="100%" alignItems="center" justifyContent="center">
+                  <Box flexDirection="column" width={popupWidth} borderStyle="round" borderColor={theme.accent}>
+                    <Text bold color={theme.accent} backgroundColor="black">{"  " + aq.question.padEnd(cw)}</Text>
+                    <BlackLine width={cw} />
+                    {startIdx > 0 && (
+                      <Text color={theme.dim} backgroundColor="black">{"  ↑ " + startIdx + " more..."}</Text>
+                    )}
+                    {aq.options.slice(startIdx, endIdx).map((opt, i) => {
+                      const realIdx = startIdx + i
+                      return (
+                        <Text key={realIdx} color={realIdx === aq.selectedIndex ? theme.accent : theme.dim} bold={realIdx === aq.selectedIndex} backgroundColor="black">
+                          {(realIdx === aq.selectedIndex ? "  → " : "    ") + opt.padEnd(cw - 4)}
+                        </Text>
+                      )
+                    })}
+                    {endIdx < aq.options.length && (
+                      <Text color={theme.dim} backgroundColor="black">{"  ↓ " + (aq.options.length - endIdx) + " more..."}</Text>
+                    )}
+                    <BlackLine width={cw} />
+                    <Text color={theme.dim} backgroundColor="black">{"  ↑/↓ · Enter · Esc".padEnd(cw)}</Text>
+                  </Box>
+                </Box>
+              )
+            })()}
+            {props.textInputModal && !props.busy && (() => {
+              const cw = popupWidth - 2
+              const val = props.textInputModalValue
+              const displayVal = val ? val.slice(-(cw - 6)) : ""
+              return (
+                <Box position="absolute" width="100%" height="100%" alignItems="center" justifyContent="center">
+                  <Box flexDirection="column" width={popupWidth} borderStyle="round" borderColor={theme.accent}>
+                    <Text bold color={theme.accent} backgroundColor="black">{"  " + props.textInputModal.prompt.padEnd(cw - 2)}</Text>
+                    <BlackLine width={popupWidth - 2} />
+                    <Box flexDirection="row">
+                      <Text color={theme.accent} backgroundColor="black">  {"> "}</Text>
+                      <Text backgroundColor="black">{displayVal}</Text>
+                      <Text color={theme.accent} backgroundColor="black">▊</Text>
+                    </Box>
+                    <BlackLine width={popupWidth - 2} />
+                    <Text color={theme.dim} backgroundColor="black">{"  Enter · Esc to cancel".padEnd(cw - 2)}</Text>
+                  </Box>
+                </Box>
+              )
+            })()}
+          </Box>
+
+          <Box width={sidebarWidth} flexDirection="column" overflow="hidden" borderStyle="single" borderColor={theme.border} borderLeft={false} borderRight={false} borderTop={false} borderBottom={false}>
+            <InfoPanel
+              root={props.root}
+              model={props.model}
+              packet={props.packet}
+              maxTokens={props.maxTokens}
+              ollamaReady={props.ollamaReady}
+              filesTotal={props.filesTotal}
+              maxLines={contentLines}
+            />
+          </Box>
         </Box>
+
+        {props.autocomplete && props.autocomplete.suggestions.length >= 1 && !props.busy && (
+          <Box flexShrink={0} flexDirection="row" width={frameInnerWidth} overflow="hidden">
+            <Box width={2} />
+            <Box flexDirection="column" borderStyle="single" borderColor={theme.border}>
+              {props.autocomplete.suggestions.slice(0, Math.min(8, props.autocomplete.suggestions.length)).map((s, i) => {
+                const isSel = i === props.autocompleteIndex
+                return (
+                  <Box key={i} flexDirection="row">
+                    <Text backgroundColor="black">
+                      <Text color={isSel ? theme.accent : "#1a3a1a"} bold={isSel} backgroundColor="black">
+                        {isSel ? "▸ " : "  "}{s}
+                      </Text>
+                    </Text>
+                  </Box>
+                )
+              })}
+            </Box>
+            <Box width={2} />
+          </Box>
+        )}
 
         <Box flexShrink={0} flexDirection="column" width={frameInnerWidth} overflow="hidden">
           <PromptBar
@@ -276,6 +400,9 @@ export function MainScreen(props: MainScreenProps) {
             busy={props.busy}
             mode={props.mode}
             width={frameInnerWidth}
+            setupPrompt={props.setupPrompt}
+            autocomplete={props.autocomplete}
+            autocompleteIndex={props.autocompleteIndex}
           />
         </Box>
 

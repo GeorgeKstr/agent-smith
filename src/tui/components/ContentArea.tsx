@@ -135,6 +135,18 @@ function wrapPlainLines(lines: string[], width: number): string[] {
   return out
 }
 
+function fmtElapsed(startMs: number): string {
+  const s = Math.max(0, (Date.now() - startMs) / 1000)
+  if (s < 60) return `${s.toFixed(1)}s`
+  return `${Math.floor(s / 60)}m${Math.floor(s % 60)}s`
+}
+
+function fmtTps(tokens: number, startMs: number): string {
+  const s = Math.max(0.1, (Date.now() - startMs) / 1000)
+  const tps = tokens / s
+  return `${tps.toFixed(1)} t/s`
+}
+
 export const ContentArea = React.memo(function ContentArea({
   output,
   logs,
@@ -146,6 +158,13 @@ export const ContentArea = React.memo(function ContentArea({
   maxLines,
   maxWidth,
   pendingPrompt,
+  streamText,
+  streamTokens,
+  streamStartMs,
+  phase,
+  model,
+  activeQuestion,
+  answerMetrics,
 }: {
   output: string[]
   logs: string[]
@@ -157,6 +176,13 @@ export const ContentArea = React.memo(function ContentArea({
   maxLines: number
   maxWidth: number
   pendingPrompt?: string | null
+  streamText?: string
+  streamTokens?: number
+  streamStartMs?: number
+  phase?: string
+  model?: string
+  activeQuestion?: { question: string; options: string[]; selectedIndex: number; command: string | null } | null
+  answerMetrics?: { totalTimeMs: number; totalTokens: number } | null
 }) {
   const windowLines = <T,>(lines: T[], overrideMax?: number) => {
     const safeMax = Math.max(3, overrideMax ?? maxLines)
@@ -316,14 +342,38 @@ export const ContentArea = React.memo(function ContentArea({
           )
         })}
         {win.hasNewer && <Text color={theme.dim} backgroundColor={BG}>↓ newer messages</Text>}
-        {pendingPrompt && (
-          <>
-            <Text color={theme.dim} backgroundColor={BG}>{"─".repeat(40)}</Text>
-            <Text backgroundColor="#002800">
-              <Text color="#00ff44" bold backgroundColor="#002800">{"┃ ▶ "}</Text>
-              <Text color="#00ff44" bold backgroundColor="#002800">{pendingPrompt}</Text>
-              <Text color="#00ff44" backgroundColor="#002800">{" ⟳"}</Text>
+        {pendingPrompt && wrapPlainLines([pendingPrompt], maxWidth).map((line, i, arr) => (
+          <Text key={i} backgroundColor="#002800">
+            <Text color="#00ff44" bold backgroundColor="#002800">
+              {i === 0 ? "┃ ▶ " : "    "}
             </Text>
+            <Text color="#00ff44" backgroundColor="#002800">
+              {line}
+              {i === arr.length - 1 && " ⟳"}
+            </Text>
+          </Text>
+        ))}
+        {busy && streamText && (
+          <>
+            <Text bold backgroundColor="#1a1a2a">
+              <Text color={theme.primary} backgroundColor="#1a1a2a">┌ Smith · {phase || "thinking"}</Text>
+              {(streamTokens ?? 0) > 0 && (
+                <Text color={theme.dim} backgroundColor="#1a1a2a">
+                  {" · "}{streamTokens} tok
+                  {(streamStartMs ?? 0) > 0 ? " · " + fmtTps(streamTokens ?? 0, streamStartMs ?? 0) : ""}
+                  {(streamStartMs ?? 0) > 0 ? " · " + fmtElapsed(streamStartMs ?? 0) : ""}
+                </Text>
+              )}
+              <Text color={theme.primary} backgroundColor="#1a1a2a"> ┐</Text>
+            </Text>
+            {wrapPlainLines(streamText.split("\n"), maxWidth).slice(-4).map((line, i, arr) => (
+              <Text key={i} color="white" backgroundColor="#1a1a2a">
+                <Text color={theme.primary} backgroundColor="#1a1a2a">│ </Text>
+                {line}
+                {i === arr.length - 1 && <Text color={theme.accent} backgroundColor="#1a1a2a">▊</Text>}
+                <Text color={theme.primary} backgroundColor="#1a1a2a"> │</Text>
+              </Text>
+            ))}
           </>
         )}
       </Box>
@@ -357,7 +407,18 @@ export const ContentArea = React.memo(function ContentArea({
     const visible = answerDisplay.slice(start, end)
     return (
       <Box flexDirection="column" paddingX={1}>
-        <Text color={theme.primary} backgroundColor={BG}>Answer</Text>
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text color={theme.primary} backgroundColor={BG}>Answer</Text>
+          {answerMetrics && answerMetrics.totalTokens > 0 && (
+            <Text color={theme.dim} backgroundColor={BG}>
+              {answerMetrics.totalTimeMs >= 60000
+                ? `${Math.floor(answerMetrics.totalTimeMs / 60000)}m${Math.round((answerMetrics.totalTimeMs % 60000) / 1000)}s`
+                : `${(answerMetrics.totalTimeMs / 1000).toFixed(1)}s`}
+              {" · "}{answerMetrics.totalTokens} tok
+              {" · "}{(answerMetrics.totalTokens / Math.max(0.1, answerMetrics.totalTimeMs / 1000)).toFixed(1)} t/s
+            </Text>
+          )}
+        </Box>
         <Text color={theme.dim} backgroundColor={BG}>{"─".repeat(40)}</Text>
         {win.hasOlder && <Text color={theme.dim} backgroundColor={BG}>↑ older lines</Text>}
         {visible.map((line, i) => (

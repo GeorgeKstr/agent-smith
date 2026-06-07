@@ -1,5 +1,5 @@
 import type { SmithConfig } from "../types/index.js";
-import { generateWithOllama, optionsFromConfig } from "./ollama.js";
+import { generateWithProvider } from "./providers.js";
 
 const SYSTEM = `You analyze source files for a code index.
 Reply with a one-sentence summary (max 30 words) and a numeric importance score (1-10).
@@ -7,7 +7,7 @@ Importance reflects how central the file is to the project: 1-3 peripheral/confi
 Format exactly: SUMMARY: <one sentence> | IMPORTANCE: <number>`;
 
 /**
- * Produce a one-line file summary and importance rating via Ollama.
+ * Produce a one-line file summary and importance rating via the configured provider.
  * Returns an empty summary and 0 when the model/server is unavailable.
  */
 export async function summarizeFile(args: {
@@ -25,13 +25,12 @@ Language: ${args.language}
 ${snippet}
 --- END ---`;
 
-  const result = await generateWithOllama({
-    baseUrl: args.config.ollama.baseUrl,
-    model: args.model ?? args.config.models.summarizer,
-    system: SYSTEM,
+  const result = await generateWithProvider(
+    args.config,
+    args.model ?? args.config.models.summarizer,
     prompt,
-    options: optionsFromConfig(args.config, { num_predict: 160 })
-  });
+    { system: SYSTEM, maxTokens: 160 }
+  );
 
   if (!result.ok) return { summary: "", importance: 0 };
 

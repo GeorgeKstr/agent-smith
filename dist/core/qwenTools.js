@@ -1,4 +1,5 @@
-import { chatWithQwenFunctions, parseFunctionArguments } from "./ollama.js";
+import { parseFunctionArguments } from "./ollama.js";
+import { chatWithProvider } from "./providers.js";
 function stringifyToolResult(value) {
     if (typeof value === "string")
         return value;
@@ -31,14 +32,7 @@ export async function runQwenFunctionLoop(args) {
     const maxToolRounds = args.maxToolRounds ?? 4;
     let toolCallCount = 0;
     for (let round = 0; round <= maxToolRounds; round++) {
-        const result = await chatWithQwenFunctions({
-            baseUrl: args.baseUrl,
-            model: args.model,
-            messages,
-            functions,
-            options: args.options,
-            think: args.think ?? false
-        });
+        const result = await chatWithProvider(args.config, args.modelSpec, messages, functions);
         if (!result.ok)
             return { ok: false, messages, finalText: "", toolCallCount, error: result.error };
         messages.push(...result.messages);

@@ -1,4 +1,6 @@
 import React from "react";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { Command } from "commander";
 import { render } from "ink";
 import { detectProjectRoot } from "./core/projectRoot.js";
@@ -7,7 +9,7 @@ import { createEventBus } from "./core/events.js";
 import { openDatabase } from "./core/db.js";
 import { createIndexer } from "./core/indexer.js";
 import { createWatcher } from "./core/watcher.js";
-import { isOllamaAvailable, listOllamaModels } from "./core/ollama.js";
+import { isProviderAvailable, listProviderModels } from "./core/providers.js";
 import { runAsk, runPatch } from "./core/taskRunner.js";
 import { fileNeighbors, renderFileGraph } from "./core/graph.js";
 import { tagName } from "./core/tags.js";
@@ -19,6 +21,63 @@ async function bootstrap() {
     const db = openDatabase(root);
     const events = createEventBus();
     return { root, config, db, events };
+}
+function getConfigValue(obj, keyPath) {
+    const parts = keyPath.split(".");
+    let current = obj;
+    for (const part of parts) {
+        if (current && typeof current === "object" && part in current) {
+            current = current[part];
+        }
+        else {
+            return undefined;
+        }
+    }
+    return current;
+}
+function setConfigValue(obj, keyPath, rawValue) {
+    const parts = keyPath.split(".");
+    let current = obj;
+    for (let i = 0; i < parts.length - 1; i++) {
+        if (!(parts[i] in current) || typeof current[parts[i]] !== "object") {
+            current[parts[i]] = {};
+        }
+        current = current[parts[i]];
+    }
+    const lastKey = parts[parts.length - 1];
+    const existing = current[lastKey];
+    if (typeof existing === "number") {
+        current[lastKey] = Number(rawValue);
+    }
+    else if (typeof existing === "boolean") {
+        current[lastKey] = rawValue === "true" || rawValue === "1";
+    }
+    else if (Array.isArray(existing)) {
+        try {
+            current[lastKey] = JSON.parse(rawValue);
+        }
+        catch {
+            current[lastKey] = rawValue.split(",").map((s) => s.trim());
+        }
+    }
+    else {
+        try {
+            current[lastKey] = JSON.parse(rawValue);
+        }
+        catch {
+            current[lastKey] = rawValue;
+        }
+    }
+}
+function unsetConfigValue(obj, keyPath) {
+    const parts = keyPath.split(".");
+    let current = obj;
+    for (let i = 0; i < parts.length - 1; i++) {
+        if (!(parts[i] in current))
+            return;
+        current = current[parts[i]];
+    }
+    delete current[parts[parts.length - 1]];
 }
 export function createCli() {
     const program = new Command();
@@ -49,12 +108,14 @@ export function createCli() {
         const symbols = db.prepare("SELECT COUNT(*) AS c FROM symbols").get().c;
         const imports = db.prepare("SELECT COUNT(*) AS c FROM imports WHERE to_file_id IS NOT NULL").get().c;
         const tagged = db.prepare("SELECT COUNT(DISTINCT file_id) AS c FROM file_tags").get().c;
-        const ollama = await isOllamaAvailable(config.ollama.baseUrl);
-        const models = ollama ? await listOllamaModels(config.ollama.baseUrl) : [];
+        const available = await isProviderAvailable(config);
+        const models = available ? await listProviderModels(config) : [];
         console.log(JSON.stringify({
             root,
             patcherModel: config.models.patcher,
-            ollama: ollama ? "online" : "offline",
+            defaultProvider: config.defaultProvider,
+            providers: Object.keys(config.providers).length > 0 ? Object.keys(config.providers) : ["ollama"],
+            providerAvailable: available,
             installedModels: models,
             files,
             symbols,
@@ -167,6 +228,120 @@ export function createCli() {
         const neighbors = fileNeighbors(db, relPath);
         console.log(neighbors ? renderFileGraph(neighbors) : `No graph data for "${target}".`);
         db.close();
+    });
+    program
+        .command("config")
+        .description("Manage Agent Smith configuration")
+        .argument("[action]", "show, set, get, unset, add-provider, remove-provider, default-provider")
+        .argument("[key...]", "config key path (e.g., models.patcher) and optional value")
+        .option("--provider <name>", "provider ID for add-provider/remove-provider")
+        .option("--url <url>", "base URL for add-provider")
+        .option("--key-env <env>", "API key env var for add-provider")
+        .option("--type <type>", "provider type: openai, anthropic, ollama")
+        .action(async (action, keyParts, opts) => {
+        const { root, config } = await bootstrap();
+        const configPath = path.join(root, ".agent", "config.json");
+        const saveConfig = async () => {
+            await fs.writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
+        };
+        if (!action || action === "show") {
+            console.log(JSON.stringify(config, null, 2));
+            return;
+        }
+        if (action === "list-providers") {
+            console.log(JSON.stringify({
+                defaultProvider: config.defaultProvider,
+                providers: Object.keys(config.providers),
+                builtin: ["ollama"]
+            }, null, 2));
+            return;
+        }
+        if (action === "add-provider") {
+            const providerId = opts.provider;
+            const providerType = (opts.type || "openai");
+            const baseUrl = opts.url || (providerType === "openai" ? "https://api.openai.com/v1" :
+                providerType === "anthropic" ? "https://api.anthropic.com" :
+                    "http://127.0.0.1:11434");
+            if (!providerId) {
+                console.log("Usage: smith config add-provider --provider <id> [--url <url>] [--key-env <env>] [--type <openai|anthropic|ollama>]");
+                return;
+            }
+            config.providers[providerId] = {
+                type: providerType,
+                baseUrl,
+                apiKeyEnv: opts.keyEnv || undefined,
+            };
+            await saveConfig();
+            console.log(`Provider "${providerId}" (${providerType}) added.`);
+            return;
+        }
+        if (action === "remove-provider") {
+            const providerId = opts.provider;
+            if (!providerId) {
+                console.log("Usage: smith config remove-provider --provider <id>");
+                return;
+            }
+            if (providerId === "ollama") {
+                console.log("Cannot remove the built-in ollama provider.");
+                return;
+            }
+            delete config.providers[providerId];
+            if (config.defaultProvider === providerId) {
+                config.defaultProvider = "ollama";
+            }
+            await saveConfig();
+            console.log(`Provider "${providerId}" removed.`);
+            return;
+        }
+        if (action === "default-provider") {
+            const providerId = keyParts?.[0];
+            if (!providerId) {
+                console.log(`Current default provider: ${config.defaultProvider}`);
+                return;
+            }
+            if (providerId !== "ollama" && !config.providers[providerId]) {
+                console.log(`Unknown provider: ${providerId}. Add it first with: smith config add-provider --provider ${providerId}`);
+                return;
+            }
+            config.defaultProvider = providerId;
+            await saveConfig();
+            console.log(`Default provider set to "${providerId}".`);
+            return;
+        }
+        if (action === "set") {
+            if (!keyParts || keyParts.length < 2) {
+                console.log("Usage: smith config set <key.path> <value>");
+                return;
+            }
+            const keyPath = keyParts[0];
+            const rawValue = keyParts.slice(1).join(" ");
+            setConfigValue(config, keyPath, rawValue);
+            await saveConfig();
+            console.log(`Set ${keyPath} = ${JSON.stringify(getConfigValue(config, keyPath))}`);
+            return;
+        }
+        if (action === "get") {
+            const keyPath = keyParts?.[0];
+            if (!keyPath) {
+                console.log("Usage: smith config get <key.path>");
+                return;
+            }
+            const value = getConfigValue(config, keyPath);
+            console.log(JSON.stringify(value, null, 2));
+            return;
+        }
+        if (action === "unset") {
+            const keyPath = keyParts?.[0];
+            if (!keyPath) {
+                console.log("Usage: smith config unset <key.path>");
+                return;
+            }
+            unsetConfigValue(config, keyPath);
+            await saveConfig();
+            console.log(`Unset ${keyPath} (reverted to default).`);
+            return;
+        }
+        console.log(`Unknown config action: ${action}. Try: show, set, get, unset, list-providers, add-provider, remove-provider, default-provider`);
     });
     program.action(async () => {
         const { root, config, db, events } = await bootstrap();

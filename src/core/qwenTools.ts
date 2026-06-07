@@ -1,5 +1,7 @@
-import type { OllamaGenerateOptions, QwenChatMessage, QwenFunctionDefinition } from "./ollama.js";
-import { chatWithQwenFunctions, parseFunctionArguments } from "./ollama.js";
+import type { SmithConfig } from "../types/index.js";
+import type { QwenChatMessage, QwenFunctionDefinition } from "./ollama.js";
+import { parseFunctionArguments } from "./ollama.js";
+import { chatWithProvider } from "./providers.js";
 
 export type QwenToolHandler = (args: Record<string, unknown>) => unknown | Promise<unknown>;
 
@@ -41,11 +43,10 @@ function functionCalls(messages: QwenChatMessage[]): Array<{ name: string; argum
  * assistant function_call -> local function execution -> role:function result -> final assistant answer.
  */
 export async function runQwenFunctionLoop(args: {
-  baseUrl: string;
-  model: string;
+  config: SmithConfig;
+  modelSpec: string;
   messages: QwenChatMessage[];
   tools: RegisteredQwenTool[];
-  options?: OllamaGenerateOptions;
   think?: boolean;
   maxToolRounds?: number;
   onToolCall?: (call: { name: string; args: Record<string, unknown> }) => void;
@@ -57,14 +58,12 @@ export async function runQwenFunctionLoop(args: {
   let toolCallCount = 0;
 
   for (let round = 0; round <= maxToolRounds; round++) {
-    const result = await chatWithQwenFunctions({
-      baseUrl: args.baseUrl,
-      model: args.model,
+    const result = await chatWithProvider(
+      args.config,
+      args.modelSpec,
       messages,
-      functions,
-      options: args.options,
-      think: args.think ?? false
-    });
+      functions
+    );
 
     if (!result.ok) return { ok: false, messages, finalText: "", toolCallCount, error: result.error };
     messages.push(...result.messages);

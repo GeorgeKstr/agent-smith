@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from "react"
+import React, { useEffect, useState, useCallback, useRef, useMemo } from "react"
 import { useApp, useInput, useStdout } from "ink"
 import fs from "node:fs/promises"
 import path from "node:path"
@@ -6,11 +6,12 @@ import type { BootState, SmithConfig, ContextPacket, PromptIntent } from "../typ
 import type { SmithDatabase } from "../core/db.js"
 import type { Indexer } from "../core/indexer.js"
 import { runAsk, runPatch, undoPatchFromDiff } from "../core/taskRunner.js"
-import { isOllamaAvailable, listOllamaModels, resolveModelName } from "../core/ollama.js"
+import { isProviderAvailable, listProviderModels, resolveProviderModelName, invalidateProviderCache } from "../core/providers.js"
 import { startLanServer } from "../core/lanServer.js"
 import { BootScreen } from "./screens/BootScreen.js"
 import { MainScreen } from "./screens/MainScreen.js"
 import { IndexDashboard } from "./screens/IndexDashboard.js"
+import { ContextPreview } from "./screens/ContextPreview.js"
 
 const initialBoot: BootState = {
   phase: "idle",
@@ -56,10 +57,12 @@ type PersistedUiState = {
   modelOverride: string | null
   output: string[]
   promptHistory: string[]
+  answeredQuestions: string[]
+  animationEnabled: boolean
 }
 
 const UI_STATE_REL_PATH = path.join(".agent", "tui-state.json")
-const UI_STATE_VERSION = 1
+const UI_STATE_VERSION = 3
 const MAX_OUTPUT_LINES = 1500
 const MAX_PROMPT_HISTORY = 120
 
@@ -72,6 +75,15 @@ function toChatLines(prefix: string, text: string): string[] {
   if (lines.length === 0) return [prefix]
   const [first, ...rest] = lines
   return [`${prefix}${first}`, ...rest.map((line) => `  ${line}`)]
+}
+
+function resolveModelLocal(preferred: string, installed: string[]): string {
+  if (installed.length === 0) return preferred
+  if (installed.includes(preferred)) return preferred
+  const family = preferred.split(":")[0]
+  const sameFamily = installed.filter((m) => m.split(":")[0] === family)
+  if (sameFamily.length > 0) return sameFamily[0]
+  return installed[0]
 }
 
 async function loadUiState(root: string): Promise<PersistedUiState | null> {
@@ -88,7 +100,11 @@ async function loadUiState(root: string): Promise<PersistedUiState | null> {
       output: Array.isArray(parsed.output) ? parsed.output.filter((v): v is string => typeof v === "string") : [],
       promptHistory: Array.isArray(parsed.promptHistory)
         ? parsed.promptHistory.filter((v): v is string => typeof v === "string")
-        : []
+        : [],
+      answeredQuestions: Array.isArray(parsed.answeredQuestions)
+        ? parsed.answeredQuestions.filter((v): v is string => typeof v === "string")
+        : [],
+      animationEnabled: typeof parsed.animationEnabled === "boolean" ? parsed.animationEnabled : true
     }
   } catch {
     return null
@@ -129,7 +145,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null)
   const [executions, setExecutions] = useState<ExecutionRecord[]>([])
   const [uiStateLoaded, setUiStateLoaded] = useState(false)
-  const [view, setView] = useState<"main" | "index">("main")
+  const [view, setView] = useState<"main" | "index" | "context">("main")
   const [streamText, setStreamText] = useState("")
   const [streamTokens, setStreamTokens] = useState(0)
   const streamStartRef = useRef<number>(0)
@@ -144,10 +160,67 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   const seenWebChatRef = useRef<Set<string>>(new Set())
   const webTaskActiveRef = useRef(false)
 
+  const [animationEnabled, setAnimationEnabled] = useState(config.theme.animations)
+  const [setupAwaitingInput, setSetupAwaitingInput] = useState<string | null>(null)
+  const [activeQuestion, setActiveQuestion] = useState<{ question: string; options: string[]; selectedIndex: number; command: string | null } | null>(null)
+  const [textInputModal, setTextInputModal] = useState<{ prompt: string; onSubmit: string; onCancel?: string } | null>(null)
+  const [textInputModalValue, setTextInputModalValue] = useState("")
+  const [answerMetrics, setAnswerMetrics] = useState<{ totalTimeMs: number; totalTokens: number } | null>(null)
+
+  const answeredQuestionFp = useRef<Set<string>>(new Set())
+  const questionFromCommand = useRef(false)
+  const setupRef = useRef<{ providerId: string; providerType: string; step: number } | null>(null)
+
+  const CMD_LIST = ["/help", "/mode", "/model", "/provider", "/setup", "/reindex", "/index", "/dashboard", "/clear", "/summarize", "/lan", "/undo", "/exit", "/quit", "/animation", "/context"]
+  const PROVIDER_SUBS = ["list", "add", "remove", "default", "key"]
+  const [autocompleteIndex, setAutocompleteIndex] = useState(0)
+
+  const autocomplete = useMemo(() => {
+    if (!input || busy) return null
+    const trimmed = input.trimStart()
+    let suggestions: string[] = []
+
+    if (trimmed.startsWith("/")) {
+      const spaceIdx = trimmed.indexOf(" ")
+      if (spaceIdx > 0) {
+        const cmd = trimmed.slice(0, spaceIdx)
+        const arg = trimmed.slice(spaceIdx + 1)
+        if (cmd === "/model" && arg) {
+          suggestions = availableModels
+            .filter(m => m.toLowerCase().startsWith(arg.toLowerCase()))
+            .slice(0, 8)
+            .map(m => cmd + " " + m)
+        } else if (cmd === "/provider" && arg) {
+          suggestions = PROVIDER_SUBS.filter(s => s.startsWith(arg)).map(s => cmd + " " + s)
+        } else if (cmd === "/mode" && arg) {
+          suggestions = ["build", "discuss"].filter(m => m.startsWith(arg)).map(m => cmd + " " + m)
+        }
+      } else {
+        suggestions = CMD_LIST.filter(c => c.startsWith(trimmed) && c !== trimmed).slice(0, 10)
+      }
+    }
+    if (trimmed.length >= 2 && !trimmed.startsWith("/") && suggestions.length === 0) {
+      suggestions = availableModels
+        .filter(m => m.toLowerCase().startsWith(trimmed.toLowerCase()))
+        .slice(0, 6)
+    }
+
+    if (suggestions.length === 0) return null
+    return { suggestions, top: suggestions[0] }
+  }, [input, busy, availableModels])
+
   const appendOutput = useCallback((lines: string | string[]) => {
     const next = Array.isArray(lines) ? lines : [lines]
     setOutput((prev) => limitLines([...prev, ...next], MAX_OUTPUT_LINES))
   }, [])
+
+  const saveProviderConfig = useCallback(async () => {
+    const configPath = path.join(root, ".agent", "config.json")
+    try {
+      await fs.writeFile(configPath, JSON.stringify(config, null, 2), "utf8")
+      invalidateProviderCache()
+    } catch { }
+  }, [root, config])
 
   useEffect(() => {
     // Use alternate screen buffer so the UI owns a bounded area and does not
@@ -169,6 +242,10 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         setModelOverride(persisted.modelOverride)
         setOutput(limitLines(persisted.output, MAX_OUTPUT_LINES))
         setPromptHistory(limitLines(persisted.promptHistory, MAX_PROMPT_HISTORY))
+        for (const q of persisted.answeredQuestions) {
+          answeredQuestionFp.current.add(q)
+        }
+        setAnimationEnabled(persisted.animationEnabled)
       }
       setUiStateLoaded(true)
     })()
@@ -186,11 +263,13 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         mode,
         modelOverride,
         output: limitLines(output, MAX_OUTPUT_LINES),
-        promptHistory: limitLines(promptHistory, MAX_PROMPT_HISTORY)
+        promptHistory: limitLines(promptHistory, MAX_PROMPT_HISTORY),
+        answeredQuestions: [...answeredQuestionFp.current],
+        animationEnabled
       })
     }, 120)
     return () => clearTimeout(timer)
-  }, [root, uiStateLoaded, mode, modelOverride, output, promptHistory])
+  }, [root, uiStateLoaded, mode, modelOverride, output, promptHistory, animationEnabled])
 
   useEffect(() => {
     const onProgress = (s: Record<string, unknown>) => setBoot((p) => ({
@@ -245,18 +324,18 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   }, [busy])
 
   const refreshModels = useCallback(async () => {
-    const online = await isOllamaAvailable(config.ollama.baseUrl)
+    const online = await isProviderAvailable(config)
     setOllamaReady(online)
     if (!online) {
       setAvailableModels([])
       return [] as string[]
     }
-    const models = await listOllamaModels(config.ollama.baseUrl)
+    const models = await listProviderModels(config)
     setAvailableModels(models)
     return models
-  }, [config.ollama.baseUrl])
+  }, [config])
 
-  const pickModel = useCallback((requested: string, models: string[]) => {
+  const pickModel = useCallback(async (requested: string, models: string[]) => {
     const q = requested.trim()
     if (!q || models.length === 0) return ""
     if (models.includes(q)) return q
@@ -267,8 +346,61 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     const family = models.filter((m) => m.split(":")[0].toLowerCase() === q.toLowerCase())
     if (family.length === 1) return family[0]
 
-    return resolveModelName(q, models)
-  }, [])
+    return resolveProviderModelName(config, q, models)
+  }, [config])
+
+  const finishProviderSetup = useCallback((id: string, type: string, model: string) => {
+    void saveProviderConfig()
+    void refreshModels()
+    setupRef.current = null
+    appendOutput("")
+    appendOutput(`✓ Provider "${id}" (${type}) configured.`)
+    if (model) appendOutput(`  Model: ${model}`)
+    if (id !== config.defaultProvider) appendOutput(`  Tip: /provider default ${id} to make it the default`)
+    appendOutput(`  Tip: /model list to verify available models`)
+    appendOutput("")
+  }, [saveProviderConfig, refreshModels, config.defaultProvider, appendOutput])
+
+  const fetchAndShowModels = useCallback(async (providerId: string, providerType: string, _apiKey: string) => {
+    let models: string[] = []
+    try {
+      invalidateProviderCache()
+      const fetched = await listProviderModels(config)
+      models = fetched
+        .filter(m => m.startsWith(providerId + ":") || providerId === "ollama" || !m.includes(":"))
+        .map(m => m.startsWith(providerId + ":") ? m.slice(providerId.length + 1) : m)
+        .filter(m =>
+          !m.toLowerCase().includes("embedding") &&
+          !m.toLowerCase().includes("embed") &&
+          !m.toLowerCase().includes("moderation") &&
+          !m.toLowerCase().includes("dall-e") &&
+          !m.toLowerCase().includes("tti") &&
+          !m.toLowerCase().includes("text-embedding")
+        )
+    } catch { }
+
+    if (models.length === 0) {
+      const fallbacks: Record<string, string[]> = {
+        ollama: ["llama3", "qwen2.5", "codellama", "mistral", "deepseek-r1", "phi4"],
+        openai: ["gpt-5.4", "gpt-5.4-mini", "gpt-4o", "gpt-4o-mini", "o4-mini"],
+        anthropic: ["claude-sonnet-4-6", "claude-sonnet-4-5", "claude-opus-4-8", "claude-haiku-4-5"],
+        openrouter: ["openai/gpt-5.4", "anthropic/claude-sonnet-4-6"],
+        google: ["gemini-3.5-flash", "gemini-3.1-pro", "gemini-3-flash"],
+        deepseek: ["deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"],
+        zen: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.3-codex", "claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5", "gemini-3.5-flash", "deepseek-v4-flash", "qwen3.7-max", "grok-build-0.1", "big-pickle", "minimax-m2.7"],
+        "opencode-zen-go": ["deepseek-v4-flash-free", "gpt-5.4-nano", "claude-haiku-4-5", "gemini-3-flash", "qwen3.5-plus"],
+      }
+      models = fallbacks[providerType] || fallbacks["openai"] || ["default-model"]
+    }
+
+    questionFromCommand.current = true
+    setActiveQuestion({
+      question: `Select model for ${providerId}:`,
+      options: models,
+      selectedIndex: 0,
+      command: `/setup-step 2`,
+    })
+  }, [config, setActiveQuestion])
 
   useEffect(() => {
     const onPhase = (p: string) => {
@@ -288,10 +420,17 @@ export function App({ root, config, db, events, indexer }: AppProps) {
       streamStartRef.current = Date.now()
       setStreamText("")
       setStreamTokens(0)
+      setAnswerMetrics(null)
     }
     const onIntent = (i: PromptIntent) => setIntent(i)
     const onContext = (pkt: ContextPacket) => setPacket(pkt)
-    const onAnswer = (text: string) => setAnswer(text)
+    const onAnswer = (text: string) => {
+      setAnswer(text)
+      setAnswerMetrics({
+        totalTimeMs: Date.now() - streamStartRef.current,
+        totalTokens: streamTokRef.current
+      })
+    }
     const onPatch = (d: string) => setPatchText(d)
     const onStream = (data: { text: string }) => {
       // Write to refs only — ticker flushes to state at 80ms
@@ -359,6 +498,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         streamStartRef.current = Date.now()
         setStreamText("")
         setStreamTokens(0)
+        setAnswerMetrics(null)
         if (payload.mode === "build" || payload.mode === "discuss") {
           setMode(payload.mode)
         }
@@ -398,6 +538,20 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   useEffect(() => {
     events.emit("ui:model:set", { model: modelOverride, source: "cli" })
   }, [events, modelOverride])
+
+  // Auto-refresh models when app becomes ready and UI state is loaded
+  useEffect(() => {
+    if (ready && uiStateLoaded) {
+      void refreshModels()
+    }
+  }, [ready, uiStateLoaded, refreshModels])
+
+  // Refresh models when busy transitions to false (after a task completes)
+  useEffect(() => {
+    if (!busy && uiStateLoaded) {
+      void refreshModels()
+    }
+  }, [busy])
 
   const undoLast = useCallback(async () => {
     const last = executions[executions.length - 1]
@@ -472,11 +626,14 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           "  /patch       Alias for /mode build",
           "  /reindex     Re-index the project",
           "  /index       Show the index dashboard (file summaries, graph, stats)",
-          "  /model [name|list|reset]  List or switch Ollama model",
+          "  /model [name|list|reset]  List or switch AI provider model",
           "  /tools       Show Qwen tool-calling integration notes",
           "  /lan         Start/stop LAN web server",
           "  /undo        Undo last prompt result (files + convo)",
           "  /clear       Clear the output area",
+          "  /animation   Toggle terminal animations on/off",
+          "  /provider    Manage AI providers (list, add, remove, default, key)",
+          "  /setup       Interactive provider setup wizard",
           "  /help        Show this help message",
           "  /exit        Exit the application",
           "",
@@ -490,15 +647,18 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         const argLower = arg?.toLowerCase()
         if (!arg || argLower === "list") {
           const models = await refreshModels()
-          const current = modelOverride ?? (mode === "build" ? config.models.patcher : config.models.summarizer)
           if (models.length === 0) {
-            appendOutput("No Ollama models found (offline or none installed).")
+            appendOutput("No models available (providers offline or none installed).")
             return true
           }
-          appendOutput([
-            `Active model: ${resolveModelName(current, models)}`,
-            ...models.map((m) => `${m === resolveModelName(current, models) ? "*" : " "} ${m}`)
-          ])
+          const current = modelOverride ?? (mode === "build" ? config.models.patcher : config.models.summarizer)
+          questionFromCommand.current = true
+          setActiveQuestion({
+            question: `Available models (${models.length}, current: ${current})`,
+            options: models,
+            selectedIndex: 0,
+            command: "/model",
+          })
           return true
         }
 
@@ -510,11 +670,11 @@ export function App({ root, config, db, events, indexer }: AppProps) {
 
         const models = await refreshModels()
         if (models.length === 0) {
-          appendOutput("Cannot set model: Ollama offline or no installed models.")
+          appendOutput("Cannot set model: provider offline or no installed models.")
           return true
         }
 
-        const selected = pickModel(arg, models)
+        const selected = await pickModel(arg, models)
         if (!selected) {
           appendOutput(`Model not found: ${arg}`)
           return true
@@ -522,6 +682,182 @@ export function App({ root, config, db, events, indexer }: AppProps) {
 
         setModelOverride(selected)
         appendOutput(`✓ Model set to ${selected}`)
+        return true
+      }
+      case "/animation": {
+        const arg = rawParts[1]?.toLowerCase()
+        if (arg === "on" || arg === "true" || arg === "1") {
+          setAnimationEnabled(true)
+          appendOutput("✓ Animations enabled")
+        } else if (arg === "off" || arg === "false" || arg === "0") {
+          setAnimationEnabled(false)
+          appendOutput("✓ Animations disabled")
+        } else {
+          setAnimationEnabled((v) => !v)
+          appendOutput(`✓ Animations ${animationEnabled ? "disabled" : "enabled"}`)
+        }
+        return true
+      }
+      case "/provider": {
+        const sub = rawParts[1]?.toLowerCase()
+        const providerId = rawParts[2]
+
+        if (sub === "list") {
+          const providers = config.providers ? Object.keys(config.providers) : []
+          if (providers.length === 0) {
+            appendOutput("No providers configured. Use /setup to add one.")
+          } else {
+            const def = config.defaultProvider
+            appendOutput([
+              "Configured providers:",
+              ...providers.map((p) => `${p === def ? "*" : " "} ${p} (${config.providers?.[p]?.type ?? "unknown"})`)
+            ])
+          }
+          return true
+        }
+
+        if (sub === "default" && providerId) {
+          config.defaultProvider = providerId
+          void saveProviderConfig()
+          appendOutput(`✓ Default provider set to ${providerId}`)
+          return true
+        }
+
+        if (sub === "add" && providerId && rawParts[3]) {
+          const type = rawParts[3].toLowerCase()
+          if (!config.providers) (config as any).providers = {}
+          config.providers[providerId] = { type: type as any, baseUrl: "" }
+          void saveProviderConfig()
+          appendOutput(`✓ Provider "${providerId}" (${type}) added. Use /setup to configure.`)
+          return true
+        }
+
+        if (sub === "remove" && providerId) {
+          if (config.providers) {
+            delete config.providers[providerId]
+          }
+          if (config.defaultProvider === providerId) {
+            config.defaultProvider = ""
+          }
+          void saveProviderConfig()
+          appendOutput(`✓ Provider "${providerId}" removed.`)
+          return true
+        }
+
+        if (sub === "key" && providerId) {
+          setSetupAwaitingInput(`Enter API key for ${providerId}:`)
+          return true
+        }
+
+        appendOutput("Usage: /provider list|add|remove|default|key [id] [type]")
+        return true
+      }
+      case "/setup": {
+        questionFromCommand.current = true
+        setActiveQuestion({
+          question: "Choose an AI provider to configure:",
+          options: [
+            "Ollama (local, auto-detect)",
+            "OpenAI (needs API key)",
+            "Anthropic (needs API key)",
+            "OpenCode Zen (needs API key)",
+            "OpenCode Zen Go (needs API key)",
+            "OpenRouter (needs API key)",
+            "Google Gemini (needs API key)",
+            "DeepSeek (needs API key)",
+          ],
+          selectedIndex: 0,
+          command: "/setup-step",
+        })
+        return true
+      }
+      case "/setup-input": {
+        const text = rawParts.slice(1).join(" ").trim()
+        setSetupAwaitingInput(null)
+        if (!text || !setupRef.current) return true
+        appendOutput(`> ${text}`)
+        const { providerType: type } = setupRef.current
+        config.providers[setupRef.current.providerId] = {
+          type: type as "openai" | "anthropic" | "ollama",
+          baseUrl: type === "zen" ? "https://opencode.ai/zen/v1" : "",
+          apiKey: text.startsWith("sk-") || text.length > 30 ? text : undefined,
+          apiKeyEnv: (text.startsWith("sk-") || text.length > 30) ? undefined : (text || undefined),
+        }
+        void saveProviderConfig()
+        setupRef.current.step = 1
+        void fetchAndShowModels(setupRef.current.providerId, type, text)
+        return true
+      }
+      case "/setup-step": {
+        const arg = (rawParts[1] ?? "").trim()
+        if (!arg) { appendOutput("✗ Setup cancelled"); setupRef.current = null; setSetupAwaitingInput(null); return true }
+
+        if (!setupRef.current) {
+          const argLower = arg.toLowerCase()
+          let type: "ollama" | "openai" | "anthropic"
+          let id: string
+          if (argLower.startsWith("ollama")) { type = "ollama"; id = "ollama" }
+          else if (argLower.startsWith("openai")) { type = "openai"; id = "openai" }
+          else if (argLower.startsWith("anthropic")) { type = "anthropic"; id = "anthropic" }
+          else if (argLower.includes("zen go")) { type = "openai"; id = "opencode-zen-go" }
+          else if (argLower.startsWith("opencode")) { type = "openai"; id = "opencode-zen" }
+          else if (argLower.startsWith("openrouter")) { type = "openai"; id = "openrouter" }
+          else if (argLower.startsWith("google")) { type = "openai"; id = "google" }
+          else if (argLower.startsWith("deepseek")) { type = "openai"; id = "deepseek" }
+          else { type = "openai"; id = argLower.split(/\s+/)[0] }
+
+          setupRef.current = { providerId: id, providerType: type, step: 0 }
+
+          if (type === "ollama") {
+            if (!config.providers) (config as any).providers = {}
+            config.providers[id] = { type, baseUrl: config.ollama?.baseUrl ?? "" }
+            void saveProviderConfig()
+            void fetchAndShowModels(id, type, "")
+            return true
+          }
+
+          const envHints: Record<string, string> = { openai: "OPENAI_API_KEY", anthropic: "ANTHROPIC_API_KEY", "opencode-zen": "ZEN_API_KEY", "opencode-zen-go": "ZEN_API_KEY", openrouter: "OPENROUTER_API_KEY", google: "GOOGLE_API_KEY", deepseek: "DEEPSEEK_API_KEY" }
+          appendOutput(`? Enter API key or env var for ${id}`)
+          appendOutput(`  Tip: paste key directly or type env var like ${envHints[id] || `${id.toUpperCase()}_API_KEY`}`)
+          setTextInputModal({
+            prompt: `API key / env var for ${id}`,
+            onSubmit: `/setup-key ${id}`,
+            onCancel: "/setup-cancel"
+          })
+          return true
+        }
+
+        {
+          const { providerId: id, providerType: type } = setupRef.current
+          const modelName = arg
+          setActiveQuestion(null)
+          finishProviderSetup(id, type, modelName)
+        }
+        return true
+      }
+      case "/setup-key": {
+        const providerId = rawParts[1] ?? ""
+        const keyText = rawParts.slice(2).join(" ").trim()
+        if (!providerId || !keyText) { setupRef.current = null; setTextInputModal(null); return true }
+        if (!setupRef.current) { setupRef.current = { providerId, providerType: "openai", step: 0 } }
+        const type = setupRef.current.providerType
+        const isApiKey = keyText.startsWith("sk-") || keyText.startsWith("sk-ant-") || keyText.length > 30
+        if (!config.providers) (config as any).providers = {}
+        config.providers[providerId] = {
+          type: type === "zen" ? "openai" : type as "openai" | "anthropic" | "ollama",
+          baseUrl: providerId === "opencode-zen" || providerId === "opencode-zen-go" ? "https://opencode.ai/zen/v1" : "",
+          apiKey: isApiKey ? keyText : undefined,
+          apiKeyEnv: isApiKey ? undefined : (keyText || undefined),
+        }
+        await saveProviderConfig()
+        appendOutput(`? Key saved for ${providerId}`)
+        void fetchAndShowModels(providerId, type, keyText)
+        return true
+      }
+      case "/setup-cancel": {
+        setupRef.current = null
+        setTextInputModal(null)
+        appendOutput("✗ Setup cancelled")
         return true
       }
       case "/reindex":
@@ -545,6 +881,20 @@ export function App({ root, config, db, events, indexer }: AppProps) {
       case "/index":
       case "/dashboard": {
         setView("index")
+        return true
+      }
+      case "/context": {
+        const sub = (rawParts[1] ?? "").toLowerCase()
+        if (sub === "view" || !sub) {
+          setView("context")
+        } else if (sub === "clear") {
+          setPacket(null)
+          setIntent(null)
+          setAnswer("")
+          appendOutput("⌘ Context cleared")
+        } else {
+          appendOutput("Usage: /context [view|clear]")
+        }
         return true
       }
       case "/clear": {
@@ -618,12 +968,28 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     root,
     db,
     events,
-    output
+    output,
+    animationEnabled,
+    finishProviderSetup,
+    fetchAndShowModels,
+    saveProviderConfig,
+    setAnimationEnabled,
+    setSetupAwaitingInput,
+    setActiveQuestion
   ])
 
   const submit = useCallback(async () => {
     const task = input.trim()
     if (!task || busy) return
+
+    if (setupAwaitingInput && task) {
+      setInput("")
+      setSetupAwaitingInput(null)
+      appendOutput(`> ${task}`)
+      await handleSlashCommand(`/setup-input ${task}`)
+      return
+    }
+
     setInput("")
 
     if (task.startsWith("/")) {
@@ -656,6 +1022,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     streamBuf.current = ""
     streamTokRef.current = 0
     streamStartRef.current = Date.now()
+    setAnswerMetrics(null)
 
     let undoDiff: string | undefined
 
@@ -666,7 +1033,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     indexer.pause()
     try {
       const activeModel = modelOverride
-        ? resolveModelName(modelOverride, availableModels)
+        ? await resolveProviderModelName(config, modelOverride, availableModels)
         : undefined
 
       const promptLine = `▶ ${mode}: ${task}`
@@ -732,11 +1099,65 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     intent,
     modelOverride,
     availableModels,
-    appendOutput
+    appendOutput,
+    setupAwaitingInput
   ])
 
   useInput((char, key) => {
     if (key.ctrl && char === "c") { quit(); return }
+
+    if (textInputModal) {
+      if (key.escape) {
+        const cmd = textInputModal.onCancel
+        setTextInputModalValue("")
+        setTextInputModal(null)
+        if (cmd) void handleSlashCommand(cmd)
+        return
+      }
+      if (key.return) {
+        const value = textInputModalValue
+        const cmd = textInputModal.onSubmit
+        setTextInputModalValue("")
+        setTextInputModal(null)
+        if (value) void handleSlashCommand(`${cmd} ${value}`)
+        return
+      }
+      if (key.backspace || key.delete) {
+        setTextInputModalValue((v) => v.slice(0, -1))
+        return
+      }
+      if (char && !key.ctrl && !key.meta) {
+        setTextInputModalValue((v) => v + char)
+        return
+      }
+      return
+    }
+
+    // Question modal input handling
+    if (activeQuestion) {
+      if (key.escape) {
+        setActiveQuestion(null)
+        return
+      }
+      if (key.upArrow) {
+        setActiveQuestion((q) => q ? { ...q, selectedIndex: Math.max(0, q.selectedIndex - 1) } : null)
+        return
+      }
+      if (key.downArrow) {
+        setActiveQuestion((q) => q ? { ...q, selectedIndex: Math.min(q.options.length - 1, q.selectedIndex + 1) } : null)
+        return
+      }
+      if (key.return) {
+        const aq = activeQuestion
+        setActiveQuestion(null)
+        if (aq?.command) {
+          const selectedValue = aq.options[aq.selectedIndex]
+          void handleSlashCommand(`${aq.command} ${selectedValue}`)
+        }
+        return
+      }
+      return
+    }
 
     // Escape handling — works even when busy (for abort)
     if (key.escape) {
@@ -780,6 +1201,14 @@ export function App({ root, config, db, events, indexer }: AppProps) {
       return
     }
 
+    if (autocomplete && key.upArrow) {
+      setAutocompleteIndex((v) => Math.max(0, v - 1))
+      return
+    }
+    if (autocomplete && key.downArrow) {
+      setAutocompleteIndex((v) => Math.min(autocomplete.suggestions.length - 1, v + 1))
+      return
+    }
     if (key.upArrow) {
       setScrollOffset((v) => v + 2)
       return
@@ -791,9 +1220,44 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     if (key.pageUp) { setScrollOffset((v) => v + 12); return }
     if (key.pageDown) { setScrollOffset((v) => Math.max(0, v - 12)); return }
     if (key.return) { void submit(); return }
-    if (key.backspace || key.delete) { setPromptHistoryIndex(null); setInput((v) => v.slice(0, -1)); return }
-    if (char && !key.ctrl && !key.meta) { setPromptHistoryIndex(null); setInput((v) => v + char) }
+    if (key.tab && autocomplete) {
+      const idx = Math.min(autocompleteIndex, autocomplete.suggestions.length - 1)
+      setInput(autocomplete.suggestions[idx])
+      setPromptHistoryIndex(null)
+      setAutocompleteIndex(0)
+      return
+    }
+    if (key.backspace || key.delete) { setPromptHistoryIndex(null); setAutocompleteIndex(0); setInput((v) => v.slice(0, -1)); return }
+    if (char && !key.ctrl && !key.meta) { setPromptHistoryIndex(null); setAutocompleteIndex(0); setInput((v) => v + char) }
   })
+
+  // Question detection effect: watch the answer for question patterns
+  // when not busy and no programmatic question is being shown
+  useEffect(() => {
+    if (busy || !answer) return
+    if (questionFromCommand.current) {
+      questionFromCommand.current = false
+      return
+    }
+    if (activeQuestion) return
+
+    const lines = answer.split("\n").map((l) => l.trim()).filter(Boolean)
+    const questionLines = lines.filter((l) =>
+      /^\d+[\.\)]\s/.test(l) ||
+      /^[-*]\s/.test(l) ||
+      /^(select|choose|pick|which|option|would you like)/i.test(l)
+    )
+    if (questionLines.length >= 2) {
+      const question = questionLines[0].replace(/^\d+[\.\)]\s*/, "").replace(/^[-*]\s*/, "")
+      const options = questionLines.map((l) => l.replace(/^\d+[\.\)]\s*/, "").replace(/^[-*]\s*/, ""))
+      setActiveQuestion({
+        question,
+        options,
+        selectedIndex: 0,
+        command: null,
+      })
+    }
+  }, [busy, answer, activeQuestion])
 
   if (!ready && config.theme.showBootAnimation) {
     return <BootScreen state={boot} animate={config.theme.animations} />
@@ -809,12 +1273,22 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     )
   }
 
+  if (view === "context") {
+    return (
+      <ContextPreview
+        packet={packet}
+        maxTokens={config.context.maxPromptTokens}
+        onBack={() => setView("main")}
+      />
+    )
+  }
+
   return (
     <MainScreen
       root={root}
       model={
         modelOverride
-          ? resolveModelName(modelOverride, availableModels)
+          ? resolveModelLocal(modelOverride, availableModels)
           : mode === "build"
             ? config.models.patcher
             : config.models.summarizer
@@ -833,7 +1307,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
       patchText={patchText}
       output={output}
       maxTokens={config.context.maxPromptTokens}
-      animations={config.theme.animations}
+      animations={animationEnabled}
       scrollOffset={scrollOffset}
       scanPhase={boot.phase}
       scanProgress={boot.progress}
@@ -843,6 +1317,13 @@ export function App({ root, config, db, events, indexer }: AppProps) {
       streamTokens={streamTokens}
       streamStartMs={streamStartRef.current}
       pendingPrompt={pendingPrompt}
+      activeQuestion={activeQuestion}
+      setupPrompt={setupAwaitingInput}
+      textInputModal={textInputModal}
+      textInputModalValue={textInputModalValue}
+      answerMetrics={answerMetrics}
+      autocomplete={autocomplete}
+      autocompleteIndex={autocompleteIndex}
     />
   )
 }

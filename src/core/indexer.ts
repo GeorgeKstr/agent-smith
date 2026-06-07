@@ -7,9 +7,8 @@ import { scanProjectFiles } from "./scanner.js";
 import { hashFile } from "./hashing.js";
 import { extractImports, extractSymbols, isParseableLanguage } from "./treeSitter.js";
 import { rebuildImports } from "./graph.js";
-import { isOllamaAvailable, listOllamaModels, resolveModelName } from "./ollama.js";
+import { isProviderAvailable, listProviderModels, resolveProviderModelName, generateWithProvider } from "./providers.js";
 import { summarizeFile } from "./summarizer.js";
-import { generateWithOllama, optionsFromConfig } from "./ollama.js";
 import { tagFile } from "./tagger.js";
 import { heuristicTags } from "./tags.js";
 
@@ -67,13 +66,12 @@ Key tags: ${tagStr}
 
 Describe this project in 2-3 concise sentences:`
 
-  const result = await generateWithOllama({
-    baseUrl: config.ollama.baseUrl,
+  const result = await generateWithProvider(
+    config,
     model,
-    system: PROJECT_SUM_SYSTEM,
     prompt,
-    options: optionsFromConfig(config, { num_predict: 400 })
-  })
+    { system: PROJECT_SUM_SYSTEM, maxTokens: 400 }
+  )
 
   if (result.ok && result.text.trim()) {
     const text = result.text.replace(/\s+/g, " ").trim().slice(0, 1000)
@@ -342,12 +340,12 @@ export function createIndexer({ root, config, db, events, enableIntel = true }: 
     summaryRunning = true;
 
     if (ollamaReady === null) {
-      ollamaReady = await isOllamaAvailable(config.ollama.baseUrl);
-      setMeta(db, "ollama_available", ollamaReady ? "1" : "0");
+      ollamaReady = await isProviderAvailable(config);
+      setMeta(db, "provider_available", ollamaReady ? "1" : "0");
       if (ollamaReady) {
-        const installed = await listOllamaModels(config.ollama.baseUrl);
-        summarizerModel = resolveModelName(config.models.summarizer, installed);
-        taggerModel = resolveModelName(config.models.tagger, installed);
+        const installed = await listProviderModels(config);
+        summarizerModel = await resolveProviderModelName(config, config.models.summarizer, installed);
+        taggerModel = await resolveProviderModelName(config, config.models.tagger, installed);
       }
       events.emit("ollama:status", ollamaReady);
     }

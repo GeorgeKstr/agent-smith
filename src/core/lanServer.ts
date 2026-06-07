@@ -6,7 +6,7 @@ import type { SmithConfig, ContextPacket, PromptIntent } from "../types/index.js
 import type { Indexer } from "./indexer.js"
 import { runAsk } from "./taskRunner.js"
 import { summarizeFile } from "./summarizer.js"
-import { listOllamaModels, resolveModelName } from "./ollama.js"
+import { listProviderModels, resolveProviderModelName } from "./providers.js"
 
 export type ChatEntry = {
   role: "user" | "assistant" | "system" | "patch"
@@ -59,7 +59,8 @@ const HTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
 <meta name="theme-color" content="#0a0f0a">
-<title>Agent Smith</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpolygon points='16,3 30,10 30,22 16,29 2,22 2,10' fill='%230a0f0a' stroke='%234ade80' stroke-width='1.5'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='system-ui' font-size='17' font-weight='700' fill='%234ade80'%3ES%3C/text%3E%3C/svg%3E">
+<title>Agent Smith · __PROJECT__</title>
 <style>
 :root{
   --bg:#0a0f0a;--surface:#111911;--surface2:#181e18;--border:#1e2e1e;--border2:#2e422e;
@@ -171,37 +172,25 @@ main{flex:1;overflow:hidden;position:relative}
 .msg-label{color:inherit}
 
 .msg.pending .msg-meta::after{content:" ⟳";color:var(--amber);animation:pulse .7s ease-in-out infinite alternate}
+
+/* ── Question options ─────────────────────────────────── */
+.q-opts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;padding:0 3px}
+.q-btn{
+  background:var(--surface2);color:var(--text);border:1px solid var(--border2);
+  border-radius:var(--radius-sm);padding:6px 13px;font-family:var(--font);
+  font-size:12px;font-weight:600;cursor:pointer;transition:all .12s;white-space:nowrap;
+}
+.q-btn:hover{background:var(--accent-dim);border-color:var(--accent);color:var(--accent)}
+.q-btn:active{transform:scale(.97)}
 @keyframes pulse{from{opacity:.4}to{opacity:1}}
 
 /* code inline */
 .msg-bubble code{background:#00000066;padding:1px 5px;border-radius:4px;font-family:var(--mono);font-size:11.5px}
 
 /* ── Thinking / streaming bubble ───────────────────────── */
-.thinking-wrapper{
-  align-self:flex-start;max-width:82%;
-  display:flex;flex-direction:column;gap:4px;
-  animation:fadeUp .18s ease;
-  flex-shrink:0;
-}
-.thinking-meta{display:flex;align-items:center;gap:6px;font-size:10.5px;font-weight:600;color:var(--accent);padding:0 3px}
-.thinking-meta .phase-label{background:var(--accent-dim);color:var(--accent);padding:1px 7px;border-radius:10px;font-size:10px}
-.thinking-meta .tok-count{color:var(--text-dim);font-weight:400}
-.thinking-bubble{
-  background:var(--surface);
-  border:1px solid var(--border2);
-  border-left:3px solid var(--accent);
-  border-bottom-left-radius:3px;
-  border-radius:var(--radius);
-  padding:10px 13px;
-  max-height:160px;overflow-y:auto;
-  font-size:12.5px;line-height:1.5;
-  color:var(--text-dim);
-  white-space:pre-wrap;word-break:break-word;
-}
-.thinking-bubble::-webkit-scrollbar{width:3px}
-.thinking-bubble::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
 .thinking-cursor{display:inline-block;width:8px;height:13px;background:var(--accent);opacity:.8;margin-left:2px;animation:blink .6s step-end infinite;vertical-align:text-bottom;border-radius:1px}
 @keyframes blink{0%,100%{opacity:.8}50%{opacity:0}}
+.phase-label{background:var(--accent-dim);color:var(--accent);padding:1px 7px;border-radius:10px;font-size:10px}
 
 /* ── Chat footer ────────────────────────────────────────── */
 #chat-footer{
@@ -464,11 +453,13 @@ main{flex:1;overflow:hidden;position:relative}
           <div class="preview-header">
             <span id="preview-path" style="color:var(--text-muted);font-style:italic">No file selected</span>
             <div class="preview-actions">
+              <button class="preview-btn" id="view-summary-btn" style="display:none">View Summary</button>
               <button class="preview-btn summarize" id="summarize-file-btn" style="display:none">Summarize</button>
               <button class="preview-btn" id="edit-toggle" style="display:none">Edit</button>
               <button class="preview-btn save" id="save-file-btn" style="display:none">Save</button>
             </div>
           </div>
+          <div id="preview-summary" style="display:none;padding:8px 14px;font-size:12px;line-height:1.6;color:var(--text-dim);border-bottom:1px solid var(--border);background:var(--surface)"></div>
           <pre id="preview-content" class="preview-empty" style="display:flex"><span class="e-glyph" style="font-size:28px;opacity:.3">◈</span><span>Select a file from the tree</span></pre>
           <textarea id="edit-content" style="display:none"></textarea>
         </div>
@@ -494,6 +485,7 @@ let thinkingActive=false
 let chatInitialized=false
 let currentFilePath=null
 let currentFileContent=null
+let currentFileSummary=null
 
 /* ── Helpers ───────────────────────────────────────────── */
 function esc(s){const d=document.createElement("div");d.textContent=s||"";return d.innerHTML}
@@ -508,13 +500,13 @@ function dateLabel(t){
 }
 
 /* ── Header pills ──────────────────────────────────────── */
-function updateHeader(){
+  function updateHeader(){
   const op=document.getElementById("ollama-pill")
   const bp=document.getElementById("busy-pill")
   if(op){
-    if(S.ollamaReady===true){op.className="pill green";op.innerHTML='<span class="dot"></span>Ollama'}
+    if(S.ollamaReady===true){op.className="pill green";op.innerHTML='<span class="dot"></span>Provider'}
     else if(S.ollamaReady===false){op.className="pill red";op.innerHTML='<span class="dot"></span>Offline'}
-    else{op.className="pill gray";op.textContent="Ollama …"}
+    else{op.className="pill gray";op.textContent="Provider …"}
   }
   if(bp){
     if(S.busy){
@@ -526,8 +518,6 @@ function updateHeader(){
   }
   const msel=document.getElementById("mode-select")
   if(msel&&msel.value!==S.mode)msel.value=S.mode
-  const modSel=document.getElementById("model-select")
-  if(modSel&&S.modelOverride&&modSel.value!==S.modelOverride)modSel.value=S.modelOverride
 }
 
 /* ── Chat input UI ─────────────────────────────────────── */
@@ -566,19 +556,53 @@ function renderStatus(){
   bar.innerHTML=items.join("")
 }
 
+/* ── Question/quiz parsing ─────────────────────────────── */
+function parseQuestionBlock(text){
+  const lines=text.split('\n')
+  let q=null
+  const opts=[]
+  for(const line of lines){
+    const t=line.trim()
+    const qm=t.match(/^\?\s*(.+)/)
+    if(qm){q=qm[1];continue}
+    const om=t.match(/^[-*]\s+(.+)/)
+    if(om&&q){opts.push(om[1]);continue}
+    if(q&&opts.length>0&&t)break
+  }
+  return q&&opts.length>0?{question:q,options:opts}:null
+}
+
+function renderQuestionOptions(qBlock,msgIdx){
+  if(!qBlock||!qBlock.options.length)return''
+  return '<div class="q-opts" data-msg-idx="'+msgIdx+'">'+
+    qBlock.options.map((o,i)=>'<button class="q-btn" onclick="selectOption('+msgIdx+','+i+')" data-idx="'+i+'">'+esc(o)+'</button>').join('')+
+    '</div>'
+}
+
+function selectOption(msgIdx,optIdx){
+  const opts=document.querySelectorAll('.q-opts[data-msg-idx="'+msgIdx+'"] .q-btn')
+  const text=opts[optIdx]?.textContent
+  if(!text)return
+  const inp=document.getElementById("chat-input")
+  if(inp){inp.value=text;resizeInput(inp);send()}
+}
+
 /* ── Chat rendering ────────────────────────────────────── */
-function msgHTML(m,pendingLast){
+function msgHTML(m,pendingLast,msgIdx){
   const timeStr=ts(m.ts)
   const labels={user:"You",assistant:"Smith",patch:"Patch",system:"System"}
   const label=labels[m.role]||m.role
   const cls="msg "+m.role+(m.role==="user"&&pendingLast?" pending":"")
   if(m.role==="system")return '<div class="msg system"><div class="msg-bubble">'+esc(m.content)+'</div></div>'
+  const qBlock=m.role==="assistant"?parseQuestionBlock(m.content):null
+  const contentText=qBlock?m.content.replace(/^\?[^\n]*\n?/m,'').replace(/^[-*]\s+[^\n]*\n?/gm,'').trim():m.content
   return '<div class="'+cls+'">'+
     '<div class="msg-meta">'+
       '<span class="msg-label">'+esc(label)+'</span>'+
       (timeStr?'<span class="msg-time">'+timeStr+'</span>':'')+
     '</div>'+
-    '<div class="msg-bubble">'+esc(m.content)+'</div>'+
+    '<div class="msg-bubble">'+esc(contentText||m.content)+(qBlock?'':'')+'</div>'+
+    (qBlock?renderQuestionOptions(qBlock,msgIdx):'')+
   '</div>'
 }
 
@@ -596,7 +620,7 @@ function fullChatHTML(log){
         html+='<div style="text-align:center;font-size:10px;color:var(--text-muted);margin:8px 0;letter-spacing:.4px">'+esc(dl)+'</div>'
       }
     }
-    html+=msgHTML(m,S.busy&&i===log.length-1&&m.role==="user")
+    html+=msgHTML(m,S.busy&&i===log.length-1&&m.role==="user",i)
   }
   return html
 }
@@ -639,7 +663,10 @@ function appendChatMsg(m){
   if(empty)empty.style.display="none"
   const atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<80
   const isPending=S.busy&&m.role==="user"
+  const msgIdx=S.chatLog.length-1
   const div=document.createElement("div")
+  const qBlock=m.role==="assistant"?parseQuestionBlock(m.content):null
+  const contentText=qBlock?m.content.replace(/^\?[^\n]*\n?/m,'').replace(/^[-*]\s+[^\n]*\n?/gm,'').trim():m.content
   if(m.role==="system"){
     div.className="msg system"
     div.innerHTML='<div class="msg-bubble">'+esc(m.content)+'</div>'
@@ -648,7 +675,8 @@ function appendChatMsg(m){
     div.innerHTML=
       '<div class="msg-meta"><span class="msg-label">'+esc({user:"You",assistant:"Smith",patch:"Patch"}[m.role]||m.role)+'</span>'+
       (m.ts?'<span class="msg-time">'+ts(m.ts)+'</span>':'')+
-      '</div><div class="msg-bubble">'+esc(m.content)+'</div>'
+      '</div><div class="msg-bubble">'+esc(contentText||m.content)+'</div>'+
+      (qBlock?renderQuestionOptions(qBlock,msgIdx):'')
   }
   box.appendChild(div)
   if(atBottom)scrollToBottom()
@@ -675,10 +703,12 @@ function ensureThinkingBubble(){
   const box=document.getElementById("chat-messages")
   if(!box)return
   if(document.getElementById("thinking-bubble"))return
+  const empty=document.getElementById("chat-empty")
+  if(empty)empty.style.display="none"
   const el=document.createElement("div")
   el.id="thinking-bubble"
-  el.className="thinking-wrapper"
-  el.innerHTML='<div class="thinking-meta"><span class="phase-label" id="thinking-phase">thinking</span><span class="tok-count" id="thinking-toks"></span></div><div class="thinking-bubble" id="thinking-text"><span class="thinking-cursor"></span></div>'
+  el.className="msg assistant"
+  el.innerHTML='<div class="msg-meta"><span class="msg-label">Smith</span><span class="phase-label" id="thinking-phase">thinking</span><span class="tok-count" id="thinking-toks" style="margin-left:auto;color:var(--text-muted);font-weight:400"></span></div><div class="msg-bubble" id="thinking-text" style="max-height:160px;overflow-y:auto;color:var(--text-dim)"><span class="thinking-cursor"></span></div>'
   box.appendChild(el)
   scrollToBottom()
 }
@@ -897,24 +927,34 @@ async function openFile(filePath){
   // Reset UI
   const pathEl=document.getElementById('preview-path')
   const pre=document.getElementById('preview-content')
+  const sumDiv=document.getElementById('preview-summary')
   const textarea=document.getElementById('edit-content')
   const editBtn=document.getElementById('edit-toggle')
   const saveBtn=document.getElementById('save-file-btn')
+  const sumBtn=document.getElementById('summarize-file-btn')
+  const viewSumBtn=document.getElementById('view-summary-btn')
   if(pathEl)pathEl.textContent=filePath
   if(pathEl)pathEl.style.cssText='font-family:var(--mono);font-size:12px;color:var(--blue);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1'
   if(pre){pre.textContent='Loading…';pre.className='';pre.style.display=''}
+  if(sumDiv)sumDiv.style.display='none'
   if(textarea)textarea.style.display='none'
-  const sumBtn=document.getElementById('summarize-file-btn')
   if(editBtn){editBtn.textContent='Edit';editBtn.style.display=''}
   if(saveBtn)saveBtn.style.display='none'
-  if(sumBtn)sumBtn.style.display=''
+  if(viewSumBtn){viewSumBtn.style.display='none';viewSumBtn.textContent='View Summary'}
+  if(sumBtn){sumBtn.style.display='';sumBtn.textContent='Summarize'}
   currentFilePath=filePath
   currentFileContent=null
+  currentFileSummary=null
   try{
     const r=await fetch('/api/file?path='+encodeURIComponent(filePath))
     const d=await r.json()
     currentFileContent=d.content
+    currentFileSummary=d.summary||null
     if(pre)pre.textContent=d.content
+    if(d.summary){
+      if(viewSumBtn){viewSumBtn.style.display='';viewSumBtn.textContent='View Summary'}
+      if(sumBtn)sumBtn.textContent='↻'
+    }
   }catch{
     if(pre)pre.textContent='Error loading file.'
   }
@@ -942,18 +982,51 @@ function toggleEdit(){
 async function summarizeCurrentFile(){
   if(!currentFilePath)return
   const sumBtn=document.getElementById('summarize-file-btn')
+  const viewSumBtn=document.getElementById('view-summary-btn')
   if(sumBtn){sumBtn.disabled=true;sumBtn.textContent='Summarizing…'}
+  if(viewSumBtn)viewSumBtn.style.display='none'
   try{
     const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'summarize',args:currentFilePath})})
     const d=await r.json()
-    if(sumBtn)sumBtn.textContent=d.ok?'Done ✓':'Error!'
-    setTimeout(()=>{if(sumBtn&&(sumBtn.textContent==='Done ✓'||sumBtn.textContent==='Error!'))sumBtn.textContent='Summarize'},2500)
+    if(d.ok){
+      currentFileSummary='(refreshing…)'
+      // Re-fetch to get updated summary
+      const rr=await fetch('/api/file?path='+encodeURIComponent(currentFilePath))
+      const dd=await rr.json()
+      currentFileSummary=dd.summary||null
+      if(currentFileSummary){
+        if(viewSumBtn){viewSumBtn.style.display='';viewSumBtn.textContent='View Summary'}
+        if(sumBtn)sumBtn.textContent='↻'
+      }else{
+        if(sumBtn)sumBtn.textContent='Summarize'
+      }
+    }else{
+      if(sumBtn)sumBtn.textContent='Error!'
+      setTimeout(()=>{if(sumBtn&&sumBtn.textContent==='Error!')sumBtn.textContent='Summarize'},2500)
+    }
   }catch{
     if(sumBtn)sumBtn.textContent='Error!'
+    setTimeout(()=>{if(sumBtn&&sumBtn.textContent==='Error!')sumBtn.textContent='Summarize'},2500)
   }finally{
     if(sumBtn)sumBtn.disabled=false
   }
 }
+function viewSummary(){
+  const sumDiv=document.getElementById('preview-summary')
+  const pre=document.getElementById('preview-content')
+  const viewSumBtn=document.getElementById('view-summary-btn')
+  if(!sumDiv||!viewSumBtn)return
+  if(sumDiv.style.display==='none'){
+    if(!currentFileSummary)return
+    sumDiv.textContent=currentFileSummary
+    sumDiv.style.display=''
+    if(viewSumBtn)viewSumBtn.textContent='Hide Summary'
+  }else{
+    sumDiv.style.display='none'
+    if(viewSumBtn)viewSumBtn.textContent='View Summary'
+  }
+}
+
 async function saveFile(){
   if(!currentFilePath)return
   const textarea=document.getElementById('edit-content')
@@ -977,17 +1050,19 @@ async function saveFile(){
   }
 }
 /* ── Models ───────────────────────────────────────────── */
+let _fetchModelsReq = 0
 async function fetchModels(){
+  const req = ++_fetchModelsReq
   try{
     const r=await fetch("/api/models")
+    if (req !== _fetchModelsReq) return
     const d=await r.json()
     const sel=document.getElementById("model-select")
     if(!sel||!Array.isArray(d.models))return
     const selected=(typeof d.selected==="string"&&d.selected.trim())?d.selected.trim():(S.modelOverride||"")
     sel.innerHTML=d.models.map(m=>'<option value="'+esc(m)+'"'+(m===selected?' selected':'')+'>'+esc(m)+'</option>').join("")
-    if(selected)sel.value=selected
+    if(selected&&d.models.includes(selected))sel.value=selected
     else if(d.models[0])sel.value=d.models[0]
-    S.modelOverride=sel.value||null
   }catch{}
 }
 
@@ -1066,6 +1141,7 @@ function resizeInput(el){
 /* ── Send ──────────────────────────────────────────────── */
 async function send(){
   const inp=document.getElementById("chat-input")
+  if(!inp)return
   const text=inp.value.trim()
   if(!text)return
   if(S.busy&&!text.startsWith("/"))return
@@ -1087,6 +1163,15 @@ async function send(){
       await fetch("/api/command",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({command:_cn,args:_ca})}).catch(()=>{})
     }
     return
+  }
+  // If text matches a known model name, route as /model command instead of prompt
+  const msel=document.getElementById("model-select")
+  if(msel){
+    const knownModels=[...msel.options].map(o=>o.value)
+    if(knownModels.includes(text)){
+      await fetch("/api/command",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({command:"model",args:text})}).catch(()=>{})
+      return
+    }
   }
   S.busy=true
   pendingUserMsg={role:"user",content:text,ts:Date.now()}
@@ -1178,6 +1263,7 @@ document.addEventListener("DOMContentLoaded",()=>{
   })
   document.getElementById('tree-search')?.addEventListener('input',e=>filterTree(e.target.value))
   document.getElementById('summarize-file-btn')?.addEventListener('click',summarizeCurrentFile)
+  document.getElementById('view-summary-btn')?.addEventListener('click',viewSummary)
   document.getElementById('edit-toggle')?.addEventListener('click',toggleEdit)
   document.getElementById('save-file-btn')?.addEventListener('click',saveFile)
   /* Global file-path click */
@@ -1447,8 +1533,9 @@ export function startLanServer(args: {
       void (async () => {
         try {
           const content = await readFile(absPath, "utf-8")
+          const fileRow = db.prepare("SELECT summary, importance FROM files WHERE path=?").get(rel) as { summary: string | null; importance: number } | undefined
           res.writeHead(200, { "Content-Type": "application/json" })
-          res.end(JSON.stringify({ content }))
+          res.end(JSON.stringify({ content, summary: fileRow?.summary ?? null, importance: fileRow?.importance ?? 0 }))
         } catch {
           res.writeHead(404, { "Content-Type": "application/json" })
           res.end(JSON.stringify({ error: "file not found" }))
@@ -1483,10 +1570,34 @@ export function startLanServer(args: {
       return
     }
 
+    if (pathname === "/api/config" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" })
+      const safeConfig: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(config)) {
+        if (k === "providers") {
+          const safeProviders: Record<string, unknown> = {}
+          for (const [pid, entry] of Object.entries(v as Record<string, unknown>)) {
+            const e = entry as Record<string, unknown>
+            safeProviders[pid] = {
+              type: e.type,
+              baseUrl: e.baseUrl,
+              apiKeyEnv: e.apiKeyEnv,
+              hasApiKey: Boolean(e.apiKey)
+            }
+          }
+          safeConfig[k] = safeProviders
+        } else {
+          safeConfig[k] = v
+        }
+      }
+      res.end(JSON.stringify(safeConfig))
+      return
+    }
+
     if (pathname === "/api/models" && req.method === "GET") {
       void (async () => {
         try {
-          const models = await listOllamaModels(config.ollama.baseUrl)
+          const models = await listProviderModels(config)
           res.writeHead(200, { "Content-Type": "application/json" })
           res.end(JSON.stringify({ models, selected: lanState.modelOverride ?? "" }))
         } catch {
@@ -1527,7 +1638,7 @@ export function startLanServer(args: {
           currentTaskSource = "web"
           lanState.busy = true
           const selectedModel = typeof model === "string" && model.trim() ? model.trim() : lanState.modelOverride ?? undefined
-          if (selectedModel && selectedModel !== lanState.modelOverride) {
+          if (selectedModel && selectedModel !== lanState.modelOverride && lanState.modelOverride !== null) {
             lanState.modelOverride = selectedModel
             events.emit("ui:model:set", { model: selectedModel, source: "web" })
           }
@@ -1587,8 +1698,12 @@ export function startLanServer(args: {
             case "model": {
               const raw = typeof args === "string" ? args.trim() : ""
               if (!raw || raw === "list") {
-                const models = await listOllamaModels(config.ollama.baseUrl).catch(() => [])
-                appendChat({ role: "system", content: models.length ? `Models: ${models.join(", ")}` : "No Ollama models available.", ts: Date.now() }, "web")
+                const models = await listProviderModels(config).catch(() => [])
+                if (models.length) {
+                  appendChat({ role: "assistant", content: "? Available models\n" + models.map((m: string) => "- " + m).join("\n"), ts: Date.now() }, "web")
+                } else {
+                  appendChat({ role: "system", content: "No models available from any provider.", ts: Date.now() }, "web")
+                }
                 break
               }
               if (raw === "reset" || raw === "default" || raw === "auto") {
@@ -1598,8 +1713,8 @@ export function startLanServer(args: {
                 appendChat({ role: "system", content: "Model reset to mode default", ts: Date.now() }, "web")
                 break
               }
-              const models = await listOllamaModels(config.ollama.baseUrl).catch(() => [])
-              const resolved = models.length ? resolveModelName(raw, models) : raw
+              const models = await listProviderModels(config).catch(() => [])
+              const resolved = models.length ? await resolveProviderModelName(config, raw, models) : raw
               lanState.modelOverride = resolved || null
               events.emit("ui:model:set", { model: lanState.modelOverride, source: "web" })
               emitState()
@@ -1633,7 +1748,7 @@ export function startLanServer(args: {
                       db.prepare("UPDATE files SET summary=?,importance=? WHERE path=?").run(summary, importance, rel)
                       appendChat({ role: "system", content: `Summarized ${rel}: ${summary}`, ts: Date.now() }, "web")
                     } else {
-                      appendChat({ role: "system", content: `Summarize failed for ${rel} (Ollama unavailable?)`, ts: Date.now() }, "web")
+                      appendChat({ role: "system", content: `Summarize failed for ${rel} (provider unavailable?)`, ts: Date.now() }, "web")
                     }
                   } catch (e) {
                     appendChat({ role: "system", content: `Summarize error: ${String(e)}`, ts: Date.now() }, "web")

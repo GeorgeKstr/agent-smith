@@ -5,7 +5,8 @@ import { execa } from "execa";
 import type { SmithConfig, PatchOutcome, ContextPacket, CheckResult, TaskClassification, PromptPlan } from "../types/index.js";
 import type { SmithDatabase } from "./db.js";
 import type { Indexer } from "./indexer.js";
-import { isOllamaAvailable, listOllamaModels, resolveModelName, generateWithOllama, optionsFromConfig, extractJson } from "./ollama.js";
+import { extractJson } from "./ollama.js";
+import { generateWithProvider, isProviderAvailable, listProviderModels, resolveProviderModelName } from "./providers.js";
 import { classifyTask, retrieve } from "./retriever.js";
 import { packContext } from "./contextPacker.js";
 import { validateUnifiedDiff, stripFences, extractDiffFiles, countChangedLines } from "./patch.js";
@@ -39,12 +40,19 @@ export async function runAsk(
   options: { modelOverride?: string; signal?: AbortSignal } = {}
 ): Promise<AskResult> {
   const { db, root, config, events } = deps;
-  const ollamaReady = await isOllamaAvailable(config.ollama.baseUrl);
-  const installed = ollamaReady ? await listOllamaModels(config.ollama.baseUrl) : [];
+  const ollamaReady = await isProviderAvailable(config);
+  const installed = ollamaReady ? await listProviderModels(config) : [];
   const answerModel = options.modelOverride
-    ? resolveModelName(options.modelOverride, installed)
-    : resolveModelName(config.models.patcher, installed);
-  const classifierModel = resolveModelName(config.models.tagger, installed);
+    ? await resolveProviderModelName(config, options.modelOverride, installed)
+    : await resolveProviderModelName(config, config.models.patcher, installed);
+
+  events.emit("task:phase", "triaging");
+  const plan = await evaluatePrompt({
+    config,
+    prompt: task,
+    ollamaReady,
+    model: answerModel
+  });
   const emptyPacket: ContextPacket = {
     task,
     prompt: task,
@@ -52,14 +60,6 @@ export async function runAsk(
     files: [],
     symbols: []
   };
-
-  events.emit("task:phase", "triaging");
-  const plan = await evaluatePrompt({
-    config,
-    prompt: task,
-    ollamaReady,
-    model: classifierModel
-  });
   const intent = plan.intent;
   events.emit("task:intent", intent);
 
@@ -70,21 +70,22 @@ export async function runAsk(
         ok: true,
         answer: "",
         packet: emptyPacket,
-        message: `Intent=${intent.kind} (${intent.reason}). Ollama offline — no chat/meta reply generated.`
+        message: `Intent=${intent.kind} (${intent.reason}). No provider available — no chat/meta reply generated.`
       };
     }
 
     events.emit("task:phase", "thinking");
-    const chat = await generateWithOllama({
-      signal: options.signal,
-      baseUrl: config.ollama.baseUrl,
-      model: answerModel,
-      system:
-        "You are Smith. For chat/meta prompts, respond concisely and helpfully. Do not propose patches or diffs unless asked.",
-      prompt: task,
-      options: optionsFromConfig(config, { num_predict: 400 }),
-      onToken: (_, text) => { events.emit("task:stream", { text }); }
-    });
+    const chat = await generateWithProvider(
+      config,
+      answerModel,
+      task,
+      {
+        system: "You are Smith. For chat/meta prompts, respond concisely and helpfully. Do not propose patches or diffs unless asked.",
+        maxTokens: 400,
+        signal: options.signal,
+        onToken: (_, text) => { events.emit("task:stream", { text }); }
+      }
+    );
     const answer = await finalizeAnswer({
       signal: options.signal,
       config,
@@ -112,7 +113,7 @@ export async function runAsk(
 
   events.emit("task:phase", "classifying");
 
-  const baseClassification = await classifyTask({ config, task: effectiveTask, ollamaReady, model: classifierModel });
+  const baseClassification = await classifyTask({ db, config, task: effectiveTask });
   let classification = mergeClassification(baseClassification, plan);
   if (isTechnicalPromptPlan(effectiveTask, plan)) {
     classification = enrichClassificationWithImportantFiles(db, classification, effectiveTask, plan);
@@ -138,19 +139,20 @@ export async function runAsk(
       ok: true,
       answer: "",
       packet,
-      message: "Ollama offline — context packet built but no answer generated."
+      message: "No provider available — context packet built but no answer generated."
     };
   }
 
   events.emit("task:phase", "thinking");
-  const result = await generateWithOllama({
-    signal: options.signal,
-    baseUrl: config.ollama.baseUrl,
-    model: answerModel,
-    prompt: packet.prompt,
-    options: optionsFromConfig(config),
-    onToken: (_, text) => { events.emit("task:stream", { text }); }
-  });
+  const result = await generateWithProvider(
+    config,
+    answerModel,
+    packet.prompt,
+    {
+      signal: options.signal,
+      onToken: (_, text) => { events.emit("task:stream", { text }); }
+    }
+  );
   const answer = await finalizeAnswer({
     signal: options.signal,
     config,
@@ -177,7 +179,7 @@ export async function runPatch(
   const { db, root, config, events } = deps;
   const checks: CheckResult[] = [];
 
-  const ollamaReady = await isOllamaAvailable(config.ollama.baseUrl);
+  const ollamaReady = await isProviderAvailable(config);
   if (!ollamaReady) {
     events.emit("task:context", { task, prompt: task, estimatedTokens: 0, files: [], symbols: [] });
     return {
@@ -186,42 +188,42 @@ export async function runPatch(
       attempts: 0,
       files: [],
       checks,
-      message: "Ollama offline — cannot generate a patch."
+      message: "No AI provider available — cannot generate a patch."
     };
   }
 
   const taskId = createTask(db, task, config.models.patcher);
-  const maxAttempts = 3; // 1 initial attempt + up to 2 repairs
-  const installed = await listOllamaModels(config.ollama.baseUrl);
+  const maxAttempts = 3;
+  const installed = await listProviderModels(config);
   const patcherModel = options.modelOverride
-    ? resolveModelName(options.modelOverride, installed)
-    : resolveModelName(config.models.patcher, installed);
+    ? await resolveProviderModelName(config, options.modelOverride, installed)
+    : await resolveProviderModelName(config, config.models.patcher, installed);
   const debuggerModel = options.modelOverride
-    ? resolveModelName(options.modelOverride, installed)
-    : resolveModelName(config.models.debugger || config.models.patcher, installed);
-  const classifierModel = resolveModelName(config.models.tagger, installed);
+    ? await resolveProviderModelName(config, options.modelOverride, installed)
+    : await resolveProviderModelName(config, config.models.debugger || config.models.patcher, installed);
 
   events.emit("task:phase", "triaging");
   const plan = await evaluatePrompt({
     config,
     prompt: task,
     ollamaReady,
-    model: classifierModel
+    model: patcherModel
   });
   const intent = plan.intent;
   events.emit("task:intent", intent);
   if (intent.kind !== "task") {
     events.emit("task:context", { task, prompt: task, estimatedTokens: 0, files: [], symbols: [] });
-    const chat = await generateWithOllama({
-      signal: options.signal,
-      baseUrl: config.ollama.baseUrl,
-      model: patcherModel,
-      system:
-        "You are Smith. User is in build mode but prompt is non-task. Reply helpfully and ask a concise follow-up if needed.",
-      prompt: task,
-      options: optionsFromConfig(config, { num_predict: 320 }),
-      onToken: (_, text) => { events.emit("task:stream", { text }); }
-    });
+    const chat = await generateWithProvider(
+      config,
+      patcherModel,
+      task,
+      {
+        system: "You are Smith. User is in build mode but prompt is non-task. Reply helpfully and ask a concise follow-up if needed.",
+        maxTokens: 320,
+        signal: options.signal,
+        onToken: (_, text) => { events.emit("task:stream", { text }); }
+      }
+    );
     const answer = await finalizeAnswer({
       signal: options.signal,
       config,
@@ -249,7 +251,7 @@ export async function runPatch(
   const effectiveTask = composeEffectiveTask(task, plan, toolNotes);
 
   events.emit("task:phase", "classifying");
-  const baseClassification = await classifyTask({ config, task: effectiveTask, ollamaReady, model: classifierModel });
+  const baseClassification = await classifyTask({ db, config, task: effectiveTask });
   let classification = mergeClassification(baseClassification, plan);
   if (isTechnicalPromptPlan(effectiveTask, plan)) {
     classification = enrichClassificationWithImportantFiles(db, classification, effectiveTask, plan);
@@ -278,14 +280,15 @@ export async function runPatch(
     attempts = attempt;
     events.emit("task:phase", attempt === 1 ? "patching" : `repairing (${attempt - 1})`);
 
-    const generation = await generateWithOllama({
-      signal: options.signal,
-      baseUrl: config.ollama.baseUrl,
-      model: attempt === 1 ? patcherModel : debuggerModel,
+    const generation = await generateWithProvider(
+      config,
+      attempt === 1 ? patcherModel : debuggerModel,
       prompt,
-      options: optionsFromConfig(config),
-      onToken: (_, text) => { events.emit("task:stream", { text }); }
-    });
+      {
+        signal: options.signal,
+        onToken: (_, text) => { events.emit("task:stream", { text }); }
+      }
+    );
 
     if (!generation.ok) {
       lastError = generation.error ?? "generation failed";
@@ -440,15 +443,16 @@ async function finalizeAnswer(args: FinalizeAnswerArgs): Promise<string> {
   if (structured) return structured;
 
   // Retry once with an explicit anti-wrapper instruction.
-  const retry = await generateWithOllama({
-    signal: args.signal,
-    baseUrl: args.config.ollama.baseUrl,
-    model: args.model,
-    system:
-      "Return plain text only. Never return JSON wrappers, code fences, or placeholder expressions like obj['output'].",
-    prompt: `${args.basePrompt}\n\nPrevious output was unusable. Provide a direct final answer in plain text now.`,
-    options: optionsFromConfig(args.config, { num_predict: 350 })
-  });
+  const retry = await generateWithProvider(
+    args.config,
+    args.model,
+    `${args.basePrompt}\n\nPrevious output was unusable. Provide a direct final answer in plain text now.`,
+    {
+      system: "Return plain text only. Never return JSON wrappers, code fences, or placeholder expressions like obj['output'].",
+      maxTokens: 350,
+      signal: args.signal,
+    }
+  );
   const second = normalizeAnswer(retry.text);
   if (second) return second;
 
@@ -659,11 +663,10 @@ async function runQwenPlanningTools(
   };
 
   const result = await runQwenFunctionLoop({
-    baseUrl: config.ollama.baseUrl,
-    model,
+    config,
+    modelSpec: model,
     think: false,
     maxToolRounds: 3,
-    options: optionsFromConfig(config, { num_predict: 650 }),
     tools,
     messages: [
       {

@@ -1,6 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+const providerEntrySchema = z.object({
+    type: z.enum(["ollama", "openai", "anthropic"]),
+    baseUrl: z.string(),
+    apiKey: z.string().optional(),
+    apiKeyEnv: z.string().optional()
+});
 const configSchema = z.object({
     models: z.object({
         tagger: z.string(),
@@ -8,11 +14,17 @@ const configSchema = z.object({
         patcher: z.string(),
         debugger: z.string()
     }),
+    providers: z.record(z.string(), providerEntrySchema).optional(),
+    defaultProvider: z.string().optional(),
     ollama: z.object({
         baseUrl: z.string(),
         temperature: z.number(),
         numPredict: z.number()
     }),
+    options: z.object({
+        temperature: z.number(),
+        numPredict: z.number()
+    }).optional(),
     index: z.object({
         watch: z.boolean(),
         debounceMs: z.number(),
@@ -50,15 +62,21 @@ const configSchema = z.object({
         animations: z.boolean()
     })
 });
-const DEFAULT_CONFIG = {
+export const DEFAULT_CONFIG = {
     models: {
         tagger: "qwen2.5-coder:3b-16k",
         summarizer: "qwen2.5-coder:3b-16k",
         patcher: "qwen2.5-coder:7b-8k",
         debugger: "deepseek-r1:7b-8k"
     },
+    providers: {},
+    defaultProvider: "ollama",
     ollama: {
         baseUrl: "http://127.0.0.1:11434",
+        temperature: 0,
+        numPredict: 2048
+    },
+    options: {
         temperature: 0,
         numPredict: 2048
     },
@@ -126,6 +144,9 @@ export async function loadConfig(root) {
     const parsed = configSchema.parse(JSON.parse(raw));
     return {
         ...parsed,
-        lan: parsed.lan ?? { port: 3000 }
+        lan: parsed.lan ?? { port: 3000 },
+        providers: parsed.providers ?? {},
+        defaultProvider: parsed.defaultProvider ?? "ollama",
+        options: parsed.options ?? { temperature: 0, numPredict: 2048 }
     };
 }

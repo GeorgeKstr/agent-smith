@@ -126,7 +126,18 @@ function wrapPlainLines(lines, width) {
         out.push(...wrapLine(line, width));
     return out;
 }
-export const ContentArea = React.memo(function ContentArea({ output, logs, packet, answer, patchText, busy, scrollOffset, maxLines, maxWidth, pendingPrompt, }) {
+function fmtElapsed(startMs) {
+    const s = Math.max(0, (Date.now() - startMs) / 1000);
+    if (s < 60)
+        return `${s.toFixed(1)}s`;
+    return `${Math.floor(s / 60)}m${Math.floor(s % 60)}s`;
+}
+function fmtTps(tokens, startMs) {
+    const s = Math.max(0.1, (Date.now() - startMs) / 1000);
+    const tps = tokens / s;
+    return `${tps.toFixed(1)} t/s`;
+}
+export const ContentArea = React.memo(function ContentArea({ output, logs, packet, answer, patchText, busy, scrollOffset, maxLines, maxWidth, pendingPrompt, streamText, streamTokens, streamStartMs, phase, model, activeQuestion, answerMetrics, }) {
     const windowLines = (lines, overrideMax) => {
         const safeMax = Math.max(3, overrideMax ?? maxLines);
         const maxOffset = Math.max(0, lines.length - safeMax);
@@ -246,7 +257,7 @@ export const ContentArea = React.memo(function ContentArea({ output, logs, packe
                         return (_jsxs(Text, { backgroundColor: row.bg, color: row.labelColor, bold: true, children: [_jsx(Text, { color: row.border, backgroundColor: row.bg, children: "\u250C " }), row.text, _jsx(Text, { color: row.border, backgroundColor: row.bg, children: " \u2510" })] }, row.id));
                     }
                     return (_jsxs(Text, { backgroundColor: row.bg, color: row.bodyColor, children: [_jsx(Text, { color: row.border, backgroundColor: row.bg, children: "\u2502 " }), row.text, _jsx(Text, { color: row.border, backgroundColor: row.bg, children: " \u2502" })] }, row.id));
-                }), win.hasNewer && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2193 newer messages" }), pendingPrompt && (_jsxs(_Fragment, { children: [_jsx(Text, { color: theme.dim, backgroundColor: BG, children: "─".repeat(40) }), _jsxs(Text, { backgroundColor: "#002800", children: [_jsx(Text, { color: "#00ff44", bold: true, backgroundColor: "#002800", children: "┃ ▶ " }), _jsx(Text, { color: "#00ff44", bold: true, backgroundColor: "#002800", children: pendingPrompt }), _jsx(Text, { color: "#00ff44", backgroundColor: "#002800", children: " ⟳" })] })] }))] }));
+                }), win.hasNewer && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2193 newer messages" }), pendingPrompt && wrapPlainLines([pendingPrompt], maxWidth).map((line, i, arr) => (_jsxs(Text, { backgroundColor: "#002800", children: [_jsx(Text, { color: "#00ff44", bold: true, backgroundColor: "#002800", children: i === 0 ? "┃ ▶ " : "    " }), _jsxs(Text, { color: "#00ff44", backgroundColor: "#002800", children: [line, i === arr.length - 1 && " ⟳"] })] }, i))), busy && streamText && (_jsxs(_Fragment, { children: [_jsxs(Text, { bold: true, backgroundColor: "#1a1a2a", children: [_jsxs(Text, { color: theme.primary, backgroundColor: "#1a1a2a", children: ["\u250C Smith \u00B7 ", phase || "thinking"] }), (streamTokens ?? 0) > 0 && (_jsxs(Text, { color: theme.dim, backgroundColor: "#1a1a2a", children: [" · ", streamTokens, " tok", (streamStartMs ?? 0) > 0 ? " · " + fmtTps(streamTokens ?? 0, streamStartMs ?? 0) : "", (streamStartMs ?? 0) > 0 ? " · " + fmtElapsed(streamStartMs ?? 0) : ""] })), _jsx(Text, { color: theme.primary, backgroundColor: "#1a1a2a", children: " \u2510" })] }), wrapPlainLines(streamText.split("\n"), maxWidth).slice(-4).map((line, i, arr) => (_jsxs(Text, { color: "white", backgroundColor: "#1a1a2a", children: [_jsx(Text, { color: theme.primary, backgroundColor: "#1a1a2a", children: "\u2502 " }), line, i === arr.length - 1 && _jsx(Text, { color: theme.accent, backgroundColor: "#1a1a2a", children: "\u258A" }), _jsx(Text, { color: theme.primary, backgroundColor: "#1a1a2a", children: " \u2502" })] }, i)))] }))] }));
     }
     if (patchText) {
         const win = windowLines(patchLines);
@@ -260,7 +271,9 @@ export const ContentArea = React.memo(function ContentArea({ output, logs, packe
         const end = Math.max(0, answerDisplay.length - offset);
         const start = Math.max(0, end - safeMax);
         const visible = answerDisplay.slice(start, end);
-        return (_jsxs(Box, { flexDirection: "column", paddingX: 1, children: [_jsx(Text, { color: theme.primary, backgroundColor: BG, children: "Answer" }), _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "─".repeat(40) }), win.hasOlder && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2191 older lines" }), visible.map((line, i) => (_jsx(Text, { color: line.color ?? "white", bold: line.bold, dimColor: line.dimColor, backgroundColor: BG, children: line.text }, i))), win.hasNewer && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2193 newer lines" })] }));
+        return (_jsxs(Box, { flexDirection: "column", paddingX: 1, children: [_jsxs(Box, { flexDirection: "row", justifyContent: "space-between", children: [_jsx(Text, { color: theme.primary, backgroundColor: BG, children: "Answer" }), answerMetrics && answerMetrics.totalTokens > 0 && (_jsxs(Text, { color: theme.dim, backgroundColor: BG, children: [answerMetrics.totalTimeMs >= 60000
+                                    ? `${Math.floor(answerMetrics.totalTimeMs / 60000)}m${Math.round((answerMetrics.totalTimeMs % 60000) / 1000)}s`
+                                    : `${(answerMetrics.totalTimeMs / 1000).toFixed(1)}s`, " · ", answerMetrics.totalTokens, " tok", " · ", (answerMetrics.totalTokens / Math.max(0.1, answerMetrics.totalTimeMs / 1000)).toFixed(1), " t/s"] }))] }), _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "─".repeat(40) }), win.hasOlder && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2191 older lines" }), visible.map((line, i) => (_jsx(Text, { color: line.color ?? "white", bold: line.bold, dimColor: line.dimColor, backgroundColor: BG, children: line.text }, i))), win.hasNewer && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2193 newer lines" })] }));
     }
     if (packet) {
         return (_jsxs(Box, { flexDirection: "column", paddingX: 1, children: [_jsxs(Text, { color: theme.accent, backgroundColor: BG, children: ["Context \u00B7 ~", packet.estimatedTokens, " tokens \u00B7 ", packet.files.length, " files"] }), _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "─".repeat(40) }), packet.files.slice(0, Math.max(3, maxLines - 6)).map((f, i) => (_jsxs(Text, { color: theme.text, backgroundColor: BG, children: ["\u00B7 ", truncate(f.path)] }, i))), packet.symbols.slice(0, 5).map((s, i) => (_jsxs(Text, { color: theme.dim, backgroundColor: BG, children: ["\u25C7 ", s.kind, " ", s.name] }, `s-${i}`)))] }));
