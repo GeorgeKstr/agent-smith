@@ -41,6 +41,7 @@ export type MainScreenProps = {
   textInputModal: { prompt: string; onSubmit: string; onCancel?: string } | null
   textInputModalValue: string
   answerMetrics: { totalTimeMs: number; totalTokens: number } | null
+  assistantMetrics: Array<{ totalTimeMs: number; totalTokens: number } | null>
   autocomplete: { suggestions: string[]; top: string } | null
   autocompleteIndex: number
 }
@@ -121,7 +122,6 @@ function PromptBar({
                   <>
                     <Box flexGrow={1}><Text backgroundColor="#002200"> </Text></Box>
                     <Text color={modeColor} bold backgroundColor="#002200">{modeTag}</Text>
-                    {!busy && <Text color={theme.dim} backgroundColor="#002200">▊</Text>}
                   </>
                 )}
               </Box>
@@ -304,6 +304,7 @@ export function MainScreen(props: MainScreenProps) {
               model={props.model}
               activeQuestion={props.activeQuestion}
               answerMetrics={props.answerMetrics}
+              assistantMetrics={props.assistantMetrics}
             />
             {aq && !props.busy && (() => {
               const cw = popupWidth - 2
@@ -373,26 +374,41 @@ export function MainScreen(props: MainScreenProps) {
           </Box>
         </Box>
 
-        {props.autocomplete && props.autocomplete.suggestions.length >= 1 && !props.busy && (
-          <Box flexShrink={0} flexDirection="row" width={frameInnerWidth} overflow="hidden">
-            <Box width={2} />
-            <Box flexDirection="column" borderStyle="single" borderColor={theme.border}>
-              {props.autocomplete.suggestions.slice(0, Math.min(8, props.autocomplete.suggestions.length)).map((s, i) => {
-                const isSel = i === props.autocompleteIndex
-                return (
-                  <Box key={i} flexDirection="row">
-                    <Text backgroundColor="black">
+        {props.autocomplete && props.autocomplete.suggestions.length >= 1 && !props.busy && (() => {
+          const items = props.autocomplete.suggestions.slice(0, Math.min(8, props.autocomplete.suggestions.length))
+          const itemWidth = Math.max(...items.map(s => s.length))
+          const innerWidth = itemWidth + 4
+          return (
+            <Box flexShrink={0} flexDirection="row" width={frameInnerWidth} overflow="hidden">
+              <Box width={2} />
+              <Box flexDirection="column">
+                <Text backgroundColor="black">
+                  <Text color={theme.border} backgroundColor="black">┌</Text>
+                  <Text backgroundColor="black">{"─".repeat(innerWidth)}</Text>
+                  <Text color={theme.border} backgroundColor="black">┐</Text>
+                </Text>
+                {items.map((s, i) => {
+                  const isSel = i === props.autocompleteIndex
+                  return (
+                    <Text key={i} backgroundColor="black">
+                      <Text color={theme.border} backgroundColor="black">│ </Text>
                       <Text color={isSel ? theme.accent : "#1a3a1a"} bold={isSel} backgroundColor="black">
-                        {isSel ? "▸ " : "  "}{s}
+                        {isSel ? "▸ " : "  "}{s.padEnd(itemWidth, " ")}
                       </Text>
+                      <Text color={theme.border} backgroundColor="black"> │</Text>
                     </Text>
-                  </Box>
-                )
-              })}
+                  )
+                })}
+                <Text backgroundColor="black">
+                  <Text color={theme.border} backgroundColor="black">└</Text>
+                  <Text backgroundColor="black">{"─".repeat(innerWidth)}</Text>
+                  <Text color={theme.border} backgroundColor="black">┘</Text>
+                </Text>
+              </Box>
+              <Box width={2} />
             </Box>
-            <Box width={2} />
-          </Box>
-        )}
+          )
+        })()}
 
         <Box flexShrink={0} flexDirection="column" width={frameInnerWidth} overflow="hidden">
           <PromptBar

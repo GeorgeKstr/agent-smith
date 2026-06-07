@@ -166,6 +166,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   const [textInputModal, setTextInputModal] = useState<{ prompt: string; onSubmit: string; onCancel?: string } | null>(null)
   const [textInputModalValue, setTextInputModalValue] = useState("")
   const [answerMetrics, setAnswerMetrics] = useState<{ totalTimeMs: number; totalTokens: number } | null>(null)
+  const [assistantMetrics, setAssistantMetrics] = useState<Array<{ totalTimeMs: number; totalTokens: number } | null>>([])
 
   const answeredQuestionFp = useRef<Set<string>>(new Set())
   const questionFromCommand = useRef(false)
@@ -479,6 +480,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
       setScrollOffset(0)
       setBusy(false)
       setPendingPrompt(null)
+      setAssistantMetrics([])
       webTaskActiveRef.current = false
       seenWebChatRef.current.clear()
     }
@@ -508,6 +510,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
       }
       if (payload.entry.role === "assistant") {
         setPendingPrompt(null)
+        setAssistantMetrics(prev => [...prev, null])
         appendOutput(toChatLines("AI: ", payload.entry.content))
         return
       }
@@ -905,6 +908,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         setIntent(null)
         setExecutions([])
         setScrollOffset(0)
+        setAssistantMetrics([])
         seenWebChatRef.current.clear()
         events.emit("chat:cleared", { source: "cli" })
         return true
@@ -1042,6 +1046,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         const result = await runAsk({ db, root, config, events, indexer }, task, { modelOverride: activeModel, signal })
         const answerText = result.answer || result.message || "(no answer)"
         setAnswer(answerText)
+        setAssistantMetrics(prev => [...prev, { totalTimeMs: Date.now() - streamStartRef.current, totalTokens: streamTokRef.current }])
         // Append prompt + response together so history is consistent
         appendOutput([promptLine, ...toChatLines("AI: ", answerText)])
       } else {
@@ -1051,7 +1056,10 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           { apply: true, modelOverride: activeModel, signal }
         )
         if (outcome.diff) setPatchText(outcome.diff)
-        if (outcome.answer) setAnswer(outcome.answer)
+        if (outcome.answer) {
+          setAnswer(outcome.answer)
+          setAssistantMetrics(prev => [...prev, { totalTimeMs: Date.now() - streamStartRef.current, totalTokens: streamTokRef.current }])
+        }
         if (outcome.applied && outcome.diff) undoDiff = outcome.diff
         const statusLines = [outcome.message, ...outcome.checks.map((c) => `[${c.name}] ${c.ok ? "PASS" : "FAIL"} (exit ${c.exitCode})`)]
         appendOutput([
@@ -1322,6 +1330,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
       textInputModal={textInputModal}
       textInputModalValue={textInputModalValue}
       answerMetrics={answerMetrics}
+      assistantMetrics={assistantMetrics}
       autocomplete={autocomplete}
       autocompleteIndex={autocompleteIndex}
     />

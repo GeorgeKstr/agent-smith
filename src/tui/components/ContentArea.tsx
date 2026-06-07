@@ -165,6 +165,7 @@ export const ContentArea = React.memo(function ContentArea({
   model,
   activeQuestion,
   answerMetrics,
+  assistantMetrics,
 }: {
   output: string[]
   logs: string[]
@@ -183,6 +184,7 @@ export const ContentArea = React.memo(function ContentArea({
   model?: string
   activeQuestion?: { question: string; options: string[]; selectedIndex: number; command: string | null } | null
   answerMetrics?: { totalTimeMs: number; totalTokens: number } | null
+  assistantMetrics?: Array<{ totalTimeMs: number; totalTokens: number } | null>
 }) {
   const windowLines = <T,>(lines: T[], overrideMax?: number) => {
     const safeMax = Math.max(3, overrideMax ?? maxLines)
@@ -214,15 +216,15 @@ export const ContentArea = React.memo(function ContentArea({
     lines: string[]
   }
 
-  type BubbleRow = {
-    id: string
-    kind: "HEAD" | "BODY"
-    text: string
-    labelColor: string
-    bodyColor: string
-    bg: string
-    border: string
-  }
+type BubbleRow = {
+  id: string
+  kind: "HEAD" | "BODY" | "METRICS"
+  text: string
+  labelColor: string
+  bodyColor: string
+  bg: string
+  border: string
+}
 
   const parseBubbles = (lines: string[]): Bubble[] => {
     const bubbles: Bubble[] = []
@@ -283,7 +285,15 @@ export const ContentArea = React.memo(function ContentArea({
     return { label: "Info", labelColor: "yellow", text: "white", bg: "#2a220f", border: "yellow" }
   }
 
-  const buildBubbleRows = (bubbles: Bubble[]): BubbleRow[] => {
+  const fmtMetric = (m: { totalTimeMs: number; totalTokens: number }): string => {
+    const time = m.totalTimeMs >= 60000
+      ? `${Math.floor(m.totalTimeMs / 60000)}m${Math.round((m.totalTimeMs % 60000) / 1000)}s`
+      : `${(m.totalTimeMs / 1000).toFixed(1)}s`
+    return `${time} · ${m.totalTokens} tok · ${(m.totalTokens / Math.max(0.1, m.totalTimeMs / 1000)).toFixed(1)} t/s`
+  }
+
+  const buildBubbleRows = (bubbles: Bubble[], metrics: Array<{ totalTimeMs: number; totalTokens: number } | null>): BubbleRow[] => {
+    let asstIdx = 0
     return bubbles.flatMap((b, i): BubbleRow[] => {
       const style = bubbleStyle(b.role)
       const head = ` ${style.label} `
@@ -291,7 +301,8 @@ export const ContentArea = React.memo(function ContentArea({
       const bodyWidth = Math.max(head.length, ...content.map((ln) => ln.length))
       const paddedHead = head.padEnd(bodyWidth, " ")
       const paddedContent = content.map((ln) => ln.padEnd(bodyWidth, " "))
-      return [
+
+      const rows: BubbleRow[] = [
         {
           id: `b-${i}-h`,
           kind: "HEAD",
@@ -311,10 +322,28 @@ export const ContentArea = React.memo(function ContentArea({
           border: style.border,
         })),
       ]
+
+      if (b.role === "assistant") {
+        const m = metrics[asstIdx]
+        asstIdx++
+        if (m) {
+          rows.push({
+            id: `b-${i}-m`,
+            kind: "METRICS",
+            text: fmtMetric(m).padEnd(bodyWidth, " "),
+            labelColor: theme.dim,
+            bodyColor: theme.dim,
+            bg: style.bg,
+            border: style.border,
+          })
+        }
+      }
+
+      return rows
     })
   }
 
-  const historyRows = React.useMemo(() => buildBubbleRows(parseBubbles(output)), [output, maxWidth])
+  const historyRows = React.useMemo(() => buildBubbleRows(parseBubbles(output), assistantMetrics ?? []), [output, maxWidth, assistantMetrics])
 
   if (output.length > 0 || pendingPrompt) {
     const win = windowLines(historyRows, historyMaxLines)
@@ -334,7 +363,7 @@ export const ContentArea = React.memo(function ContentArea({
             )
           }
           return (
-            <Text key={row.id} backgroundColor={row.bg} color={row.bodyColor}>
+            <Text key={row.id} backgroundColor={row.bg} color={row.kind === "METRICS" ? theme.dim : row.bodyColor}>
               <Text color={row.border} backgroundColor={row.bg}>│ </Text>
               {row.text}
               <Text color={row.border} backgroundColor={row.bg}> │</Text>

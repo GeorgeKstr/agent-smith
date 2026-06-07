@@ -137,7 +137,7 @@ function fmtTps(tokens, startMs) {
     const tps = tokens / s;
     return `${tps.toFixed(1)} t/s`;
 }
-export const ContentArea = React.memo(function ContentArea({ output, logs, packet, answer, patchText, busy, scrollOffset, maxLines, maxWidth, pendingPrompt, streamText, streamTokens, streamStartMs, phase, model, activeQuestion, answerMetrics, }) {
+export const ContentArea = React.memo(function ContentArea({ output, logs, packet, answer, patchText, busy, scrollOffset, maxLines, maxWidth, pendingPrompt, streamText, streamTokens, streamStartMs, phase, model, activeQuestion, answerMetrics, assistantMetrics, }) {
     const windowLines = (lines, overrideMax) => {
         const safeMax = Math.max(3, overrideMax ?? maxLines);
         const maxOffset = Math.max(0, lines.length - safeMax);
@@ -219,7 +219,14 @@ export const ContentArea = React.memo(function ContentArea({ output, logs, packe
             return { label: "System", labelColor: "cyan", text: theme.dim, bg: "#111827", border: "cyan" };
         return { label: "Info", labelColor: "yellow", text: "white", bg: "#2a220f", border: "yellow" };
     };
-    const buildBubbleRows = (bubbles) => {
+    const fmtMetric = (m) => {
+        const time = m.totalTimeMs >= 60000
+            ? `${Math.floor(m.totalTimeMs / 60000)}m${Math.round((m.totalTimeMs % 60000) / 1000)}s`
+            : `${(m.totalTimeMs / 1000).toFixed(1)}s`;
+        return `${time} · ${m.totalTokens} tok · ${(m.totalTokens / Math.max(0.1, m.totalTimeMs / 1000)).toFixed(1)} t/s`;
+    };
+    const buildBubbleRows = (bubbles, metrics) => {
+        let asstIdx = 0;
         return bubbles.flatMap((b, i) => {
             const style = bubbleStyle(b.role);
             const head = ` ${style.label} `;
@@ -227,7 +234,7 @@ export const ContentArea = React.memo(function ContentArea({ output, logs, packe
             const bodyWidth = Math.max(head.length, ...content.map((ln) => ln.length));
             const paddedHead = head.padEnd(bodyWidth, " ");
             const paddedContent = content.map((ln) => ln.padEnd(bodyWidth, " "));
-            return [
+            const rows = [
                 {
                     id: `b-${i}-h`,
                     kind: "HEAD",
@@ -247,16 +254,32 @@ export const ContentArea = React.memo(function ContentArea({ output, logs, packe
                     border: style.border,
                 })),
             ];
+            if (b.role === "assistant") {
+                const m = metrics[asstIdx];
+                asstIdx++;
+                if (m) {
+                    rows.push({
+                        id: `b-${i}-m`,
+                        kind: "METRICS",
+                        text: fmtMetric(m).padEnd(bodyWidth, " "),
+                        labelColor: theme.dim,
+                        bodyColor: theme.dim,
+                        bg: style.bg,
+                        border: style.border,
+                    });
+                }
+            }
+            return rows;
         });
     };
-    const historyRows = React.useMemo(() => buildBubbleRows(parseBubbles(output)), [output, maxWidth]);
+    const historyRows = React.useMemo(() => buildBubbleRows(parseBubbles(output), assistantMetrics ?? []), [output, maxWidth, assistantMetrics]);
     if (output.length > 0 || pendingPrompt) {
         const win = windowLines(historyRows, historyMaxLines);
         return (_jsxs(Box, { flexDirection: "column", paddingX: 1, children: [_jsx(Text, { color: theme.primary, backgroundColor: BG, children: "History" }), _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "─".repeat(40) }), win.hasOlder && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2191 older messages" }), win.visible.map((row) => {
                     if (row.kind === "HEAD") {
                         return (_jsxs(Text, { backgroundColor: row.bg, color: row.labelColor, bold: true, children: [_jsx(Text, { color: row.border, backgroundColor: row.bg, children: "\u250C " }), row.text, _jsx(Text, { color: row.border, backgroundColor: row.bg, children: " \u2510" })] }, row.id));
                     }
-                    return (_jsxs(Text, { backgroundColor: row.bg, color: row.bodyColor, children: [_jsx(Text, { color: row.border, backgroundColor: row.bg, children: "\u2502 " }), row.text, _jsx(Text, { color: row.border, backgroundColor: row.bg, children: " \u2502" })] }, row.id));
+                    return (_jsxs(Text, { backgroundColor: row.bg, color: row.kind === "METRICS" ? theme.dim : row.bodyColor, children: [_jsx(Text, { color: row.border, backgroundColor: row.bg, children: "\u2502 " }), row.text, _jsx(Text, { color: row.border, backgroundColor: row.bg, children: " \u2502" })] }, row.id));
                 }), win.hasNewer && _jsx(Text, { color: theme.dim, backgroundColor: BG, children: "\u2193 newer messages" }), pendingPrompt && wrapPlainLines([pendingPrompt], maxWidth).map((line, i, arr) => (_jsxs(Text, { backgroundColor: "#002800", children: [_jsx(Text, { color: "#00ff44", bold: true, backgroundColor: "#002800", children: i === 0 ? "┃ ▶ " : "    " }), _jsxs(Text, { color: "#00ff44", backgroundColor: "#002800", children: [line, i === arr.length - 1 && " ⟳"] })] }, i))), busy && streamText && (_jsxs(_Fragment, { children: [_jsxs(Text, { bold: true, backgroundColor: "#1a1a2a", children: [_jsxs(Text, { color: theme.primary, backgroundColor: "#1a1a2a", children: ["\u250C Smith \u00B7 ", phase || "thinking"] }), (streamTokens ?? 0) > 0 && (_jsxs(Text, { color: theme.dim, backgroundColor: "#1a1a2a", children: [" · ", streamTokens, " tok", (streamStartMs ?? 0) > 0 ? " · " + fmtTps(streamTokens ?? 0, streamStartMs ?? 0) : "", (streamStartMs ?? 0) > 0 ? " · " + fmtElapsed(streamStartMs ?? 0) : ""] })), _jsx(Text, { color: theme.primary, backgroundColor: "#1a1a2a", children: " \u2510" })] }), wrapPlainLines(streamText.split("\n"), maxWidth).slice(-4).map((line, i, arr) => (_jsxs(Text, { color: "white", backgroundColor: "#1a1a2a", children: [_jsx(Text, { color: theme.primary, backgroundColor: "#1a1a2a", children: "\u2502 " }), line, i === arr.length - 1 && _jsx(Text, { color: theme.accent, backgroundColor: "#1a1a2a", children: "\u258A" }), _jsx(Text, { color: theme.primary, backgroundColor: "#1a1a2a", children: " \u2502" })] }, i)))] }))] }));
     }
     if (patchText) {

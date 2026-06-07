@@ -123,6 +123,7 @@ export function App({ root, config, db, events, indexer }) {
     const [textInputModal, setTextInputModal] = useState(null);
     const [textInputModalValue, setTextInputModalValue] = useState("");
     const [answerMetrics, setAnswerMetrics] = useState(null);
+    const [assistantMetrics, setAssistantMetrics] = useState([]);
     const answeredQuestionFp = useRef(new Set());
     const questionFromCommand = useRef(false);
     const setupRef = useRef(null);
@@ -424,6 +425,7 @@ export function App({ root, config, db, events, indexer }) {
             setScrollOffset(0);
             setBusy(false);
             setPendingPrompt(null);
+            setAssistantMetrics([]);
             webTaskActiveRef.current = false;
             seenWebChatRef.current.clear();
         };
@@ -453,6 +455,7 @@ export function App({ root, config, db, events, indexer }) {
             }
             if (payload.entry.role === "assistant") {
                 setPendingPrompt(null);
+                setAssistantMetrics(prev => [...prev, null]);
                 appendOutput(toChatLines("AI: ", payload.entry.content));
                 return;
             }
@@ -872,6 +875,7 @@ export function App({ root, config, db, events, indexer }) {
                 setIntent(null);
                 setExecutions([]);
                 setScrollOffset(0);
+                setAssistantMetrics([]);
                 seenWebChatRef.current.clear();
                 events.emit("chat:cleared", { source: "cli" });
                 return true;
@@ -1001,6 +1005,7 @@ export function App({ root, config, db, events, indexer }) {
                 const result = await runAsk({ db, root, config, events, indexer }, task, { modelOverride: activeModel, signal });
                 const answerText = result.answer || result.message || "(no answer)";
                 setAnswer(answerText);
+                setAssistantMetrics(prev => [...prev, { totalTimeMs: Date.now() - streamStartRef.current, totalTokens: streamTokRef.current }]);
                 // Append prompt + response together so history is consistent
                 appendOutput([promptLine, ...toChatLines("AI: ", answerText)]);
             }
@@ -1008,8 +1013,10 @@ export function App({ root, config, db, events, indexer }) {
                 const outcome = await runPatch({ db, root, config, events, indexer }, task, { apply: true, modelOverride: activeModel, signal });
                 if (outcome.diff)
                     setPatchText(outcome.diff);
-                if (outcome.answer)
+                if (outcome.answer) {
                     setAnswer(outcome.answer);
+                    setAssistantMetrics(prev => [...prev, { totalTimeMs: Date.now() - streamStartRef.current, totalTokens: streamTokRef.current }]);
+                }
                 if (outcome.applied && outcome.diff)
                     undoDiff = outcome.diff;
                 const statusLines = [outcome.message, ...outcome.checks.map((c) => `[${c.name}] ${c.ok ? "PASS" : "FAIL"} (exit ${c.exitCode})`)];
@@ -1253,5 +1260,5 @@ export function App({ root, config, db, events, indexer }) {
             ? resolveModelLocal(modelOverride, availableModels)
             : mode === "build"
                 ? config.models.patcher
-                : config.models.summarizer, ollamaReady: ollamaReady, filesTotal: boot.filesTotal, dirtyFiles: boot.dirtyFiles, logs: logs, mode: mode, input: input, busy: busy, phase: phase, intent: intent, packet: packet, answer: answer, patchText: patchText, output: output, maxTokens: config.context.maxPromptTokens, animations: animationEnabled, scrollOffset: scrollOffset, scanPhase: boot.phase, scanProgress: boot.progress, scanScanned: boot.filesScanned, scanTotal: boot.filesTotal, streamText: streamText, streamTokens: streamTokens, streamStartMs: streamStartRef.current, pendingPrompt: pendingPrompt, activeQuestion: activeQuestion, setupPrompt: setupAwaitingInput, textInputModal: textInputModal, textInputModalValue: textInputModalValue, answerMetrics: answerMetrics, autocomplete: autocomplete, autocompleteIndex: autocompleteIndex }));
+                : config.models.summarizer, ollamaReady: ollamaReady, filesTotal: boot.filesTotal, dirtyFiles: boot.dirtyFiles, logs: logs, mode: mode, input: input, busy: busy, phase: phase, intent: intent, packet: packet, answer: answer, patchText: patchText, output: output, maxTokens: config.context.maxPromptTokens, animations: animationEnabled, scrollOffset: scrollOffset, scanPhase: boot.phase, scanProgress: boot.progress, scanScanned: boot.filesScanned, scanTotal: boot.filesTotal, streamText: streamText, streamTokens: streamTokens, streamStartMs: streamStartRef.current, pendingPrompt: pendingPrompt, activeQuestion: activeQuestion, setupPrompt: setupAwaitingInput, textInputModal: textInputModal, textInputModalValue: textInputModalValue, answerMetrics: answerMetrics, assistantMetrics: assistantMetrics, autocomplete: autocomplete, autocompleteIndex: autocompleteIndex }));
 }
