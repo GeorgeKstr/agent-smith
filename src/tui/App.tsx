@@ -215,7 +215,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         } else if (cmd === "/mode" && arg) {
           suggestions = ["build", "discuss"].filter(m => m.startsWith(arg)).map(m => cmd + " " + m)
         } else if (cmd === "/api" && arg) {
-          suggestions = ["stop", "status"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s)
+          suggestions = ["stop", "status", "config"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s)
         } else if (cmd === "/lan" && arg) {
           suggestions = ["stop", "status"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s)
         } else if (cmd === "/dashboard" && arg) {
@@ -668,9 +668,9 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           "  /model [name|list|reset]  List or switch AI provider model",
           "  /tools       Show Qwen tool-calling integration notes",
           "  /lan [port|status|stop]  Start/stop local project web UI",
-          "  /api [port|status|stop]  Start/stop local runtime API (auto-heartbeats organizer)",
-          "  /dashboard [port|status|stop]  Start/stop organizer dashboard",
-          "  /organizer [start|stop|status|config]  Manage organizer heartbeat connection",
+          "  /api [port|status|stop|config]  Start/stop/configure runtime API",
+          "  /dashboard [port|status|stop]  Start/stop organizer server (LAN registry)",
+          "  /organizer [start|stop|status|config]  Connect to remote organizer via heartbeats",
           "  /undo        Undo last prompt result (files + convo)",
           "  /clear       Clear the output area",
           "  /animation   Toggle terminal animations on/off",
@@ -1012,16 +1012,12 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           } else {
             appendOutput("API is not running.")
           }
-          if (organizerHeartbeatRef.current) {
-            organizerHeartbeatRef.current.stop()
-            organizerHeartbeatRef.current = null
-          }
           return true
         }
         if (arg === "status") {
           if (apiRef.current) {
             let msg = `API running at ${apiRef.current.url}`
-            if (organizerHeartbeatRef.current) msg += ` (organizer: ${config.organizer.url})`
+            if (organizerHeartbeatRef.current) msg += ` (organizer heartbeat: ${config.organizer.url})`
             appendOutput(msg)
           } else {
             appendOutput("API is not running.")
@@ -1129,8 +1125,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           ])
           return true
         }
-        if (apiRef.current) {
-          if (organizerHeartbeatRef.current) {
+        if (organizerHeartbeatRef.current) {
             appendOutput(`Organizer heartbeat already active → ${config.organizer.url}`)
             return true
           }
@@ -1144,12 +1139,8 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           } catch (err) {
             appendOutput(`✗ Failed to start organizer heartbeat: ${err instanceof Error ? err.message : String(err)}`)
           }
-        } else {
-          appendOutput("API is not running. Start the API first with /api, or set organizer.enabled in config for auto-start.")
           return true
         }
-        return true
-      }
       case "/dashboard": {
         const arg = (rawParts[1] ?? "").toLowerCase()
         if (arg === "stop") {
