@@ -1356,6 +1356,10 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           tuiSessionIdRef.current = found.id
           lastSyncedMsgRef.current = ""
           const msgs = listChatMessages(db, found.id)
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const m = msgs[i]
+            if (m.model) { setModelOverride(m.model); break }
+          }
           setOutput([])
           setAnswer("")
           setPatchText("")
