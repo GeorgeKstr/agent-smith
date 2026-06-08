@@ -1492,7 +1492,17 @@ export function createCli() {
         }
       }
 
+      let organizerHeartbeat: { stop(): void } | null = null;
+      if (config.organizer.enabled) {
+        organizerHeartbeat = await startOrganizerHeartbeat({
+          root, config, db,
+          onLog: (msg) => console.log(msg)
+        });
+        console.log(`Organizer heartbeat active → ${config.organizer.url}`);
+      }
+
       const shutdown = async () => {
+        if (organizerHeartbeat) organizerHeartbeat.stop();
         await api.stop();
         db.close();
         process.exit(0);
