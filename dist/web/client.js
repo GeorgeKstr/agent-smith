@@ -83,7 +83,13 @@ function modelOptions(a){
   var o='<option value="">default</option>';
   var seen={};
   if(a&&a.models)for(var k in a.models){var m=a.models[k];if(!m||seen[m])continue;seen[m]=1;o+='<option value="'+esc(m)+'">'+esc(k)+': '+esc(m)+'</option>';}
-  if(S.chat.allModels.length){o+='<optgroup label="All models">';S.chat.allModels.forEach(function(m){if(seen[m])return;o+='<option value="'+esc(m)+'">'+esc(m)+'</option>';});o+='</optgroup>';}
+  var byProv={},order=[];
+  S.chat.allModels.forEach(function(m){
+    var idx=m.indexOf(':'),prov=idx>0?m.slice(0,idx):'other',name=idx>0?m.slice(idx+1):m;
+    if(!byProv[prov]){byProv[prov]=[];order.push(prov);}
+    byProv[prov].push(name);
+  });
+  if(order.length)order.forEach(function(prov){o+='<optgroup label="'+esc(prov)+'">';byProv[prov].forEach(function(name){var fm=prov+':'+name;if(seen[fm])return;o+='<option value="'+esc(fm)+'">'+esc(name)+'</option>';});o+='</optgroup>';});
   return o;
 }
 

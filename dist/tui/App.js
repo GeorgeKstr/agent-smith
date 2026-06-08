@@ -671,13 +671,30 @@ export function App({ root, config, db, events, indexer }) {
                         return true;
                     }
                     const current = modelOverride ?? (mode === "build" ? config.models.patcher : config.models.summarizer);
-                    questionFromCommand.current = true;
-                    setActiveQuestion({
-                        question: `Available models (${models.length}, current: ${current})`,
-                        options: models,
-                        selectedIndex: 0,
-                        command: "/model",
-                    });
+                    const byProv = {};
+                    const order = [];
+                    for (const m of models) {
+                        const idx = m.indexOf(":");
+                        const prov = idx > 0 ? m.slice(0, idx) : "other";
+                        const name = idx > 0 ? m.slice(idx + 1) : m;
+                        if (!byProv[prov]) {
+                            byProv[prov] = [];
+                            order.push(prov);
+                        }
+                        byProv[prov].push(name);
+                    }
+                    const lines = [`Available models (${models.length}, current: ${current})`];
+                    for (const prov of order) {
+                        const list = byProv[prov];
+                        lines.push(`  ${prov} (${list.length})`);
+                        for (const name of list) {
+                            const full = prov + ":" + name;
+                            const mark = full === current ? "→ " : "  ";
+                            lines.push(`${mark}  ${name}`);
+                        }
+                    }
+                    lines.push("", "  /model <name> to set · /model reset to clear");
+                    appendOutput(lines);
                     return true;
                 }
                 if (argLower === "reset" || argLower === "default" || argLower === "auto") {

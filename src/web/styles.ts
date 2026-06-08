@@ -280,7 +280,7 @@ button{font-family:var(--font);cursor:pointer}
 
 .chat-inp-area{flex-shrink:0;background:var(--s1);border-top:1px solid var(--bd);padding:10px 12px;padding-bottom:max(10px,env(safe-area-inset-bottom))}
 .chat-opts{display:flex;gap:4px;margin-top:4px}
-.chat-opt-sel{flex:none;width:auto;min-width:60px;min-height:24px;font-size:10px;padding:1px 4px}
+.chat-opt-sel{flex:none;min-width:90px;font-size:10px;padding:2px 4px;min-height:26px}
 .chat-row{display:flex;gap:8px;align-items:flex-end}
 .chat-ta{flex:1;background:var(--s2);color:var(--tx);border:1px solid var(--bd);border-radius:12px;padding:10px 14px;font-size:13px;resize:none;min-height:var(--touch);max-height:120px;line-height:1.5;font-family:var(--font);transition:border-color .15s}
 .chat-ta:focus{border-color:var(--bd-hi);outline:none}
