@@ -14,7 +14,7 @@ window.__setSidebar=function(v){hasSidebar=!!v;if(hasSidebar){var s=$e('sidebar'
 var S={
   agents:[],tasks:[],projects:[],status:null,
   agentId:null,tab:'chat',
-  chat:{sessions:[],sid:null,msgs:[],qtns:[],sending:false,allModels:[]},
+  chat:{sessions:[],sid:null,msgs:[],qtns:[],sending:false,allModels:[],model:null},
   exp:{},tl:{},tlQ:{},
   ingestOpen:false,newOpen:false,
   filter:{q:'',status:''},
@@ -79,17 +79,17 @@ async function loadFileTree(){try{S._fileTree=(await aapi('/filetree').catch(fun
 
 function scrollChat(){setTimeout(function(){var m=$e('chat-msgs');if(m)m.scrollTop=m.scrollHeight;},40);}
 
-function modelOptions(a){
-  var o='<option value="">default</option>';
+function modelOptions(a,selModel){
+  var o='<option value=""'+(selModel?'':' selected')+'>default</option>';
   var seen={};
-  if(a&&a.models)for(var k in a.models){var m=a.models[k];if(!m||seen[m])continue;seen[m]=1;o+='<option value="'+esc(m)+'">'+esc(k)+': '+esc(m)+'</option>';}
+  if(a&&a.models)for(var k in a.models){var m=a.models[k];if(!m||seen[m])continue;seen[m]=1;o+='<option value="'+esc(m)+'"'+(m===selModel?' selected':'')+'>'+esc(k)+': '+esc(m)+'</option>';}
   var byProv={},order=[];
   S.chat.allModels.forEach(function(m){
     var idx=m.indexOf(':'),prov=idx>0?m.slice(0,idx):'other',name=idx>0?m.slice(idx+1):m;
     if(!byProv[prov]){byProv[prov]=[];order.push(prov);}
     byProv[prov].push(name);
   });
-  if(order.length)order.forEach(function(prov){o+='<optgroup label="'+esc(prov)+'">';byProv[prov].forEach(function(name){var fm=prov+':'+name;if(seen[fm])return;o+='<option value="'+esc(fm)+'">'+esc(name)+'</option>';});o+='</optgroup>';});
+  if(order.length)order.forEach(function(prov){o+='<optgroup label="'+esc(prov)+'">';byProv[prov].forEach(function(name){var fm=prov+':'+name;if(seen[fm])return;o+='<option value="'+esc(fm)+'"'+(fm===selModel?' selected':'')+'>'+esc(name)+'</option>';});o+='</optgroup>';});
   return o;
 }
 
@@ -182,7 +182,7 @@ function setTab(t){S.tab=t;if(t==='chat'){if(!S.chat.sessions.length)loadSession
 function selectAgent(id){
   S.agentId=id;S.tab='chat';
   if(hasSidebar&&id){agentBase='/api/agents/'+id;window.__setAgentApiBase(agentBase);}
-  S.chat={sessions:[],sid:null,msgs:[],qtns:[],sending:false,allModels:[]};
+  S.chat={sessions:[],sid:null,msgs:[],qtns:[],sending:false,allModels:[],model:null};
   S.exp={};S.tl={};S.ingestOpen=false;S.newOpen=false;S.currentFile=null;S.fileContent=null;S.fileMimeType=null;S.fileIsImage=false;S.dashData=null;
   render();
   loadSessions();
@@ -197,15 +197,16 @@ function renderChat(el,a){
     h+='<div class=chat-msgs id=chat-msgs>';
     if(!S.chat.msgs.length)h+='<div style="color:var(--tx2);font-size:12px;padding:10px;text-align:center">No messages yet</div>';
     else S.chat.msgs.forEach(function(m){var own=m.role==='user';h+='<div class="msg '+(own?'user':m.role)+'"><div class=msg-meta><span class="msg-role '+m.role+'">'+esc(m.role)+'</span>'+(m.model?'<span class=msg-model>'+esc(m.model)+'</span>':'')+(m.ts?'<span class=msg-time>'+new Date(m.ts).toISOString().slice(11,19)+'</span>':'')+'</div><div class=msg-bub>'+md(m.content||'')+'</div></div>';});
+    if(S.chat.sending)h+='<div class="msg assistant"><div class=msg-meta><span class="msg-role assistant">assistant</span></div><div class=msg-bub><span class=thinking><span>.</span><span>.</span><span>.</span></span></div></div>';
     h+='</div>';
     if(S.chat.qtns&&S.chat.qtns.length){h+='<div class=chat-qtns><div class=cq-title>Questions ('+S.chat.qtns.length+')</div>';S.chat.qtns.forEach(function(q){h+='<div class=cq-item><div class=cq-text>'+esc(q.question||q.text||'')+'</div><div class=cq-row><input class=cq-inp id="qa-'+q.id+'" placeholder="Answer..." onkeydown="if(event.key===\\'Enter\\'){answerQ(\\''+q.id+'\\');}"><button class="btn btn-sm btn-warn" onclick=answerQ("'+q.id+'")>Answer</button></div></div>';});h+='</div>';}
-    h+='<div class=chat-inp-area><div class=chat-row><textarea id=chat-ta class=chat-ta rows=1 placeholder="Enter to send, Shift+Enter for newline" onkeydown="if(event.key===\\'Enter\\'&&!event.shiftKey){event.preventDefault();sendMsg();}" oninput="this.style.height=\\'auto\\';this.style.height=Math.min(this.scrollHeight,120)+\\'px\\'"></textarea><button class=chat-send-btn id=send-btn onclick=sendMsg() title=Send>&#10148;</button></div><div class=chat-opts><select class="sel chat-opt-sel" id=chat-kind><option value=ask>ask</option><option value=patch>patch</option><option value=retrieve>retrieve</option><option value=context>context</option></select><select class="sel chat-opt-sel" id=chat-model>'+modelOptions(a)+'</select></div><div class=chat-hint>Enter to send</div></div>';
+    h+='<div class=chat-inp-area><div class=chat-row><textarea id=chat-ta class=chat-ta rows=1 placeholder="Enter to send, Shift+Enter for newline" onkeydown="if(event.key===\\'Enter\\'&&!event.shiftKey){event.preventDefault();sendMsg();}" oninput="this.style.height=\\'auto\\';this.style.height=Math.min(this.scrollHeight,120)+\\'px\\'"></textarea><button class=chat-send-btn id=send-btn onclick=sendMsg() title=Send>&#10148;</button></div><div class=chat-opts><select class="sel chat-opt-sel" id=chat-kind><option value=ask>ask</option><option value=patch>patch</option><option value=retrieve>retrieve</option><option value=context>context</option></select><select class="sel chat-opt-sel" id=chat-model>'+modelOptions(a,S.chat.model)+'</select></div><div class=chat-hint>Enter to send</div></div>';
   }
   h+='</div>';el.innerHTML=h;if(S.chat.sid)scrollChat();
 }
 async function pickSession(s){S.chat.sid=s||null;S.chat.msgs=[];S.chat.qtns=[];if(s)await loadMsgs(s);else renderMainOnly();}
 async function newSession(){try{var r=await aapi('/chat/sessions',{method:'POST',body:{}});if(r.session){S.chat.sid=r.session.id;if(!S.chat.allModels.length)await loadModels();await loadSessions();await loadMsgs(r.session.id);}}catch(e){toast(e.message,true);}}
-async function sendMsg(){if(!S.chat.sid)return;var inp=$e('chat-ta');if(!inp)return;var p=inp.value.trim();if(!p)return;var btn=$e('send-btn');S.chat.sending=true;inp.disabled=true;if(btn)btn.disabled=true;S.chat.msgs.push({role:'user',content:p,ts:Date.now()});inp.value='';inp.style.height='auto';renderMainOnly();scrollChat();try{var b={prompt:p};var ak=$e('chat-kind');if(ak&&ak.value)b.actionKind=ak.value;var mk=$e('chat-model');if(mk&&mk.value)b.model=mk.value;await aapi('/chat/sessions/'+S.chat.sid,{method:'POST',body:b});await loadMsgs(S.chat.sid);}catch(e){toast(e.message,true);}S.chat.sending=false;var i=$e('chat-ta');if(i)i.disabled=false;var b2=$e('send-btn');if(b2)b2.disabled=false;}
+async function sendMsg(){if(!S.chat.sid)return;var inp=$e('chat-ta');if(!inp)return;var p=inp.value.trim();if(!p)return;var btn=$e('send-btn');S.chat.sending=true;inp.disabled=true;if(btn)btn.disabled=true;S.chat.msgs.push({role:'user',content:p,ts:Date.now()});inp.value='';inp.style.height='auto';renderMainOnly();scrollChat();try{var b={prompt:p};var ak=$e('chat-kind');if(ak&&ak.value)b.actionKind=ak.value;var mk=$e('chat-model');if(mk&&mk.value){b.model=mk.value;S.chat.model=mk.value;}await aapi('/chat/sessions/'+S.chat.sid,{method:'POST',body:b});await loadMsgs(S.chat.sid);}catch(e){toast(e.message,true);}S.chat.sending=false;var i=$e('chat-ta');if(i)i.disabled=false;var b2=$e('send-btn');if(b2)b2.disabled=false;}
 async function answerQ(qid){var inp=$e('qa-'+qid);if(!inp)return;var a=inp.value.trim();if(!a){toast('Enter an answer',true);return;}try{await aapi('/questions/'+qid,{method:'POST',body:{answer:a}});toast('Answered','');await loadMsgs(S.chat.sid);}catch(e){toast(e.message,true);}}
 async function deleteSession(){if(!S.chat.sid)return;ask('Delete this session and all its messages?',async function(){try{await aapi('/chat/sessions/'+S.chat.sid,{method:'DELETE'});toast('Deleted','');S.chat.sid=null;S.chat.msgs=[];S.chat.qtns=[];await loadSessions();}catch(e){toast(e.message,true);}});}
 async function renameSession(){if(!S.chat.sid)return;var cur=S.chat.sessions.find(function(s){return s.id===S.chat.sid;});var nm=prompt('New session name:',cur?cur.title:'');if(!nm||!nm.trim())return;try{await aapi('/chat/sessions/'+S.chat.sid,{method:'PATCH',body:{title:nm.trim()}});toast('Renamed','');var sel=$e('chat-sess');if(sel){var opt=sel.querySelector('option[value="'+S.chat.sid+'"]');if(opt)opt.textContent=nm.trim();}}catch(e){toast(e.message,true);}}

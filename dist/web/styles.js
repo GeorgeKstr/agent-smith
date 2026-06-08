@@ -290,6 +290,12 @@ button{font-family:var(--font);cursor:pointer}
 .chat-send-btn:disabled{opacity:.4;transform:none}
 .chat-hint{font-size:10px;color:var(--tx3);margin-top:5px;text-align:right}
 
+.thinking{display:inline-flex;gap:3px;align-items:center}
+.thinking span{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--tx2);animation:think 1.4s infinite}
+.thinking span:nth-child(2){animation-delay:.2s}
+.thinking span:nth-child(3){animation-delay:.4s}
+@keyframes think{0%,60%,100%{opacity:.3;transform:scale(.8)}30%{opacity:1;transform:scale(1.2)}}
+
 /* ── Modal / Toast ── */
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:1000;padding:20px}
 .modal-box{background:var(--s2);border:1px solid var(--bd);border-radius:var(--r2);padding:20px;max-width:360px;width:100%;box-shadow:0 25px 50px rgba(0,0,0,.5)}

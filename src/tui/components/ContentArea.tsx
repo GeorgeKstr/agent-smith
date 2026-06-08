@@ -382,6 +382,12 @@ type BubbleRow = {
             </Text>
           </Text>
         ))}
+        {busy && !streamText && (
+          <Text backgroundColor="#1a1a2a">
+            <Text color={theme.primary} bold backgroundColor="#1a1a2a">┌ Smith · {phase || "thinking"}</Text>
+            <Text color={theme.dim} backgroundColor="#1a1a2a"> · processing…</Text>
+          </Text>
+        )}
         {busy && streamText && (
           <>
             <Text bold backgroundColor="#1a1a2a">
