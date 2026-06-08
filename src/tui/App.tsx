@@ -191,7 +191,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   const questionFromCommand = useRef(false)
   const setupRef = useRef<{ providerId: string; providerType: string; step: number } | null>(null)
 
-  const CMD_LIST = ["/help", "/mode", "/model", "/provider", "/setup", "/reindex", "/index", "/dashboard", "/clear", "/summarize", "/lan", "/api", "/organizer", "/changes", "/change", "/accept", "/reject", "/apply", "/revert", "/undo", "/exit", "/quit", "/animation", "/context"]
+  const CMD_LIST = ["/help", "/mode", "/model", "/provider", "/setup", "/reindex", "/index", "/dashboard", "/clear", "/summarize", "/lan", "/api", "/changes", "/change", "/accept", "/reject", "/apply", "/revert", "/undo", "/exit", "/quit", "/animation", "/context"]
   const PROVIDER_SUBS = ["list", "add", "remove", "default", "key"]
   const [autocompleteIndex, setAutocompleteIndex] = useState(0)
 
@@ -220,8 +220,6 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           suggestions = ["stop", "status"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s)
         } else if (cmd === "/dashboard" && arg) {
           suggestions = ["stop", "status"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s)
-        } else if (cmd === "/organizer" && arg) {
-          suggestions = ["start", "stop", "status", "config"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s)
         }
       } else {
         suggestions = CMD_LIST.filter(c => c.startsWith(trimmed) && c !== trimmed).slice(0, 10)
@@ -668,9 +666,8 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           "  /model [name|list|reset]  List or switch AI provider model",
           "  /tools       Show Qwen tool-calling integration notes",
           "  /lan [port|status|stop]  Start/stop local project web UI",
-          "  /api [port|status|stop|config]  Start/stop/configure runtime API",
-          "  /dashboard [port|status|stop]  Start/stop organizer server (LAN registry)",
-          "  /organizer [start|stop|status|config]  Connect to remote organizer via heartbeats",
+          "  /api [port|status|stop|config]  Start/stop API mode (auto-registers with organizer)",
+          "  /dashboard [port|status|stop]  Start/stop organizer server (registry + dashboard)",
           "  /undo        Undo last prompt result (files + convo)",
           "  /clear       Clear the output area",
           "  /animation   Toggle terminal animations on/off",
@@ -1088,57 +1085,6 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         }
         return true
       }
-      case "/organizer": {
-        const arg = (rawParts[1] ?? "").toLowerCase()
-        if (arg === "stop") {
-          if (organizerHeartbeatRef.current) {
-            organizerHeartbeatRef.current.stop()
-            organizerHeartbeatRef.current = null
-            appendOutput("Organizer heartbeat stopped.")
-          } else {
-            appendOutput("Organizer heartbeat is not running.")
-          }
-          return true
-        }
-        if (arg === "status") {
-          if (organizerHeartbeatRef.current) {
-            appendOutput(`Organizer heartbeat active → ${config.organizer.url}`)
-          } else {
-            appendOutput("Organizer heartbeat is not running.")
-          }
-          appendOutput(`Config: enabled=${config.organizer.enabled} url=${config.organizer.url} heartbeatMs=${config.organizer.heartbeatMs}`)
-          return true
-        }
-        if (arg === "config") {
-          appendOutput([
-            `Organizer config:`,
-            `  enabled:       ${config.organizer.enabled}`,
-            `  url:           ${config.organizer.url}`,
-            `  heartbeatMs:   ${config.organizer.heartbeatMs}`,
-            `  agentId:       ${config.organizer.agentId ?? "(auto: hostname:root hash)"}`,
-            `  agentName:     ${config.organizer.agentName ?? "(auto: hostname-projectname)"}`,
-            `  token:         ${config.organizer.token ? "(set)" : "(none)"}`,
-            `  apiBaseUrl:    ${config.organizer.apiBaseUrl ?? "(auto)"}`,
-            ``,
-            `Use smith config set organizer.<key> <value> to change settings.`,
-          ])
-          return true
-        }
-        if (organizerHeartbeatRef.current) {
-            appendOutput(`Organizer heartbeat already active → ${config.organizer.url}`)
-            return true
-          }
-          try {
-            const hb = await startOrganizerHeartbeat({
-              root, config, db,
-              onLog: (m) => appendOutput(m)
-            })
-            organizerHeartbeatRef.current = hb
-          } catch (err) {
-            appendOutput(`✗ Failed to start organizer heartbeat: ${err instanceof Error ? err.message : String(err)}`)
-          }
-          return true
-        }
       case "/dashboard": {
         const arg = (rawParts[1] ?? "").toLowerCase()
         if (arg === "stop") {

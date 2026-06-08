@@ -20,8 +20,7 @@ import { generateTaskPlan, fallbackTaskPlan } from "./tasks/taskPlanGenerator.js
 import { importLocalTasks } from "./tasks/taskImport.js";
 import { TASK_FLOW_TEMPLATES } from "./tasks/taskFlowTemplates.js";
 import { renderTaskFlowTemplate } from "./tasks/taskFlowTemplateRenderer.js";
-import { buildWorkerHeartbeat, startOrganizerHeartbeat } from "./organizer/heartbeat.js";
-import { createOrganizerClient } from "./organizer/workerClient.js";
+import { startOrganizerHeartbeat } from "./organizer/heartbeat.js";
 import { startOrganizerServer } from "./organizer/server.js";
 import { getLanAddresses } from "./utils/network.js";
 import { createGitCheckpoint, revertCheckpoint } from "./checkpoints/gitCheckpoint.js";
@@ -1442,7 +1441,7 @@ export function createCli() {
     });
     program
         .command("api")
-        .description("Start the Agent Smith API server")
+        .description("Start agent in API mode (auto-registers with organizer)")
         .option("--host <host>", "bind address")
         .option("--port <port>", "listen port")
         .option("--token <token>", "bearer token for auth")
@@ -1502,91 +1501,9 @@ export function createCli() {
         process.on("SIGINT", shutdown);
         process.on("SIGTERM", shutdown);
     });
-    const organizerCmd = program
-        .command("organizer")
-        .description("Worker heartbeat protocol for central organizer");
-    function applyOrganizerOpts(config, opts) {
-        if (opts.url)
-            config.organizer.url = opts.url;
-        if (opts.token)
-            config.organizer.token = opts.token;
-        if (opts.name)
-            config.organizer.agentName = opts.name;
-        if (opts.id)
-            config.organizer.agentId = opts.id;
-    }
-    organizerCmd
-        .command("register")
-        .description("Register this worker with the organizer")
-        .option("--url <url>", "organizer URL")
-        .option("--token <token>", "bearer token")
-        .option("--api-url <url>", "this worker's API base URL")
-        .option("--name <name>", "agent name")
-        .option("--id <id>", "agent ID")
-        .option("--json", "output JSON")
-        .action(async (opts) => {
-        const { root, config, db } = await bootstrap();
-        applyOrganizerOpts(config, opts);
-        const payload = buildWorkerHeartbeat({ root, config, db, apiBaseUrl: opts.apiUrl });
-        const client = createOrganizerClient({ url: config.organizer.url, token: config.organizer.token });
-        const result = await client.register(payload);
-        if (opts.json) {
-            console.log(JSON.stringify({ ok: result.ok, heartbeat: payload, error: result.error }, null, 2));
-        }
-        else {
-            console.log(result.ok ? "✓ Registered with organizer" : `✗ Register failed: ${result.error}`);
-        }
-        db.close();
-    });
-    organizerCmd
-        .command("heartbeat")
-        .description("Send a single heartbeat to the organizer")
-        .option("--url <url>", "organizer URL")
-        .option("--token <token>", "bearer token")
-        .option("--api-url <url>", "this worker's API base URL")
-        .option("--name <name>", "agent name")
-        .option("--id <id>", "agent ID")
-        .option("--json", "output JSON")
-        .action(async (opts) => {
-        const { root, config, db } = await bootstrap();
-        applyOrganizerOpts(config, opts);
-        const payload = buildWorkerHeartbeat({ root, config, db, apiBaseUrl: opts.apiUrl });
-        const client = createOrganizerClient({ url: config.organizer.url, token: config.organizer.token });
-        const result = await client.heartbeat(payload);
-        if (opts.json) {
-            console.log(JSON.stringify({ ok: result.ok, heartbeat: payload, error: result.error }, null, 2));
-        }
-        else {
-            console.log(result.ok ? "✓ Heartbeat sent" : `✗ Heartbeat failed: ${result.error}`);
-        }
-        db.close();
-    });
-    organizerCmd
-        .command("watch")
-        .description("Start periodic heartbeats to the organizer")
-        .option("--url <url>", "organizer URL")
-        .option("--token <token>", "bearer token")
-        .option("--api-url <url>", "this worker's API base URL")
-        .option("--name <name>", "agent name")
-        .option("--id <id>", "agent ID")
-        .option("--interval <ms>", "heartbeat interval ms")
-        .action(async (opts) => {
-        const { root, config, db } = await bootstrap();
-        applyOrganizerOpts(config, opts);
-        if (opts.interval)
-            config.organizer.heartbeatMs = Number(opts.interval);
-        const heartbeat = await startOrganizerHeartbeat({
-            root, config, db, apiBaseUrl: opts.apiUrl,
-            onLog: (msg) => console.log(msg)
-        });
-        console.log(`Agent Smith worker heartbeating to ${config.organizer.url} every ${config.organizer.heartbeatMs}ms`);
-        const shutdown = () => { heartbeat.stop(); db.close(); process.exit(0); };
-        process.on("SIGINT", shutdown);
-        process.on("SIGTERM", shutdown);
-    });
     program
         .command("organize")
-        .description("Start the Agent Smith Organizer server")
+        .description("Start the organizer server (registry + dashboard on :8787)")
         .option("--host <host>", "bind address")
         .option("--port <port>", "listen port")
         .option("--token <token>", "bearer token for auth")
