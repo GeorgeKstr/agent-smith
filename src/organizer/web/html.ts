@@ -2,7 +2,8 @@ export const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
 <title>Agent Smith Organizer</title>
 <link rel="stylesheet" href="/dashboard/styles.css">
 </head>
@@ -13,9 +14,10 @@ export const html = `<!DOCTYPE html>
     <nav id="agent-panel"></nav>
     <main id="main-panel"></main>
   </div>
+  <nav id="bottom-nav"></nav>
 </div>
 <div id="modal-root"></div>
-<div id="toast" class="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 <script src="/dashboard/client.js"></script>
 </body>
 </html>`
