@@ -406,7 +406,7 @@ function renderIngestPanel(a){
       '<label class=ip-ck><input type=checkbox id=ing-apr'+(d.autoapr?' checked':'')+' onchange="S.ing.autoapr=this.checked"> Auto Approve</label>'+
       '<label class=ip-ck><input type=checkbox id=ing-apl'+(d.autoapl?' checked':'')+' onchange="S.ing.autoapl=this.checked"> Auto Apply</label>'+
     '</div>'+
-    '<textarea id=ing-text class=ip-ta placeholder="Paste task flow here&#x2026;\n\nFormats supported:\n&#x2022; Markdown: ## Task title\\nDescription\n&#x2022; JSON: [{title, prompt, mode, maxIterations}]\n&#x2022; CSV: title,prompt,mode\n&#x2022; Plain text: one task per line" oninput="S.ing.text=this.value">'+esc(d.text)+'</textarea>'+
+    '<textarea id=ing-text class=ip-ta placeholder="Paste task flow here... Supported formats: markdown (## Title / body), JSON ([{title,prompt,mode}]), CSV (title,prompt), or plain text (one task per line)." oninput="S.ing.text=this.value">'+esc(d.text)+'</textarea>'+
     '<div class=ip-btns>'+
       '<button class=btn onclick=previewIngest()>Preview</button>'+
       '<button class="btn btn-success" onclick=runIngest()>&#10003; Import Tasks</button>'+
