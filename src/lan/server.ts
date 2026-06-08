@@ -256,7 +256,7 @@ export function startLanServer(args: {
     const pathname = url.pathname
 
     res.setHeader("Access-Control-Allow-Origin", "*")
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
     res.setHeader("Access-Control-Allow-Headers", "Content-Type")
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return }
 
