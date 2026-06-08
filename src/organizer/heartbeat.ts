@@ -89,19 +89,22 @@ export async function startOrganizerHeartbeat(args: {
   const { root, config, db, apiBaseUrl, onLog } = args;
   const client = createOrganizerClient({ url: config.organizer.url, token: config.organizer.token });
   let first = true;
+  let registered = false;
 
   const tick = async () => {
     const payload = buildWorkerHeartbeat({ root, config, db, status: args.status, apiBaseUrl, currentTaskId: null });
-    const result = await client.register(payload);
+    const result = registered
+      ? await client.heartbeat(payload)
+      : await client.register(payload);
     if (result.ok) {
-      if (first && onLog) {
+      if (!registered && onLog) {
         onLog(`Registered with organizer at ${config.organizer.url}`);
       }
-      first = false;
+      registered = true;
     } else if (first && onLog) {
       onLog(`Organizer not reachable at ${config.organizer.url} — will keep retrying every ${config.organizer.heartbeatMs}ms`);
-      first = false;
     }
+    first = false;
   };
 
   await tick();

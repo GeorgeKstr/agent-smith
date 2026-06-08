@@ -179,8 +179,11 @@ export async function startOrganizerServer(args: {
         if (!body.agentId) { badRequest(res, "agentId required"); return; }
         if (!body.name) { badRequest(res, "name required"); return; }
         if (!body.api?.baseUrl) { badRequest(res, "api.baseUrl required"); return; }
+        const existing = getOrganizerAgent(db, body.agentId);
         const row = upsertOrganizerAgent(db, body);
-        args.onLog?.(`Agent registered: ${body.name} (${body.agentId})`);
+        if (!existing) {
+          args.onLog?.(`Agent registered: ${body.name} (${body.agentId})`);
+        }
         sendJson(res, 200, { ok: true, agent: agentRowToObj(row) });
         return;
       }

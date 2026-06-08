@@ -240,7 +240,7 @@ async function renderSettings(el){
     r.templates.forEach(function(t){h+='<option value='+t.id+'>'+esc(t.title)+'</option>';});
     h+='</select>';
     h+='<select id=tpl-fmt onchange="tpl.format=this.value" style="background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:6px;font-family:var(--font);font-size:11px;width:100%;margin-bottom:6px"><option value=markdown>Markdown</option><option value=json>JSON</option><option value=csv>CSV</option><option value=plain>Plain</option></select>';
-    h+='<button class=btn onclick="var e=$(\'tpl-opts\');e.style.display=e.style.display===\'none\'?\'block\':\'none\'">Options</button>';
+    h+='<button class=btn onclick="var e=$(\\'tpl-opts\\');e.style.display=e.style.display===\\'none\\'?\\'block\\':\\'none\\'">Options</button>';
     h+='<div id=tpl-opts style=display:none;margin-top:6px>'+
       '<div class=edit-form><label>Agent ID <input id=tpl-agent></label>'+
       '<label>Implement Model <input id=tpl-impl></label>'+
