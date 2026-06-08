@@ -22,6 +22,9 @@ export type WorkerApiClient = {
   getChatSession?(sessionId: string): Promise<{ ok: boolean; session?: unknown; messages?: unknown[]; openQuestions?: unknown[]; error?: string }>;
   sendChatMessage?(sessionId: string, input: { prompt: string; actionKind?: string; model?: string }): Promise<{ ok: boolean; session?: unknown; messages?: unknown[]; error?: string }>;
   listModels?(): Promise<{ ok: boolean; models?: string[]; error?: string }>;
+  getFileTree?(): Promise<{ ok: boolean; files?: unknown[]; error?: string }>;
+  getFile?(filePath: string): Promise<{ ok: boolean; content?: string; summary?: string; importance?: number; error?: string }>;
+  getDashboard?(): Promise<{ ok: boolean; data?: unknown; error?: string }>;
   getOpenQuestions?(): Promise<{ ok: boolean; questions?: unknown[]; error?: string }>;
   answerQuestion?(questionId: string, answer: unknown): Promise<{ ok: boolean; question?: unknown; error?: string }>;
 };
@@ -135,6 +138,20 @@ export function createWorkerApiClient(args: {
     listModels: async () => {
       const r = await get(`/api/models`);
       return r.ok ? { ok: true, models: (r.data as { models?: string[] })?.models } : r;
+    },
+    getFileTree: async () => {
+      const r = await get(`/api/filetree`);
+      return r.ok ? { ok: true, files: (r.data as { files?: unknown[] })?.files } : r;
+    },
+    getFile: async (filePath) => {
+      const r = await get(`/api/file?path=${encodeURIComponent(filePath)}`);
+      if (!r.ok) return { ok: false, error: r.error };
+      const d = r.data as { content?: string; summary?: string; importance?: number } | null;
+      return { ok: true, content: d?.content, summary: d?.summary, importance: d?.importance };
+    },
+    getDashboard: async () => {
+      const r = await get(`/api/dashboard`);
+      return r.ok ? { ok: true, data: r.data } : { ok: false, error: r.error };
     },
     answerQuestion: async (questionId, answer) => {
       const r = await post(`/api/questions/${questionId}/answer`, { answer });

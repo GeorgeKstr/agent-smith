@@ -473,6 +473,27 @@ export async function startApiServer(args: {
         return;
       }
 
+      // GET /api/dashboard — project overview stats
+      if (url === "/api/dashboard" && method === "GET") {
+        const totalFiles = (db.prepare("SELECT COUNT(*) AS c FROM files").get() as { c: number }).c;
+        const totalSymbols = (db.prepare("SELECT COUNT(*) AS c FROM symbols").get() as { c: number }).c;
+        const totalImports = (db.prepare("SELECT COUNT(*) AS c FROM imports").get() as { c: number }).c;
+        const totalWithSummary = (db.prepare("SELECT COUNT(*) AS c FROM files WHERE summary IS NOT NULL AND summary != ''").get() as { c: number }).c;
+        const fileRows = db.prepare("SELECT id, path, language, summary, is_test AS isTest FROM files ORDER BY CASE WHEN summary IS NULL OR summary='' THEN 1 ELSE 0 END, path").all() as Array<{ id: number; path: string; language: string; summary: string | null; isTest: number }>;
+        const impRows = db.prepare("SELECT f.id, IFNULL(inb.c,0) AS inbound, IFNULL(outb.c,0) AS outbound, IFNULL(sym.c,0) AS symbols FROM files f LEFT JOIN (SELECT to_file_id AS fid, COUNT(*) AS c FROM imports GROUP BY to_file_id) inb ON inb.fid=f.id LEFT JOIN (SELECT from_file_id AS fid, COUNT(*) AS c FROM imports GROUP BY from_file_id) outb ON outb.fid=f.id LEFT JOIN (SELECT file_id AS fid, COUNT(*) AS c FROM symbols GROUP BY file_id) sym ON sym.fid=f.id").all() as Array<{ id: number; inbound: number; outbound: number; symbols: number }>;
+        const impMap = new Map<number, number>();
+        for (const r of impRows) impMap.set(r.id, Math.round(r.inbound * 3 + r.outbound * 1 + r.symbols * 0.5));
+        const allTags = db.prepare("SELECT ft.file_id, t.name FROM file_tags ft JOIN tags t ON t.id=ft.tag_id").all() as Array<{ file_id: number; name: string }>;
+        const tagMap = new Map<number, string[]>();
+        for (const r of allTags) { const arr = tagMap.get(r.file_id) ?? []; arr.push(r.name); tagMap.set(r.file_id, arr); }
+        const files = fileRows.map((r) => ({ path: r.path, language: r.language, summary: r.summary, isTest: !!r.isTest, tags: tagMap.get(r.id) ?? [], importance: impMap.get(r.id) ?? 0 }));
+        const topTags = db.prepare("SELECT t.name, COUNT(ft.file_id) AS count FROM file_tags ft JOIN tags t ON t.id=ft.tag_id GROUP BY ft.tag_id ORDER BY count DESC LIMIT 10").all() as Array<{ name: string; count: number }>;
+        const langCounts = db.prepare("SELECT language, COUNT(*) AS count FROM files WHERE language IS NOT NULL AND language!='' GROUP BY language ORDER BY count DESC").all() as Array<{ language: string; count: number }>;
+        const projectSummary = (db.prepare("SELECT value FROM meta WHERE key='project_summary'").get() as { value: string } | undefined)?.value ?? "";
+        sendJson(res, 200, { ok: true, totalFiles, totalSymbols, totalImports, totalWithSummary, files, topTags, langCounts, projectSummary });
+        return;
+      }
+
       notFound(res);
     } catch (err) {
       sendJson(res, 500, { ok: false, error: err instanceof Error ? err.message : String(err) });

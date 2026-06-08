@@ -110,6 +110,21 @@ export function createWorkerApiClient(args) {
             const r = await get(`/api/models`);
             return r.ok ? { ok: true, models: r.data?.models } : r;
         },
+        getFileTree: async () => {
+            const r = await get(`/api/filetree`);
+            return r.ok ? { ok: true, files: r.data?.files } : r;
+        },
+        getFile: async (filePath) => {
+            const r = await get(`/api/file?path=${encodeURIComponent(filePath)}`);
+            if (!r.ok)
+                return { ok: false, error: r.error };
+            const d = r.data;
+            return { ok: true, content: d?.content, summary: d?.summary, importance: d?.importance };
+        },
+        getDashboard: async () => {
+            const r = await get(`/api/dashboard`);
+            return r.ok ? { ok: true, data: r.data } : { ok: false, error: r.error };
+        },
         answerQuestion: async (questionId, answer) => {
             const r = await post(`/api/questions/${questionId}/answer`, { answer });
             return r.ok ? { ok: true, question: r.data?.question } : r;

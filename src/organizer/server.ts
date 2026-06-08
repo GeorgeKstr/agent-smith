@@ -4,9 +4,9 @@ import { openOrganizerDatabase, upsertOrganizerAgent, listOrganizerAgents, getOr
 import { dispatchOrganizerTask } from "./taskDispatcher.js";
 import { buildOrganizerTaskTimeline } from "./taskTimeline.js";
 import { createWorkerApiClient } from "./workerApiClient.js";
-import { html } from "./web/html.js";
-import { styles } from "./web/styles.js";
-import { clientJs } from "./web/client.js";
+import { html } from "../web/html.js";
+import { styles } from "../web/styles.js";
+import { clientJs } from "../web/client.js";
 import { importOrganizerTasks } from "../tasks/taskImport.js";
 import { parseTaskImport } from "../tasks/taskImportParser.js";
 import { TASK_FLOW_TEMPLATES } from "../tasks/taskFlowTemplates.js";
@@ -109,7 +109,7 @@ export async function startOrganizerServer(args: {
 
       if (url === "/dashboard" || url === "/dashboard/") {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(html);
+        res.end(html.replace("_STYLE_", "/dashboard/styles.css").replace("_SCRIPT_", "/dashboard/client.js"));
         return;
       }
       if (url === "/dashboard/styles.css") {
@@ -506,6 +506,27 @@ export async function startOrganizerServer(args: {
           const agentClient = createWorkerApiClient({ baseUrl: agent.api_base_url, token: token });
           const r = await agentClient.listModels?.();
           sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, models: r.models } : { ok: false, error: r?.error ?? "Agent API unreachable" });
+          return;
+        }
+        if (parts.length === 4 && parts[3] === "filetree" && method === "GET") {
+          const agentClient = createWorkerApiClient({ baseUrl: agent.api_base_url, token: token });
+          const r = await agentClient.getFileTree?.();
+          sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, files: r.files } : { ok: false, error: r?.error ?? "Agent API unreachable" });
+          return;
+        }
+        if (parts.length === 4 && parts[3] === "file" && method === "GET") {
+          const rawUrl = req.url ?? "/";
+          const filePath = new URLSearchParams(rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "").get("path") ?? "";
+          if (!filePath) { sendJson(res, 400, { ok: false, error: "?path= required" }); return; }
+          const agentClient = createWorkerApiClient({ baseUrl: agent.api_base_url, token: token });
+          const r = await agentClient.getFile?.(filePath);
+          sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, content: r.content, summary: r.summary } : { ok: false, error: r?.error ?? "Agent API unreachable" });
+          return;
+        }
+        if (parts.length === 4 && parts[3] === "dashboard" && method === "GET") {
+          const agentClient = createWorkerApiClient({ baseUrl: agent.api_base_url, token: token });
+          const r = await agentClient.getDashboard?.();
+          sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, ...(r.data as object) } : { ok: false, error: r?.error ?? "Agent API unreachable" });
           return;
         }
         if (parts.length === 5 && parts[3] === "questions") {
