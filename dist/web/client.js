@@ -19,7 +19,7 @@ var S={
   ingestOpen:false,newOpen:false,
   filter:{q:'',status:''},
   ing:{format:'auto',text:'',implModel:'',revModel:'',maxIter:3,autoapr:false,autoapl:false,preview:null},
-  currentFile:null,fileContent:null,fileEditing:false,treeFilter:'',fileSummary:null,
+  currentFile:null,fileContent:null,fileEditing:false,treeFilter:'',fileSummary:null,fileMimeType:null,fileIsImage:false,
   dashData:null,
   typing:false,confirmCb:null
 };
@@ -75,7 +75,7 @@ async function loadSessions(){try{S.chat.sessions=(await aapi('/chat/sessions').
 async function loadMsgs(sid){if(!sid)return;try{var r=await aapi('/chat/sessions/'+sid);S.chat.msgs=r.messages||[];S.chat.qtns=r.openQuestions||[];}catch(e){S.chat.msgs=[];S.chat.qtns=[];}renderMainOnly();scrollChat();}
 async function loadModels(){try{S.chat.allModels=(await aapi('/models').catch(function(){return{models:[]};})).models||[];}catch(e){S.chat.allModels=[];}}
 async function loadDashboard(){try{S.dashData=await aapi('/dashboard').catch(function(){return null;});}catch(e){S.dashData=null;}renderMainOnly();}
-async function loadFileTree(){try{S._fileTree=(await aapi('/filetree').catch(function(){return{files:[]};})).files||[];}catch(e){S._fileTree=[];}}
+async function loadFileTree(){try{S._fileTree=(await aapi('/filetree').catch(function(){return{files:[]};})).files||[];}catch(e){S._fileTree=[];}if(S.tab==='files')renderFileTree();}
 
 function scrollChat(){setTimeout(function(){var m=$e('chat-msgs');if(m)m.scrollTop=m.scrollHeight;},40);}
 
@@ -177,7 +177,7 @@ function selectAgent(id){
   S.agentId=id;S.tab='chat';
   if(hasSidebar&&id){agentBase='/api/agents/'+id;window.__setAgentApiBase(agentBase);}
   S.chat={sessions:[],sid:null,msgs:[],qtns:[],sending:false,allModels:[]};
-  S.exp={};S.tl={};S.ingestOpen=false;S.newOpen=false;S.currentFile=null;S.dashData=null;
+  S.exp={};S.tl={};S.ingestOpen=false;S.newOpen=false;S.currentFile=null;S.fileContent=null;S.fileMimeType=null;S.fileIsImage=false;S.dashData=null;
   render();
   loadSessions();
   loadModels();
@@ -185,7 +185,7 @@ function selectAgent(id){
 
 /* ── Chat ── */
 function renderChat(el,a){
-  var h='<div class=chat-outer><div class=chat-tb><select id=chat-sess class="sel ct-sel" onchange="pickSession(this.value)"><option value="">Select session...</option>'+S.chat.sessions.map(function(s){return'<option value="'+s.id+'"'+(S.chat.sid===s.id?' selected':'')+'>'+esc(s.title||short(s.id))+'</option>';}).join('')+'</select><button class="btn btn-sm btn-primary" onclick=newSession()>+ New</button></div>';
+  var h='<div class=chat-outer><div class=chat-tb><select id=chat-sess class="sel ct-sel" onchange="pickSession(this.value)"><option value="">Select session...</option>'+S.chat.sessions.map(function(s){return'<option value="'+s.id+'"'+(S.chat.sid===s.id?' selected':'')+'>'+esc(s.title||short(s.id))+'</option>';}).join('')+'</select><button class="btn btn-sm btn-primary" onclick=newSession()>+ New</button>'+(S.chat.sid?'<button class="btn btn-sm" onclick=renameSession() title="Rename">&#9998;</button><button class="btn btn-sm btn-danger" onclick=deleteSession() title="Delete">&#10005;</button>':'')+'</div>';
   if(!S.chat.sid)h+='<div class=chat-no-sess>Select or create a session</div>';
   else{
     h+='<div class=chat-msgs id=chat-msgs>';
@@ -193,7 +193,7 @@ function renderChat(el,a){
     else S.chat.msgs.forEach(function(m){var own=m.role==='user';h+='<div class="msg '+(own?'user':m.role)+'"><div class=msg-meta><span class="msg-role '+m.role+'">'+esc(m.role)+'</span>'+(m.model?'<span class=msg-model>'+esc(m.model)+'</span>':'')+(m.ts?'<span class=msg-time>'+new Date(m.ts).toISOString().slice(11,19)+'</span>':'')+'</div><div class=msg-bub>'+md(m.content||'')+'</div></div>';});
     h+='</div>';
     if(S.chat.qtns&&S.chat.qtns.length){h+='<div class=chat-qtns><div class=cq-title>Questions ('+S.chat.qtns.length+')</div>';S.chat.qtns.forEach(function(q){h+='<div class=cq-item><div class=cq-text>'+esc(q.question||q.text||'')+'</div><div class=cq-row><input class=cq-inp id="qa-'+q.id+'" placeholder="Answer..." onkeydown="if(event.key===\\'Enter\\'){answerQ(\\''+q.id+'\\');}"><button class="btn btn-sm btn-warn" onclick=answerQ("'+q.id+'")>Answer</button></div></div>';});h+='</div>';}
-    h+='<div class=chat-inp-area><div class=chat-opts><select class="sel chat-opt-sel" id=chat-kind><option value=ask>ask</option><option value=patch>patch</option><option value=retrieve>retrieve</option><option value=context>context</option></select><select class="sel chat-opt-sel" id=chat-model>'+modelOptions(a)+'</select></div><div class=chat-row><textarea id=chat-ta class=chat-ta rows=1 placeholder="Enter to send, Shift+Enter for newline" onkeydown="if(event.key===\\'Enter\\'&&!event.shiftKey){event.preventDefault();sendMsg();}" oninput="this.style.height=\\'auto\\';this.style.height=Math.min(this.scrollHeight,120)+\\'px\\'"></textarea><button class=chat-send-btn id=send-btn onclick=sendMsg() title=Send>&#10148;</button></div><div class=chat-hint>Enter to send</div></div>';
+    h+='<div class=chat-inp-area><div class=chat-row><textarea id=chat-ta class=chat-ta rows=1 placeholder="Enter to send, Shift+Enter for newline" onkeydown="if(event.key===\\'Enter\\'&&!event.shiftKey){event.preventDefault();sendMsg();}" oninput="this.style.height=\\'auto\\';this.style.height=Math.min(this.scrollHeight,120)+\\'px\\'"></textarea><button class=chat-send-btn id=send-btn onclick=sendMsg() title=Send>&#10148;</button></div><div class=chat-opts><select class="sel chat-opt-sel" id=chat-kind><option value=ask>ask</option><option value=patch>patch</option><option value=retrieve>retrieve</option><option value=context>context</option></select><select class="sel chat-opt-sel" id=chat-model>'+modelOptions(a)+'</select></div><div class=chat-hint>Enter to send</div></div>';
   }
   h+='</div>';el.innerHTML=h;if(S.chat.sid)scrollChat();
 }
@@ -201,6 +201,8 @@ async function pickSession(s){S.chat.sid=s||null;S.chat.msgs=[];S.chat.qtns=[];i
 async function newSession(){try{var r=await aapi('/chat/sessions',{method:'POST',body:{}});if(r.session){S.chat.sid=r.session.id;if(!S.chat.allModels.length)await loadModels();await loadSessions();await loadMsgs(r.session.id);}}catch(e){toast(e.message,true);}}
 async function sendMsg(){if(!S.chat.sid)return;var inp=$e('chat-ta');if(!inp)return;var p=inp.value.trim();if(!p)return;var btn=$e('send-btn');S.chat.sending=true;inp.disabled=true;if(btn)btn.disabled=true;S.chat.msgs.push({role:'user',content:p,ts:Date.now()});inp.value='';inp.style.height='auto';renderMainOnly();scrollChat();try{var b={prompt:p};var ak=$e('chat-kind');if(ak&&ak.value)b.actionKind=ak.value;var mk=$e('chat-model');if(mk&&mk.value)b.model=mk.value;await aapi('/chat/sessions/'+S.chat.sid,{method:'POST',body:b});await loadMsgs(S.chat.sid);}catch(e){toast(e.message,true);}S.chat.sending=false;var i=$e('chat-ta');if(i)i.disabled=false;var b2=$e('send-btn');if(b2)b2.disabled=false;}
 async function answerQ(qid){var inp=$e('qa-'+qid);if(!inp)return;var a=inp.value.trim();if(!a){toast('Enter an answer',true);return;}try{await aapi('/questions/'+qid,{method:'POST',body:{answer:a}});toast('Answered','');await loadMsgs(S.chat.sid);}catch(e){toast(e.message,true);}}
+async function deleteSession(){if(!S.chat.sid)return;ask('Delete this session and all its messages?',async function(){try{await aapi('/chat/sessions/'+S.chat.sid,{method:'DELETE'});toast('Deleted','');S.chat.sid=null;S.chat.msgs=[];S.chat.qtns=[];await loadSessions();}catch(e){toast(e.message,true);}});}
+async function renameSession(){if(!S.chat.sid)return;var cur=S.chat.sessions.find(function(s){return s.id===S.chat.sid;});var nm=prompt('New session name:',cur?cur.title:'');if(!nm||!nm.trim())return;try{await aapi('/chat/sessions/'+S.chat.sid,{method:'PATCH',body:{title:nm.trim()}});toast('Renamed','');var sel=$e('chat-sess');if(sel){var opt=sel.querySelector('option[value="'+S.chat.sid+'"]');if(opt)opt.textContent=nm.trim();}}catch(e){toast(e.message,true);}}
 
 /* ── Tasks ── */
 function renderTasks(el,a){
@@ -239,17 +241,24 @@ function renderTasksOnly(){var tc=$e('tab-content'),a=S.agents.find(function(x){
 /* ── Files ── */
 function renderFiles(el,a){
   var h='<div class=files-layout><div class=file-tree-pane><div class=ftp-hdr><input class=ftp-search placeholder="Filter files..." value="'+esc(S.treeFilter||'')+'" oninput="filterTree(this.value)"></div><div class=ftp-tree id=file-tree></div></div><div class=file-preview-pane id=file-preview-pane><div class=fpp-empty>Select a file to preview</div></div></div>';
-  el.innerHTML=h;loadFileTree();if(S._fileTree)renderFileTree();
+  el.innerHTML=h;loadFileTree();
 }
 function renderFileTree(){var el=$e('file-tree');if(!el||!S._fileTree)return;var files=S._fileTree;if(!files.length){el.innerHTML='<div class=empty style="padding:12px">No indexed files</div>';return;}var tree={},all=files.slice().sort(function(a,b){return a.path.localeCompare(b.path);});all.forEach(function(f){var p=f.path.replace(/^\\.\\//,'');var parts=p.split('/');var node=tree;for(var i=0;i<parts.length-1;i++){if(!node[parts[i]])node[parts[i]]={d:true,c:{}};node=node[parts[i]].c;}node[parts[parts.length-1]]={f:true,path:f.path,lang:f.language};});function renderNode(name,n,depth){if(n.f){var ext=name.split('.').pop();var icon={ts:'ts',tsx:'tsx',js:'js',py:'py',go:'go',rs:'rs',json:'{}',md:'md',html:'htm',css:'css',sql:'sql'}[ext]||'\\u00b7';var sel=S.currentFile===n.path?' active':'';return'<div class="tree-file'+sel+'" onclick="openFile(\\''+n.path+'\\')" style=padding-left:'+(depth*12+8)+'px><span class=tree-icon>'+icon+'</span><span class=tree-name>'+esc(name)+'</span>'+(n.lang?'<span class=tree-lang>'+esc(n.lang)+'</span>':'')+'</div>';}var ch=n.c||{},sorted=Object.entries(ch).sort(function(a,b){var af=a[1].f,bf=b[1].f;if(af!==bf)return af?1:-1;return a[0].localeCompare(b[0]);});var id='fd'+Math.random().toString(36).slice(2);return'<div class=tree-folder style=padding-left:'+(depth*12+6)+'px onclick="var c=$e(\\''+id+'\\');c.classList.toggle(\\'collapsed\\')"><span class=tree-icon>&#9660;</span><span class=tree-name>'+esc(name)+'</span></div><div class=tree-children id='+id+'>'+sorted.map(function(e){return renderNode(e[0],e[1],depth+1);}).join('')+'</div>';}var entries=Object.entries(tree).sort(function(a,b){var af=a[1].f,bf=b[1].f;if(af!==bf)return af?1:-1;return a[0].localeCompare(b[0]);});el.innerHTML=entries.map(function(e){return renderNode(e[0],e[1],0);}).join('');}
 function filterTree(q){S.treeFilter=q;var lq=q.toLowerCase();document.querySelectorAll('#file-tree .tree-file').forEach(function(el){el.style.display=(!lq||(el.querySelector('.tree-name')||{}).textContent.toLowerCase().indexOf(lq)!==-1)?'':'none';});document.querySelectorAll('#file-tree .tree-folder').forEach(function(el){var ch=el.nextElementSibling;if(!ch||!ch.classList.contains('tree-children'))return;var any=ch.querySelectorAll('.tree-file:not([style*="display: none"])').length>0;el.style.display=(any||!lq)?'':'none';if(lq&&any)ch.classList.remove('collapsed');});}
 async function openFile(path){
   S.currentFile=path;S.fileEditing=false;S.fileSummary=null;
   var pp=$e('file-preview-pane');if(!pp)return;
-  pp.innerHTML='<div class=fpp-hdr><span class=fpp-path>'+esc(path)+'</span><div class=fpp-actions><button class="btn btn-xs" id=edit-btn onclick=toggleEdit()>Edit</button></div></div><div class=fpp-body id=fpp-body><div class=fpp-pre id=fpp-pre>Loading...</div><textarea class=fpp-ta id=fpp-ta style=display:none></textarea></div><div class=fpp-summary id=fpp-sum style=display:none></div>';
-  try{var r=await aapi('/file?path='+encodeURIComponent(path));S.fileContent=r.content||'';S.fileSummary=r.summary||null;updateFilePreview();}catch(e){var pre=$e('fpp-pre');if(pre)pre.textContent='Error: '+e.message;}
+  var ext=(path.split('.').pop()||'').toLowerCase();
+  var imgExts={png:1,jpg:1,jpeg:1,gif:1,svg:1,webp:1,bmp:1,ico:1};
+  pp.innerHTML='<div class=fpp-hdr><span class=fpp-path>'+esc(path)+'</span><div class=fpp-actions>'+(imgExts[ext]?'':'<button class="btn btn-xs" id=edit-btn onclick=toggleEdit()>Edit</button>')+'</div></div><div class=fpp-body id=fpp-body>'+(imgExts[ext]?'<div class=fpp-img-wrap id=fpp-img-wrap>Loading...</div>':'<div class=fpp-pre id=fpp-pre>Loading...</div><textarea class=fpp-ta id=fpp-ta style=display:none></textarea>')+'</div><div class=fpp-summary id=fpp-sum style=display:none></div>';
+  try{var r=await aapi('/file?path='+encodeURIComponent(path));S.fileContent=r.content||'';S.fileSummary=r.summary||null;S.fileMimeType=r.mimeType||null;S.fileIsImage=r.isImage||false;updateFilePreview();}catch(e){var pre=$e('fpp-pre');if(pre)pre.textContent='Error: '+e.message;var iw=$e('fpp-img-wrap');if(iw)iw.textContent='Error: '+e.message;}
 }
 function updateFilePreview(){
+  if(S.fileIsImage){
+    var iw=$e('fpp-img-wrap');if(iw&&S.fileContent){iw.innerHTML='<img src="data:'+(S.fileMimeType||'image/png')+';base64,'+S.fileContent+'" style="max-width:100%;max-height:70vh;display:block;margin:0 auto" alt="'+esc(S.currentFile||'')+'">';}
+    var sum=$e('fpp-sum');if(sum){if(S.fileSummary){sum.textContent=S.fileSummary;sum.style.display='';}else sum.style.display='none';}
+    return;
+  }
   var pre=$e('fpp-pre'),ta=$e('fpp-ta'),eb=$e('edit-btn'),sum=$e('fpp-sum');
   if(S.fileEditing){if(pre)pre.style.display='none';if(ta){ta.value=S.fileContent||'';ta.style.display='';}if(eb)eb.textContent='View';}else{if(pre){pre.textContent=S.fileContent||'';pre.style.display='';}if(ta)ta.style.display='none';if(eb)eb.textContent='Edit';}
   if(sum){if(S.fileSummary){sum.textContent=S.fileSummary;sum.style.display='';}else sum.style.display='none';}
@@ -292,6 +301,7 @@ window.doDispatch=doDispatch;window.doAct=doAct;window.savePolicy=savePolicy;
 window.createTask=createTask;window.previewIngest=previewIngest;window.runIngest=runIngest;
 window.toggleIngest=toggleIngest;window.toggleNew=toggleNew;
 window.pickSession=pickSession;window.newSession=newSession;window.sendMsg=sendMsg;window.answerQ=answerQ;
+window.deleteSession=deleteSession;window.renameSession=renameSession;
 window.openFile=openFile;window.filterTree=filterTree;window.toggleEdit=toggleEdit;
 window.ask=ask;window.yesConfirm=yesConfirm;window.noConfirm=noConfirm;
 window.render=render;window.refresh=refresh;window.renderTasksOnly=renderTasksOnly;

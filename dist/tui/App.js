@@ -13,7 +13,7 @@ import { revertCheckpoint } from "../checkpoints/gitCheckpoint.js";
 import { startOrganizerServer } from "../organizer/server.js";
 import { startOrganizerHeartbeat } from "../organizer/heartbeat.js";
 import { extractFileDiff, compactDiffPreview } from "../changes/diffPreview.js";
-import { createChatSession, addChatMessage, listChatSessions, updateChatSessionTitle, listChatMessages } from "../chat/chatStore.js";
+import { createChatSession, addChatMessage, listChatSessions, updateChatSessionTitle, deleteChatSession, listChatMessages } from "../chat/chatStore.js";
 import { BootScreen } from "./screens/BootScreen.js";
 import { MainScreen } from "./screens/MainScreen.js";
 import { IndexDashboard } from "./screens/IndexDashboard.js";
@@ -183,7 +183,7 @@ export function App({ root, config, db, events, indexer }) {
                     suggestions = ["stop", "status"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s);
                 }
                 else if (cmd === "/session" && arg) {
-                    suggestions = ["list", "new", "title"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s);
+                    suggestions = ["list", "new", "title", "delete"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s);
                 }
             }
             else {
@@ -648,7 +648,7 @@ export function App({ root, config, db, events, indexer }) {
                     "  /api [port|status|stop|config]  Start/stop API mode (auto-registers with organizer)",
                     "  /organize [port|status|stop]  Start/stop organizer server (registry + dashboard)",
                     "  /undo        Undo last prompt result (files + convo)",
-                    "  /session     List, switch, or rename chat sessions",
+                    "  /session     List, switch, delete, or rename chat sessions",
                     "  /clear       Clear the output area",
                     "  /animation   Toggle terminal animations on/off",
                     "  /provider    Manage AI providers (list, add, remove, default, key)",
@@ -1303,7 +1303,7 @@ export function App({ root, config, db, events, indexer }) {
                         const marker = tuiSessionIdRef.current === s.id ? " *" : "  ";
                         lines.push(`${marker}${s.id.slice(0, 12)}  ${s.title}  (${msgs.length} msgs)${preview ? "  " + preview : ""}`);
                     }
-                    lines.push("", "  /session <id>   switch to a session", "  /session new    start a new session", "  /session title <title>  rename current session");
+                    lines.push("", "  /session <id>   switch to a session", "  /session new    start a new session", "  /session title <title>  rename current session", "  /session delete <id>  delete a session");
                     appendOutput(lines);
                     return true;
                 }
@@ -1322,6 +1322,22 @@ export function App({ root, config, db, events, indexer }) {
                     else {
                         appendOutput("No active session to rename.");
                     }
+                    return true;
+                }
+                if (sub === "delete" && rawParts[2]) {
+                    const idPrefix = rawParts[2];
+                    const sessions = listChatSessions(db, { scope: "local" });
+                    const found = sessions.find(s => s.id.startsWith(idPrefix));
+                    if (!found) {
+                        appendOutput(`Session not found: ${idPrefix}`);
+                        return true;
+                    }
+                    const deleted = deleteChatSession(db, found.id);
+                    if (tuiSessionIdRef.current === found.id) {
+                        tuiSessionIdRef.current = null;
+                        lastSyncedMsgRef.current = "";
+                    }
+                    appendOutput(deleted ? `✓ Deleted: ${found.title}` : `✗ Failed to delete: ${found.title}`);
                     return true;
                 }
                 {

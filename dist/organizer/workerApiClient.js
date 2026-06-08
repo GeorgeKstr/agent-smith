@@ -47,6 +47,50 @@ export function createWorkerApiClient(args) {
             clearTimeout(timer);
         }
     }
+    async function del(path) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const headers = {};
+            if (token)
+                headers["Authorization"] = `Bearer ${token}`;
+            const res = await fetch(`${baseUrl}${path}`, { method: "DELETE", headers, signal: controller.signal });
+            if (!res.ok)
+                return { ok: false, error: `HTTP ${res.status}` };
+            return { ok: true };
+        }
+        catch (err) {
+            return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    }
+    async function patch(path, body) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const headers = body ? { "Content-Type": "application/json" } : {};
+            if (token)
+                headers["Authorization"] = `Bearer ${token}`;
+            const res = await fetch(`${baseUrl}${path}`, {
+                method: "PATCH",
+                headers,
+                body: body ? JSON.stringify(body) : undefined,
+                signal: controller.signal
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok)
+                return { ok: false, error: `HTTP ${res.status}: ${JSON.stringify(data).slice(0, 200)}` };
+            return { ok: true, data };
+        }
+        catch (err) {
+            return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    }
     return {
         getStatus: () => get("/api/status"),
         dispatchAction: async (action) => {
@@ -102,6 +146,13 @@ export function createWorkerApiClient(args) {
             const r = await post(`/api/chat/sessions/${sessionId}`, input);
             return r.ok ? { ok: true, session: r.data?.session, messages: r.data?.messages } : r;
         },
+        deleteChatSession: async (sessionId) => {
+            return del(`/api/chat/sessions/${sessionId}`);
+        },
+        renameChatSession: async (sessionId, title) => {
+            const r = await patch(`/api/chat/sessions/${sessionId}`, { title });
+            return r.ok ? { ok: true, session: r.data?.session } : r;
+        },
         getOpenQuestions: async () => {
             const r = await get(`/api/questions/open`);
             return r.ok ? { ok: true, questions: r.data?.questions } : r;
@@ -119,7 +170,7 @@ export function createWorkerApiClient(args) {
             if (!r.ok)
                 return { ok: false, error: r.error };
             const d = r.data;
-            return { ok: true, content: d?.content, summary: d?.summary, importance: d?.importance };
+            return { ok: true, content: d?.content, summary: d?.summary, importance: d?.importance, mimeType: d?.mimeType, isImage: d?.isImage };
         },
         getDashboard: async () => {
             const r = await get(`/api/dashboard`);

@@ -5,8 +5,8 @@ import { createSmithRuntime } from "../runtime/smithRuntime.js";
 import { createWorkItem, listWorkItems, getWorkItem, updateWorkItemStatus, deleteWorkItem } from "../tasks/taskStore.js";
 import { sendChatMessage, getSessionWithMessages } from "../chat/chatRuntime.js";
 import { listProviderModels } from "../providers/providers.js";
-import { createChatSession, listChatSessions } from "../chat/chatStore.js";
-import { getOpenQuestions, answerUserQuestion, cancelUserQuestion } from "../chat/chatStore.js";
+import { createChatSession, listChatSessions, deleteChatSession } from "../chat/chatStore.js";
+import { getOpenQuestions, answerUserQuestion, cancelUserQuestion, updateChatSessionTitle } from "../chat/chatStore.js";
 import { createTaskPlanStep, listTaskPlanSteps, replaceTaskPlan, updateTaskPlanStepStatus, updateTaskPlanStepNotes, updateTaskPlanStepTitle, reorderTaskPlanStep, deleteTaskPlanStep } from "../tasks/taskPlanStore.js";
 import { listChangeSets, getChangeSet, listChangedFiles, listChangedHunks, updateChangeSetStatus, updateChangedFileStatus, updateChangedHunkStatus } from "../changes/changeSetStore.js";
 import { applyAcceptedChangeSet, applyAcceptedHunksChangeSet } from "../changes/changeSetApply.js";
@@ -361,6 +361,25 @@ export async function startApiServer(args) {
                     sendJson(res, 200, { ok: result.ok, session: result.session, userMessage: result.userMessage, assistantMessage: result.assistantMessage, result: result.result });
                     return;
                 }
+                if (method === "DELETE") {
+                    const deleted = deleteChatSession(db, id);
+                    sendJson(res, deleted ? 200 : 404, { ok: deleted, sessionId: id });
+                    return;
+                }
+                if (method === "PATCH") {
+                    const b = await readJson(req);
+                    if (!b || typeof b.title !== "string") {
+                        sendJson(res, 400, { ok: false, error: "title required" });
+                        return;
+                    }
+                    const updated = updateChatSessionTitle(db, id, b.title);
+                    if (!updated) {
+                        notFound(res);
+                        return;
+                    }
+                    sendJson(res, 200, { ok: true, session: updated });
+                    return;
+                }
             }
             if (url === "/api/chat/messages" && method === "POST") {
                 const b = await readJson(req);
@@ -539,10 +558,23 @@ export async function startApiServer(args) {
                     sendJson(res, 403, { ok: false, error: "access denied" });
                     return;
                 }
+                const ext = path.extname(rel).toLowerCase();
+                const imageExts = new Set([".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico"]);
+                const isImage = imageExts.has(ext);
                 try {
-                    const content = await readFile(absPath, "utf-8");
-                    const fileRow = db.prepare("SELECT summary FROM files WHERE path=?").get(rel);
-                    sendJson(res, 200, { ok: true, content, summary: fileRow?.summary ?? null });
+                    if (isImage) {
+                        const extMap = { ".svg": "image/svg+xml", ".jpg": "image/jpeg", ".jpeg": "image/jpeg" };
+                        const mime = extMap[ext] ?? `image/${ext.slice(1)}`;
+                        const buf = await readFile(absPath);
+                        const content = buf.toString("base64");
+                        const fileRow = db.prepare("SELECT summary FROM files WHERE path=?").get(rel);
+                        sendJson(res, 200, { ok: true, content, mimeType: mime, isImage: true, summary: fileRow?.summary ?? null });
+                    }
+                    else {
+                        const content = await readFile(absPath, "utf-8");
+                        const fileRow = db.prepare("SELECT summary FROM files WHERE path=?").get(rel);
+                        sendJson(res, 200, { ok: true, content, summary: fileRow?.summary ?? null });
+                    }
                 }
                 catch {
                     sendJson(res, 404, { ok: false, error: "file not found" });

@@ -65,7 +65,7 @@ export async function startOrganizerServer(args) {
         const rawUrl = req.url ?? "/";
         try {
             res.setHeader("Access-Control-Allow-Origin", "*");
-            res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+            res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
             res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
             if (method === "OPTIONS") {
                 res.writeHead(204);
@@ -607,6 +607,21 @@ export async function startOrganizerServer(args) {
                         sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, session: r.session, messages: r.messages } : { ok: false, error: r?.error ?? "Agent API unreachable" });
                         return;
                     }
+                    if (method === "DELETE") {
+                        const r = await client.deleteChatSession?.(sessionId);
+                        sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, sessionId } : { ok: false, error: r?.error ?? "Agent API unreachable" });
+                        return;
+                    }
+                    if (method === "PATCH") {
+                        const b = await readJson(req);
+                        if (!b || typeof b.title !== "string") {
+                            badRequest(res, "title required");
+                            return;
+                        }
+                        const r = await client.renameChatSession?.(sessionId, b.title);
+                        sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, session: r.session } : { ok: false, error: r?.error ?? "Agent API unreachable" });
+                        return;
+                    }
                 }
                 // Alias: /api/agents/:id/chat/sessions/:sid → same as /api/agents/:id/chats/:sid
                 if (parts.length === 6 && parts[3] === "chat" && parts[4] === "sessions") {
@@ -624,6 +639,21 @@ export async function startOrganizerServer(args) {
                         }
                         const r = await client.sendChatMessage?.(sessionId, { prompt: b.prompt, actionKind: typeof b.actionKind === "string" ? b.actionKind : undefined, model: typeof b.model === "string" ? b.model : undefined });
                         sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, session: r.session, messages: r.messages } : { ok: false, error: r?.error ?? "Agent API unreachable" });
+                        return;
+                    }
+                    if (method === "DELETE") {
+                        const r = await client.deleteChatSession?.(sessionId);
+                        sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, sessionId } : { ok: false, error: r?.error ?? "Agent API unreachable" });
+                        return;
+                    }
+                    if (method === "PATCH") {
+                        const b = await readJson(req);
+                        if (!b || typeof b.title !== "string") {
+                            badRequest(res, "title required");
+                            return;
+                        }
+                        const r = await client.renameChatSession?.(sessionId, b.title);
+                        sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, session: r.session } : { ok: false, error: r?.error ?? "Agent API unreachable" });
                         return;
                     }
                 }
@@ -656,7 +686,7 @@ export async function startOrganizerServer(args) {
                     }
                     const agentClient = createWorkerApiClient({ baseUrl: agent.api_base_url, token: token });
                     const r = await agentClient.getFile?.(filePath);
-                    sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, content: r.content, summary: r.summary } : { ok: false, error: r?.error ?? "Agent API unreachable" });
+                    sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, content: r.content, summary: r.summary, mimeType: r.mimeType, isImage: r.isImage } : { ok: false, error: r?.error ?? "Agent API unreachable" });
                     return;
                 }
                 if (parts.length === 4 && parts[3] === "dashboard" && method === "GET") {
