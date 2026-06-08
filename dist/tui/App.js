@@ -145,7 +145,7 @@ export function App({ root, config, db, events, indexer }) {
     const answeredQuestionFp = useRef(new Set());
     const questionFromCommand = useRef(false);
     const setupRef = useRef(null);
-    const CMD_LIST = ["/help", "/mode", "/model", "/provider", "/setup", "/reindex", "/index", "/dashboard", "/clear", "/summarize", "/lan", "/api", "/changes", "/change", "/accept", "/reject", "/apply", "/revert", "/undo", "/exit", "/quit", "/animation", "/context"];
+    const CMD_LIST = ["/help", "/mode", "/model", "/provider", "/setup", "/reindex", "/index", "/organize", "/clear", "/summarize", "/lan", "/api", "/changes", "/change", "/accept", "/reject", "/apply", "/revert", "/undo", "/exit", "/quit", "/animation", "/context"];
     const PROVIDER_SUBS = ["list", "add", "remove", "default", "key"];
     const [autocompleteIndex, setAutocompleteIndex] = useState(0);
     const autocomplete = useMemo(() => {
@@ -176,7 +176,7 @@ export function App({ root, config, db, events, indexer }) {
                 else if (cmd === "/lan" && arg) {
                     suggestions = ["stop", "status"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s);
                 }
-                else if (cmd === "/dashboard" && arg) {
+                else if (cmd === "/organize" && arg) {
                     suggestions = ["stop", "status"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s);
                 }
             }
@@ -605,7 +605,7 @@ export function App({ root, config, db, events, indexer }) {
                     "  /tools       Show Qwen tool-calling integration notes",
                     "  /lan [port|status|stop]  Start/stop local project web UI",
                     "  /api [port|status|stop|config]  Start/stop API mode (auto-registers with organizer)",
-                    "  /dashboard [port|status|stop]  Start/stop organizer server (registry + dashboard)",
+                    "  /organize [port|status|stop]  Start/stop organizer server (registry + dashboard)",
                     "  /undo        Undo last prompt result (files + convo)",
                     "  /clear       Clear the output area",
                     "  /animation   Toggle terminal animations on/off",
@@ -885,8 +885,7 @@ export function App({ root, config, db, events, indexer }) {
                 ]);
                 return true;
             }
-            case "/index":
-            case "/dashboard": {
+            case "/index": {
                 setView("index");
                 return true;
             }
@@ -1061,30 +1060,30 @@ export function App({ root, config, db, events, indexer }) {
                 }
                 return true;
             }
-            case "/dashboard": {
+            case "/organize": {
                 const arg = (rawParts[1] ?? "").toLowerCase();
                 if (arg === "stop") {
                     if (dashboardRef.current) {
                         dashboardRef.current.stop();
                         dashboardRef.current = null;
-                        appendOutput("Organizer dashboard stopped.");
+                        appendOutput("Organizer stopped.");
                     }
                     else {
-                        appendOutput("Organizer dashboard is not running.");
+                        appendOutput("Organizer is not running.");
                     }
                     return true;
                 }
                 if (arg === "status") {
                     if (dashboardRef.current) {
-                        appendOutput(`Organizer dashboard running at http://127.0.0.1:${dashboardRef.current.port}`);
+                        appendOutput(`Organizer running at http://127.0.0.1:${dashboardRef.current.port}  Dashboard: http://127.0.0.1:${dashboardRef.current.port}/dashboard`);
                     }
                     else {
-                        appendOutput("Organizer dashboard is not running.");
+                        appendOutput("Organizer is not running. Start with /organize");
                     }
                     return true;
                 }
                 if (dashboardRef.current) {
-                    appendOutput(`Organizer dashboard already running at http://127.0.0.1:${dashboardRef.current.port}`);
+                    appendOutput(`Organizer already running at http://127.0.0.1:${dashboardRef.current.port}/dashboard`);
                     return true;
                 }
                 try {
@@ -1094,7 +1093,8 @@ export function App({ root, config, db, events, indexer }) {
                         onLog: (msg) => appendOutput(msg)
                     });
                     dashboardRef.current = { port: dashPort, stop: () => server.stop() };
-                    appendOutput(`Agent Smith Organizer listening at ${server.url}`);
+                    appendOutput(`Organizer listening at ${server.url}`);
+                    appendOutput(`Dashboard: http://127.0.0.1:${dashPort}/dashboard`);
                 }
                 catch (err) {
                     appendOutput(`✗ Failed to start organizer: ${err instanceof Error ? err.message : String(err)}`);
