@@ -77,7 +77,7 @@ export async function sendChatMessage(args: SendChatArgs): Promise<SendChatResul
     return { ok: false, session, userMessage: userMsg, error: err instanceof Error ? err.message : String(err) };
   }
 
-  const content = result.answer ?? result.message ?? JSON.stringify(result.data ?? result);
+  const content = result.answer || result.message || JSON.stringify(result.data ?? result);
   const msgMeta = { taskId: result.taskId, data: result.data };
 
   updateChatMessage(db, assistantMsg.id, {
