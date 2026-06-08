@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from "react"
 import { Box, Text, useInput, useStdout } from "ink"
-import type { SmithDatabase } from "../../core/db.js"
+import type { SmithDatabase } from "../../db/db.js"
 import type { SmithConfig } from "../../types/index.js"
 import { theme } from "../theme.js"
 

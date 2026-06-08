@@ -1,0 +1,143 @@
+# Runtime Contracts — Diff Summary
+
+## File 1: src/types/index.ts
+
+@@ -9,6 +9,10 @@ export type ProviderEntry = {
+ 
+ export type ProviderMap = Record<string, ProviderEntry>;
+ 
++export type CompatibilityMode = "auto" | "small-local" | "large-model" | "cloud-agent";
++
++export type ToolMode = "auto" | "diff_only" | "json_protocol" | "native_tools";
++
+ export type SmithConfig = {
+   models: {
+     tagger: string;
+@@ -58,6 +62,19 @@ export type SmithConfig = {
+   lan: {
+     port: number;
+   };
++  api: {
++    enabled: boolean;
++    host: string;
++    port: number;
++    token?: string;
++    allowLan: boolean;
++  };
++  compatibility: {
++    mode: CompatibilityMode;
++    toolMode: ToolMode;
++    preferNativeToolsForLargeModels: boolean;
++    preferDiffOnlyForLocalModels: boolean;
++  };
+   theme: {
+     mode: "matrix";
+     showBootAnimation: boolean;
+@@ -207,3 +224,69 @@ export type PatchOutcome = {
+   checks: CheckResult[];
+   message: string;
+ };
++
++export type RuntimeActionKind =
++  | "ask"
++  | "patch"
++  | "retrieve"
++  | "context"
++  | "inspect"
++  | "graph"
++  | "index"
++  | "reindex"
++  | "check"
++  | "smoke"
++  | "setup-check";
++
++export type RuntimeAction = {
++  kind: RuntimeActionKind;
++  prompt?: string;
++  target?: string;
++  paths?: string[];
++  model?: string;
++  apply?: boolean;
++  dryRun?: boolean;
++  json?: boolean;
++};
++
++export type RuntimeTaskStatus = "queued" | "planning" | "retrieving" | "packing" | "generating" | "validating" | "applying" | "checking" | "reindexing" | "completed" | "failed" | "cancelled";
++
++export type RuntimeTaskResult = {
++  taskId: string;
++  ok: boolean;
++  status: RuntimeTaskStatus;
++  message?: string;
++  answer?: string;
++  diff?: string;
++  files?: string[];
++  checks?: CheckResult[];
++  packet?: ContextPacket;
++};
++
++export type ContextPlan = {
++  mode: string;
++  objective: string;
++  searchQueries: string[];
++  fileHints: string[];
++  symbolHints: string[];
++  tagHints: number[];
++  requiredFiles: string[];
++  forbiddenFiles: string[];
++  includeTests: boolean;
++  includeTypes: boolean;
++  includeSummaries: boolean;
++  graphDepth: number;
++  maxFiles: number;
++  maxSymbols: number;
++  maxTokens: number;
++};
++
++export type ModelProfile = {
++  id: string;
++  provider: string;
++  supportsNativeTools: boolean;
++  supportsJsonMode: boolean;
++  supportsDiffs: boolean;
++  preferredToolMode: Exclude<ToolMode, "auto">;
++  roles: string[];
++};
+
+## File 2: src/config/config.ts
+
+### Zod schema additions (after `lan` section, line ~61):
+
++  api: z.object({
++    enabled: z.boolean(),
++    host: z.string(),
++    port: z.number(),
++    token: z.string().optional(),
++    allowLan: z.boolean()
++  }).optional(),
++  compatibility: z.object({
++    mode: z.enum(["auto", "small-local", "large-model", "cloud-agent"]),
++    toolMode: z.enum(["auto", "diff_only", "json_protocol", "native_tools"]),
++    preferNativeToolsForLargeModels: z.boolean(),
++    preferDiffOnlyForLocalModels: z.boolean()
++  }).optional(),
+
+### DEFAULT_CONFIG additions (after `lan` section, line ~127):
+
++  api: {
++    enabled: false,
++    host: "127.0.0.1",
++    port: 31337,
++    allowLan: false
++  },
++  compatibility: {
++    mode: "auto",
++    toolMode: "auto",
++    preferNativeToolsForLargeModels: true,
++    preferDiffOnlyForLocalModels: true
++  },
+
+### loadConfig fallback defaults (after `lan` fallback, line ~153):
+
++    api: parsed.api ?? { enabled: false, host: "127.0.0.1", port: 31337, allowLan: false },
++    compatibility: parsed.compatibility ?? { mode: "auto", toolMode: "auto", preferNativeToolsForLargeModels: true, preferDiffOnlyForLocalModels: true },
