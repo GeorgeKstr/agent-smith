@@ -485,8 +485,38 @@ export async function startOrganizerServer(args: {
             return;
           }
         }
+        // Alias: /api/agents/:id/chat/sessions → same as /api/agents/:id/chats
+        if (parts.length === 5 && parts[3] === "chat" && parts[4] === "sessions") {
+          if (method === "GET") {
+            const r = await client.listChatSessions?.();
+            sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, sessions: r.sessions } : { ok: false, error: r?.error ?? "Agent API unreachable" });
+            return;
+          }
+          if (method === "POST") {
+            const b = await readJson(req) as Record<string, unknown> | null;
+            const r = await client.createChatSession?.(b ?? {});
+            sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, session: r.session } : { ok: false, error: r?.error ?? "Agent API unreachable" });
+            return;
+          }
+        }
         if (parts.length === 5 && parts[3] === "chats") {
           const sessionId = parts[4];
+          if (method === "GET") {
+            const r = await client.getChatSession?.(sessionId);
+            sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, session: r.session, messages: r.messages, openQuestions: r.openQuestions } : { ok: false, error: r?.error ?? "Agent API unreachable" });
+            return;
+          }
+          if (method === "POST") {
+            const b = await readJson(req) as Record<string, unknown> | null;
+            if (!b || typeof b.prompt !== "string") { badRequest(res, "prompt required"); return; }
+            const r = await client.sendChatMessage?.(sessionId, { prompt: b.prompt as string, actionKind: typeof b.actionKind === "string" ? b.actionKind : undefined, model: typeof b.model === "string" ? b.model : undefined });
+            sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, session: r.session, messages: r.messages } : { ok: false, error: r?.error ?? "Agent API unreachable" });
+            return;
+          }
+        }
+        // Alias: /api/agents/:id/chat/sessions/:sid → same as /api/agents/:id/chats/:sid
+        if (parts.length === 6 && parts[3] === "chat" && parts[4] === "sessions") {
+          const sessionId = parts[5];
           if (method === "GET") {
             const r = await client.getChatSession?.(sessionId);
             sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, session: r.session, messages: r.messages, openQuestions: r.openQuestions } : { ok: false, error: r?.error ?? "Agent API unreachable" });

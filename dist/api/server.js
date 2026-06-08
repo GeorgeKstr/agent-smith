@@ -1,4 +1,6 @@
 import http from "node:http";
+import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { createSmithRuntime } from "../runtime/smithRuntime.js";
 import { createWorkItem, listWorkItems, getWorkItem, updateWorkItemStatus, deleteWorkItem } from "../tasks/taskStore.js";
 import { sendChatMessage, getSessionWithMessages } from "../chat/chatRuntime.js";
@@ -515,6 +517,36 @@ export async function startApiServer(args) {
                 const langCounts = db.prepare("SELECT language, COUNT(*) AS count FROM files WHERE language IS NOT NULL AND language!='' GROUP BY language ORDER BY count DESC").all();
                 const projectSummary = db.prepare("SELECT value FROM meta WHERE key='project_summary'").get()?.value ?? "";
                 sendJson(res, 200, { ok: true, totalFiles, totalSymbols, totalImports, totalWithSummary, files, topTags, langCounts, projectSummary });
+                return;
+            }
+            // GET /api/filetree — list indexed files
+            if (url === "/api/filetree" && method === "GET") {
+                const files = db.prepare("SELECT path, language FROM files ORDER BY path").all();
+                sendJson(res, 200, { ok: true, files });
+                return;
+            }
+            // GET /api/file — read file content + summary
+            if (url === "/api/file" && method === "GET") {
+                const filePath = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`).searchParams.get("path");
+                if (!filePath) {
+                    sendJson(res, 400, { ok: false, error: "missing path" });
+                    return;
+                }
+                const resolvedRoot = path.resolve(deps.root);
+                const absPath = path.resolve(deps.root, filePath);
+                const rel = path.relative(resolvedRoot, absPath);
+                if (rel.startsWith("..") || path.isAbsolute(rel)) {
+                    sendJson(res, 403, { ok: false, error: "access denied" });
+                    return;
+                }
+                try {
+                    const content = await readFile(absPath, "utf-8");
+                    const fileRow = db.prepare("SELECT summary FROM files WHERE path=?").get(rel);
+                    sendJson(res, 200, { ok: true, content, summary: fileRow?.summary ?? null });
+                }
+                catch {
+                    sendJson(res, 404, { ok: false, error: "file not found" });
+                }
                 return;
             }
             notFound(res);
