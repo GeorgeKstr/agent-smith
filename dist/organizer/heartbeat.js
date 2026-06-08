@@ -61,24 +61,22 @@ export function buildWorkerHeartbeat(args) {
 export async function startOrganizerHeartbeat(args) {
     const { root, config, db, apiBaseUrl, onLog } = args;
     const client = createOrganizerClient({ url: config.organizer.url, token: config.organizer.token });
-    let lastOk = false;
+    let first = true;
     const tick = async () => {
         const payload = buildWorkerHeartbeat({ root, config, db, status: args.status, apiBaseUrl, currentTaskId: null });
-        const registered = lastOk;
-        const result = registered
-            ? await client.heartbeat(payload)
-            : await client.register(payload);
+        const result = await client.register(payload);
         if (result.ok) {
-            if (!lastOk && onLog) {
+            if (first && onLog) {
                 onLog(`Registered with organizer at ${config.organizer.url}`);
             }
-            lastOk = true;
+            first = false;
         }
-        else {
-            lastOk = false;
+        else if (first && onLog) {
+            onLog(`Organizer not reachable at ${config.organizer.url} — will keep retrying every ${config.organizer.heartbeatMs}ms`);
+            first = false;
         }
     };
-    void tick();
+    await tick();
     const interval = setInterval(() => { void tick(); }, config.organizer.heartbeatMs);
     return { stop: () => clearInterval(interval) };
 }
