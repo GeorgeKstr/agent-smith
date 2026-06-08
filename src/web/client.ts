@@ -5,10 +5,10 @@ export const clientJs = `(function(){
 var B=document.body;if(!B)return;
 var apiBase=B.dataset.apiBase||'/api';
 var hasSidebar=B.dataset.hasSidebar==='true';
+var agentBase=apiBase; /* defaults to same; set to /api/agents/{id} when agent selected in organizer */
 window.__apiBase=apiBase;
-window.__setApiBase=function(b){apiBase=b;window.__apiBase=b;};
+window.__setAgentApiBase=function(b){agentBase=b;};
 window.__setSidebar=function(v){hasSidebar=!!v;if(hasSidebar){var s=$e('sidebar');if(s)s.style.display='flex';renderSidebar();}};
-window.__setSidebarVisible=function(v){hasSidebar=!!v;var s=$e('sidebar');if(s){s.style.display=v?'flex':'none';}render();};
 
 /* ── State ── */
 var S={
@@ -35,8 +35,14 @@ function md(s){if(!s)return'';s=esc(s);s=s.replace(/\`\`\`([\\w]*)\\n?([\\s\\S]*
 
 /* ── API ── */
 async function api(path,opt){
+  return rawApi(apiBase+path,opt);
+}
+async function aapi(path,opt){
+  return rawApi(agentBase+path,opt);
+}
+async function rawApi(url,opt){
   opt=opt||{};var body=opt.body;if(body!=null&&typeof body!=='string')body=JSON.stringify(body);
-  var res=await fetch(apiBase+path,{method:opt.method||'GET',headers:body!=null?{'Content-Type':'application/json'}:{},body:body||undefined});
+  var res=await fetch(url,{method:opt.method||'GET',headers:body!=null?{'Content-Type':'application/json'}:{},body:body||undefined});
   var txt=await res.text(),data;
   try{data=txt?JSON.parse(txt):{};}catch(e){data={ok:false,error:'Bad response'};}
   if(!res.ok||data.ok===false)throw new Error(data.error||'HTTP '+res.status);
@@ -57,20 +63,19 @@ async function refresh(silent){
       S.tasks=(await api('/tasks').catch(function(){return{tasks:[]};})).tasks||[];
       S.projects=(await api('/projects').catch(function(){return{projects:[]};})).projects||[];
     }else{
-      // LAN mode: load tasks from local API
-      S.tasks=(await api('/tasks').catch(function(){return{tasks:[]};})).tasks||[];
+      S.tasks=(await aapi('/tasks').catch(function(){return{tasks:[]};})).tasks||[];
     }
   }catch(e){}
   if(S.agentId&&S.tab==='overview'&&!S.dashData)loadDashboard();
   if(!silent)render();else renderShell();
 }
 
-async function loadTimeline(id){if(S.tlQ[id])return;S.tlQ[id]=true;try{S.tl[id]=(await api('/tasks/'+id+'/timeline').catch(function(){return null;})).timeline;}catch(e){S.tl[id]=null;}delete S.tlQ[id];renderTasksOnly();}
-async function loadSessions(){try{S.chat.sessions=(await api('/chat/sessions').catch(function(){return{sessions:[]};})).sessions||[];}catch(e){S.chat.sessions=[];}renderMainOnly();}
-async function loadMsgs(sid){if(!sid)return;try{var r=await api('/chat/sessions/'+sid);S.chat.msgs=r.messages||[];S.chat.qtns=r.openQuestions||[];}catch(e){S.chat.msgs=[];S.chat.qtns=[];}renderMainOnly();scrollChat();}
-async function loadModels(){try{S.chat.allModels=(await api('/models').catch(function(){return{models:[]};})).models||[];}catch(e){S.chat.allModels=[];}}
-async function loadDashboard(){try{S.dashData=await api('/dashboard').catch(function(){return null;});}catch(e){S.dashData=null;}renderMainOnly();}
-async function loadFileTree(){try{S._fileTree=(await api('/filetree').catch(function(){return{files:[]};})).files||[];}catch(e){S._fileTree=[];}}
+async function loadTimeline(id){if(S.tlQ[id])return;S.tlQ[id]=true;try{S.tl[id]=(await aapi('/tasks/'+id+'/timeline').catch(function(){return null;})).timeline;}catch(e){S.tl[id]=null;}delete S.tlQ[id];renderTasksOnly();}
+async function loadSessions(){try{S.chat.sessions=(await aapi('/chat/sessions').catch(function(){return{sessions:[]};})).sessions||[];}catch(e){S.chat.sessions=[];}renderMainOnly();}
+async function loadMsgs(sid){if(!sid)return;try{var r=await aapi('/chat/sessions/'+sid);S.chat.msgs=r.messages||[];S.chat.qtns=r.openQuestions||[];}catch(e){S.chat.msgs=[];S.chat.qtns=[];}renderMainOnly();scrollChat();}
+async function loadModels(){try{S.chat.allModels=(await aapi('/models').catch(function(){return{models:[]};})).models||[];}catch(e){S.chat.allModels=[];}}
+async function loadDashboard(){try{S.dashData=await aapi('/dashboard').catch(function(){return null;});}catch(e){S.dashData=null;}renderMainOnly();}
+async function loadFileTree(){try{S._fileTree=(await aapi('/filetree').catch(function(){return{files:[]};})).files||[];}catch(e){S._fileTree=[];}}
 
 function scrollChat(){setTimeout(function(){var m=$e('chat-msgs');if(m)m.scrollTop=m.scrollHeight;},40);}
 
@@ -170,7 +175,7 @@ function renderMainOnly(){
 function setTab(t){S.tab=t;if(t==='chat'){if(!S.chat.sessions.length)loadSessions();if(!S.chat.allModels.length)loadModels();}if(t==='files')loadFileTree();if(t==='overview'&&!S.dashData)loadDashboard();render();}
 function selectAgent(id){
   S.agentId=id;S.tab='chat';
-  if(hasSidebar&&id)window.__setApiBase('/api/agents/'+id);
+  if(hasSidebar&&id){agentBase='/api/agents/'+id;window.__setAgentApiBase(agentBase);}
   S.chat={sessions:[],sid:null,msgs:[],qtns:[],sending:false,allModels:[]};
   S.exp={};S.tl={};S.ingestOpen=false;S.newOpen=false;S.currentFile=null;S.dashData=null;
   render();
@@ -191,9 +196,9 @@ function renderChat(el,a){
   h+='</div>';el.innerHTML=h;if(S.chat.sid)scrollChat();
 }
 async function pickSession(s){S.chat.sid=s||null;S.chat.msgs=[];S.chat.qtns=[];if(s)await loadMsgs(s);else renderMainOnly();}
-async function newSession(){try{var r=await api('/chat/sessions',{method:'POST',body:{}});if(r.session){S.chat.sid=r.session.id;await loadSessions();await loadMsgs(r.session.id);}}catch(e){toast(e.message,true);}}
-async function sendMsg(){if(!S.chat.sid)return;var inp=$e('chat-ta');if(!inp)return;var p=inp.value.trim();if(!p)return;var btn=$e('send-btn');S.chat.sending=true;inp.disabled=true;if(btn)btn.disabled=true;S.chat.msgs.push({role:'user',content:p,ts:Date.now()});inp.value='';inp.style.height='auto';renderMainOnly();scrollChat();try{var b={prompt:p};var ak=$e('chat-kind');if(ak&&ak.value)b.actionKind=ak.value;var mk=$e('chat-model');if(mk&&mk.value)b.model=mk.value;await api('/chat/sessions/'+S.chat.sid,{method:'POST',body:b});await loadMsgs(S.chat.sid);}catch(e){toast(e.message,true);}S.chat.sending=false;var i=$e('chat-ta');if(i)i.disabled=false;var b2=$e('send-btn');if(b2)b2.disabled=false;}
-async function answerQ(qid){var inp=$e('qa-'+qid);if(!inp)return;var a=inp.value.trim();if(!a){toast('Enter an answer',true);return;}try{await api('/questions/'+qid,{method:'POST',body:{answer:a}});toast('Answered','');await loadMsgs(S.chat.sid);}catch(e){toast(e.message,true);}}
+async function newSession(){try{var r=await aapi('/chat/sessions',{method:'POST',body:{}});if(r.session){S.chat.sid=r.session.id;await loadSessions();await loadMsgs(r.session.id);}}catch(e){toast(e.message,true);}}
+async function sendMsg(){if(!S.chat.sid)return;var inp=$e('chat-ta');if(!inp)return;var p=inp.value.trim();if(!p)return;var btn=$e('send-btn');S.chat.sending=true;inp.disabled=true;if(btn)btn.disabled=true;S.chat.msgs.push({role:'user',content:p,ts:Date.now()});inp.value='';inp.style.height='auto';renderMainOnly();scrollChat();try{var b={prompt:p};var ak=$e('chat-kind');if(ak&&ak.value)b.actionKind=ak.value;var mk=$e('chat-model');if(mk&&mk.value)b.model=mk.value;await aapi('/chat/sessions/'+S.chat.sid,{method:'POST',body:b});await loadMsgs(S.chat.sid);}catch(e){toast(e.message,true);}S.chat.sending=false;var i=$e('chat-ta');if(i)i.disabled=false;var b2=$e('send-btn');if(b2)b2.disabled=false;}
+async function answerQ(qid){var inp=$e('qa-'+qid);if(!inp)return;var a=inp.value.trim();if(!a){toast('Enter an answer',true);return;}try{await aapi('/questions/'+qid,{method:'POST',body:{answer:a}});toast('Answered','');await loadMsgs(S.chat.sid);}catch(e){toast(e.message,true);}}
 
 /* ── Tasks ── */
 function renderTasks(el,a){
@@ -240,7 +245,7 @@ async function openFile(path){
   S.currentFile=path;S.fileEditing=false;S.fileSummary=null;
   var pp=$e('file-preview-pane');if(!pp)return;
   pp.innerHTML='<div class=fpp-hdr><span class=fpp-path>'+esc(path)+'</span><div class=fpp-actions><button class="btn btn-xs" id=edit-btn onclick=toggleEdit()>Edit</button></div></div><div class=fpp-body id=fpp-body><div class=fpp-pre id=fpp-pre>Loading...</div><textarea class=fpp-ta id=fpp-ta style=display:none></textarea></div><div class=fpp-summary id=fpp-sum style=display:none></div>';
-  try{var r=await api('/file?path='+encodeURIComponent(path));S.fileContent=r.content||'';S.fileSummary=r.summary||null;updateFilePreview();}catch(e){var pre=$e('fpp-pre');if(pre)pre.textContent='Error: '+e.message;}
+  try{var r=await aapi('/file?path='+encodeURIComponent(path));S.fileContent=r.content||'';S.fileSummary=r.summary||null;updateFilePreview();}catch(e){var pre=$e('fpp-pre');if(pre)pre.textContent='Error: '+e.message;}
 }
 function updateFilePreview(){
   var pre=$e('fpp-pre'),ta=$e('fpp-ta'),eb=$e('edit-btn'),sum=$e('fpp-sum');

@@ -113,7 +113,7 @@ export async function startOrganizerServer(args: {
           html
             .replace("_STYLE__URL_", "/dashboard/styles.css")
             .replace("_SCRIPT__URL_", "/dashboard/client.js")
-            .replace("_API_BASE_", "/api/agents/__NONE__")
+            .replace("_API_BASE_", "/api")
             .replace("_HAS_SIDEBAR_", "true")
         );
         return;
