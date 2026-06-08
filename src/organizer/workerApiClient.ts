@@ -53,7 +53,10 @@ export function createWorkerApiClient(args: {
         signal: controller.signal
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok) return { ok: false, error: `HTTP ${res.status}: ${JSON.stringify(data).slice(0, 200)}` };
+      if (!res.ok) {
+        const err = (data as Record<string, unknown> | null)?.error;
+        return { ok: false, error: typeof err === "string" ? err : `HTTP ${res.status}` };
+      }
       return { ok: true, data };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -70,7 +73,10 @@ export function createWorkerApiClient(args: {
       if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(`${baseUrl}${path}`, { headers, signal: controller.signal });
       const data = await res.json().catch(() => null);
-      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+      if (!res.ok) {
+        const err = (data as Record<string, unknown> | null)?.error;
+        return { ok: false, error: typeof err === "string" ? err : `HTTP ${res.status}` };
+      }
       return { ok: true, data };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -86,7 +92,11 @@ export function createWorkerApiClient(args: {
       const headers: Record<string, string> = {};
       if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(`${baseUrl}${path}`, { method: "DELETE", headers, signal: controller.signal });
-      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const err = (data as Record<string, unknown> | null)?.error;
+        return { ok: false, error: typeof err === "string" ? err : `HTTP ${res.status}` };
+      }
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -108,7 +118,10 @@ export function createWorkerApiClient(args: {
         signal: controller.signal
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok) return { ok: false, error: `HTTP ${res.status}: ${JSON.stringify(data).slice(0, 200)}` };
+      if (!res.ok) {
+        const err = (data as Record<string, unknown> | null)?.error;
+        return { ok: false, error: typeof err === "string" ? err : `HTTP ${res.status}` };
+      }
       return { ok: true, data };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
