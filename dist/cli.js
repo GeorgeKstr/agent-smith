@@ -1491,7 +1491,6 @@ export function createCli() {
                 root, config, db,
                 onLog: (msg) => console.log(msg)
             });
-            console.log(`Organizer heartbeat active → ${config.organizer.url}`);
         }
         const shutdown = async () => {
             if (organizerHeartbeat)

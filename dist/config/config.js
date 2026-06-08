@@ -156,7 +156,7 @@ export const DEFAULT_CONFIG = {
         preferDiffOnlyForLocalModels: true
     },
     organizer: {
-        enabled: false,
+        enabled: true,
         url: "http://127.0.0.1:8787",
         heartbeatMs: 5000
     },
@@ -186,7 +186,7 @@ export async function loadConfig(root) {
         lan: parsed.lan ?? { port: 3000 },
         api: parsed.api ?? { enabled: false, host: "127.0.0.1", port: 31337, allowLan: false },
         compatibility: parsed.compatibility ?? { mode: "auto", toolMode: "auto", preferNativeToolsForLargeModels: true, preferDiffOnlyForLocalModels: true },
-        organizer: parsed.organizer ?? { enabled: false, url: "http://127.0.0.1:8787", heartbeatMs: 5000 },
+        organizer: parsed.organizer ?? { enabled: true, url: "http://127.0.0.1:8787", heartbeatMs: 5000 },
         providers: parsed.providers ?? {},
         defaultProvider: parsed.defaultProvider ?? "ollama",
         options: parsed.options ?? { temperature: 0, numPredict: 2048 }

@@ -61,21 +61,24 @@ export function buildWorkerHeartbeat(args) {
 export async function startOrganizerHeartbeat(args) {
     const { root, config, db, apiBaseUrl, onLog } = args;
     const client = createOrganizerClient({ url: config.organizer.url, token: config.organizer.token });
-    const send = async () => {
+    let lastOk = false;
+    const tick = async () => {
         const payload = buildWorkerHeartbeat({ root, config, db, status: args.status, apiBaseUrl, currentTaskId: null });
-        const result = await client.register(payload);
-        if (onLog) {
-            onLog(result.ok ? `Registered with organizer at ${config.organizer.url}` : `Organizer register failed: ${result.error}`);
+        const registered = lastOk;
+        const result = registered
+            ? await client.heartbeat(payload)
+            : await client.register(payload);
+        if (result.ok) {
+            if (!lastOk && onLog) {
+                onLog(`Registered with organizer at ${config.organizer.url}`);
+            }
+            lastOk = true;
+        }
+        else {
+            lastOk = false;
         }
     };
-    await send();
-    const interval = setInterval(async () => {
-        const payload = buildWorkerHeartbeat({ root, config, db, status: args.status, apiBaseUrl, currentTaskId: null });
-        const result = await client.heartbeat(payload);
-        if (onLog) {
-            if (!result.ok)
-                onLog(`Organizer heartbeat failed: ${result.error}`);
-        }
-    }, config.organizer.heartbeatMs);
+    void tick();
+    const interval = setInterval(() => { void tick(); }, config.organizer.heartbeatMs);
     return { stop: () => clearInterval(interval) };
 }

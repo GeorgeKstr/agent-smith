@@ -1058,7 +1058,6 @@ export function App({ root, config, db, events, indexer }) {
                             onLog: (m) => appendOutput(m)
                         });
                         organizerHeartbeatRef.current = hb;
-                        appendOutput(`Organizer heartbeat active → ${config.organizer.url}`);
                     }
                 }
                 catch (err) {
@@ -1114,7 +1113,6 @@ export function App({ root, config, db, events, indexer }) {
                         onLog: (m) => appendOutput(m)
                     });
                     organizerHeartbeatRef.current = hb;
-                    appendOutput(`Organizer heartbeat started → ${config.organizer.url}`);
                 }
                 catch (err) {
                     appendOutput(`✗ Failed to start organizer heartbeat: ${err instanceof Error ? err.message : String(err)}`);
