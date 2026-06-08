@@ -179,6 +179,8 @@ function selectAgent(id){
   S.chat={sessions:[],sid:null,msgs:[],qtns:[],sending:false,allModels:[]};
   S.exp={};S.tl={};S.ingestOpen=false;S.newOpen=false;S.currentFile=null;S.dashData=null;
   render();
+  loadSessions();
+  loadModels();
 }
 
 /* ── Chat ── */
@@ -196,7 +198,7 @@ function renderChat(el,a){
   h+='</div>';el.innerHTML=h;if(S.chat.sid)scrollChat();
 }
 async function pickSession(s){S.chat.sid=s||null;S.chat.msgs=[];S.chat.qtns=[];if(s)await loadMsgs(s);else renderMainOnly();}
-async function newSession(){try{var r=await aapi('/chat/sessions',{method:'POST',body:{}});if(r.session){S.chat.sid=r.session.id;await loadSessions();await loadMsgs(r.session.id);}}catch(e){toast(e.message,true);}}
+async function newSession(){try{var r=await aapi('/chat/sessions',{method:'POST',body:{}});if(r.session){S.chat.sid=r.session.id;if(!S.chat.allModels.length)await loadModels();await loadSessions();await loadMsgs(r.session.id);}}catch(e){toast(e.message,true);}}
 async function sendMsg(){if(!S.chat.sid)return;var inp=$e('chat-ta');if(!inp)return;var p=inp.value.trim();if(!p)return;var btn=$e('send-btn');S.chat.sending=true;inp.disabled=true;if(btn)btn.disabled=true;S.chat.msgs.push({role:'user',content:p,ts:Date.now()});inp.value='';inp.style.height='auto';renderMainOnly();scrollChat();try{var b={prompt:p};var ak=$e('chat-kind');if(ak&&ak.value)b.actionKind=ak.value;var mk=$e('chat-model');if(mk&&mk.value)b.model=mk.value;await aapi('/chat/sessions/'+S.chat.sid,{method:'POST',body:b});await loadMsgs(S.chat.sid);}catch(e){toast(e.message,true);}S.chat.sending=false;var i=$e('chat-ta');if(i)i.disabled=false;var b2=$e('send-btn');if(b2)b2.disabled=false;}
 async function answerQ(qid){var inp=$e('qa-'+qid);if(!inp)return;var a=inp.value.trim();if(!a){toast('Enter an answer',true);return;}try{await aapi('/questions/'+qid,{method:'POST',body:{answer:a}});toast('Answered','');await loadMsgs(S.chat.sid);}catch(e){toast(e.message,true);}}
 
@@ -277,6 +279,7 @@ window.addEventListener('DOMContentLoaded',function(){
   document.addEventListener('focusout',function(e){if(e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT')S.typing=false;});
   window.addEventListener('resize',function(){renderBottomNav();});
   if(!hasSidebar&&!S.agentId)S.agentId='_'; /* LAN: always have an agent context */
+  loadModels();
   refresh(false);
   setInterval(function(){if(!S.typing&&!S.chat.sending)refresh(true);},3000);
 });

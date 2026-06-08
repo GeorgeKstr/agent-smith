@@ -15,7 +15,7 @@ import { revertCheckpoint } from "../checkpoints/gitCheckpoint.js"
 import { startOrganizerServer, type OrganizerServer } from "../organizer/server.js"
 import { startOrganizerHeartbeat } from "../organizer/heartbeat.js"
 import { extractFileDiff, compactDiffPreview } from "../changes/diffPreview.js"
-import { createChatSession, addChatMessage, listChatSessions } from "../chat/chatStore.js"
+import { createChatSession, addChatMessage, listChatSessions, updateChatSessionTitle, getChatSession, listChatMessages } from "../chat/chatStore.js"
 import type { ChangeSet, ChangedFileReview, ChangedHunkReview } from "../types/index.js"
 import { BootScreen } from "./screens/BootScreen.js"
 import { MainScreen } from "./screens/MainScreen.js"
@@ -72,7 +72,7 @@ type PersistedUiState = {
 }
 
 const UI_STATE_REL_PATH = path.join(".agent", "tui-state.json")
-const UI_STATE_VERSION = 3
+const UI_STATE_VERSION = 4
 const MAX_OUTPUT_LINES = 1500
 const MAX_PROMPT_HISTORY = 120
 
@@ -107,10 +107,8 @@ async function loadUiState(root: string): Promise<PersistedUiState | null> {
       version: UI_STATE_VERSION,
       mode: parsed.mode,
       modelOverride: typeof parsed.modelOverride === "string" ? parsed.modelOverride : null,
-      output: Array.isArray(parsed.output) ? parsed.output.filter((v): v is string => typeof v === "string") : [],
-      promptHistory: Array.isArray(parsed.promptHistory)
-        ? parsed.promptHistory.filter((v): v is string => typeof v === "string")
-        : [],
+      output: [],
+      promptHistory: [],
       answeredQuestions: Array.isArray(parsed.answeredQuestions)
         ? parsed.answeredQuestions.filter((v): v is string => typeof v === "string")
         : [],
@@ -124,7 +122,8 @@ async function loadUiState(root: string): Promise<PersistedUiState | null> {
 async function saveUiState(root: string, state: PersistedUiState): Promise<void> {
   const statePath = path.join(root, UI_STATE_REL_PATH)
   await fs.mkdir(path.dirname(statePath), { recursive: true })
-  await fs.writeFile(statePath, `${JSON.stringify(state)}\n`, "utf8")
+  const slim: PersistedUiState = { ...state, output: [], promptHistory: [] }
+  await fs.writeFile(statePath, `${JSON.stringify(slim)}\n`, "utf8")
 }
 
 export function App({ root, config, db, events, indexer }: AppProps) {
@@ -194,7 +193,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   const questionFromCommand = useRef(false)
   const setupRef = useRef<{ providerId: string; providerType: string; step: number } | null>(null)
 
-  const CMD_LIST = ["/help", "/mode", "/model", "/provider", "/setup", "/reindex", "/index", "/organize", "/clear", "/summarize", "/lan", "/api", "/changes", "/change", "/accept", "/reject", "/apply", "/revert", "/undo", "/exit", "/quit", "/animation", "/context"]
+  const CMD_LIST = ["/help", "/mode", "/model", "/provider", "/setup", "/reindex", "/index", "/organize", "/clear", "/summarize", "/lan", "/api", "/changes", "/change", "/accept", "/reject", "/apply", "/revert", "/undo", "/exit", "/quit", "/animation", "/context", "/session"]
   const PROVIDER_SUBS = ["list", "add", "remove", "default", "key"]
   const [autocompleteIndex, setAutocompleteIndex] = useState(0)
 
@@ -223,6 +222,8 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           suggestions = ["stop", "status"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s)
         } else if (cmd === "/organize" && arg) {
           suggestions = ["stop", "status"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s)
+        } else if (cmd === "/session" && arg) {
+          suggestions = ["list", "new", "title"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s)
         }
       } else {
         suggestions = CMD_LIST.filter(c => c.startsWith(trimmed) && c !== trimmed).slice(0, 10)
@@ -587,11 +588,11 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   }, [ready, uiStateLoaded, refreshModels])
 
   // Refresh models when busy transitions to false (after a task completes)
-  // Also sync TUI interactions to a chat session so the organizer dashboard can see them
+  // Also sync TUI interactions to a chat session so the dashboard can see them
   useEffect(() => {
     if (!busy && uiStateLoaded) {
       void refreshModels()
-      // Sync last TUI prompt + answer to chat session for organizer dashboard
+      // Sync last TUI prompt + answer to chat session for dashboard
       void (async () => {
         const last = executions[executions.length - 1]
         if (!last || !answer) return
@@ -600,11 +601,9 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         lastSyncedMsgRef.current = key
         try {
           if (!tuiSessionIdRef.current) {
-            const sessions = listChatSessions(db, { scope: "local" })
-            const existing = sessions.find(s => s.title === "TUI")
-            tuiSessionIdRef.current = existing
-              ? existing.id
-              : createChatSession(db, { title: "TUI", scope: "local" }).id
+            const title = last.prompt.slice(0, 80)
+            const s = createChatSession(db, { title, scope: "local" })
+            tuiSessionIdRef.current = s.id
           }
           addChatMessage(db, {
             sessionId: tuiSessionIdRef.current,
@@ -706,6 +705,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           "  /api [port|status|stop|config]  Start/stop API mode (auto-registers with organizer)",
           "  /organize [port|status|stop]  Start/stop organizer server (registry + dashboard)",
           "  /undo        Undo last prompt result (files + convo)",
+          "  /session     List, switch, or rename chat sessions",
           "  /clear       Clear the output area",
           "  /animation   Toggle terminal animations on/off",
           "  /provider    Manage AI providers (list, add, remove, default, key)",
@@ -1272,6 +1272,71 @@ export function App({ root, config, db, events, indexer }: AppProps) {
       case "/undo": {
         await undoLast()
         return true
+      }
+      case "/session": {
+        const sub = rawParts[1]?.toLowerCase()
+        if (!sub || sub === "list") {
+          const sessions = listChatSessions(db, { scope: "local" })
+          if (sessions.length === 0) {
+            appendOutput("No saved sessions.")
+            return true
+          }
+          const lines: string[] = ["— SESSIONS —"]
+          for (const s of sessions) {
+            const msgs = listChatMessages(db, s.id)
+            const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null
+            const preview = lastMsg ? lastMsg.content.slice(0, 60).replace(/\n/g, " ") : ""
+            const marker = tuiSessionIdRef.current === s.id ? " *" : "  "
+            lines.push(`${marker}${s.id.slice(0, 12)}  ${s.title}  (${msgs.length} msgs)${preview ? "  " + preview : ""}`)
+          }
+          lines.push("", "  /session <id>   switch to a session", "  /session new    start a new session", "  /session title <title>  rename current session")
+          appendOutput(lines)
+          return true
+        }
+        if (sub === "new") {
+          tuiSessionIdRef.current = null
+          lastSyncedMsgRef.current = ""
+          appendOutput("✓ Starting new session. Next prompt creates a fresh chat.")
+          return true
+        }
+        if (sub === "title" && rawParts[2]) {
+          const title = rawParts.slice(2).join(" ")
+          if (tuiSessionIdRef.current) {
+            updateChatSessionTitle(db, tuiSessionIdRef.current, title)
+            appendOutput(`✓ Session renamed to: ${title}`)
+          } else {
+            appendOutput("No active session to rename.")
+          }
+          return true
+        }
+        {
+          const idPrefix = rawParts[1]
+          if (!idPrefix) return true
+          const sessions = listChatSessions(db, { scope: "local" })
+          const found = sessions.find(s => s.id.startsWith(idPrefix))
+          if (!found) {
+            appendOutput(`Session not found: ${idPrefix}`)
+            return true
+          }
+          tuiSessionIdRef.current = found.id
+          lastSyncedMsgRef.current = ""
+          const msgs = listChatMessages(db, found.id)
+          setOutput([])
+          setAnswer("")
+          setPatchText("")
+          setPacket(null)
+          setIntent(null)
+          setExecutions([])
+          setAssistantMetrics([])
+          const lines: string[] = [`⌘ Loaded session: ${found.title} (${msgs.length} messages)`]
+          for (const m of msgs) {
+            const prefix = m.role === "user" ? `▶ ${mode}: ` : m.role === "assistant" ? "AI: " : `⌘ `
+            lines.push(...toChatLines(prefix, m.content))
+          }
+          setOutput(() => limitLines(lines, MAX_OUTPUT_LINES))
+          appendOutput(`✓ Switched to session: ${found.title}`)
+          return true
+        }
       }
       case "/exit":
       case "/quit": {
