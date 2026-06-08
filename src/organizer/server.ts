@@ -502,6 +502,12 @@ export async function startOrganizerServer(args: {
             return;
           }
         }
+        if (parts.length === 4 && parts[3] === "models" && method === "GET") {
+          const agentClient = createWorkerApiClient({ baseUrl: agent.api_base_url, token: token });
+          const r = await agentClient.listModels?.();
+          sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, models: r.models } : { ok: false, error: r?.error ?? "Agent API unreachable" });
+          return;
+        }
         if (parts.length === 5 && parts[3] === "questions") {
           const questionId = parts[4];
           if (method === "POST") {

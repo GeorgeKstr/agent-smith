@@ -7,7 +7,7 @@ export const clientJs = `(function(){
 var S={
   agents:[],tasks:[],projects:[],status:null,
   agentId:null,tab:'tasks',
-  chat:{sessions:[],sid:null,msgs:[],qtns:[],sending:false},
+  chat:{sessions:[],sid:null,msgs:[],qtns:[],sending:false,allModels:[]},
   exp:{},          // {taskId: bool} — expanded cards
   tl:{},           // {taskId: timeline|null} — cached timelines
   tlQ:{},          // {taskId: bool} — in-flight loads
@@ -59,12 +59,22 @@ function md(raw){
 
 function modelOptions(a){
   var o='<option value="">Agent default</option>';
-  if(!a||!a.models)return o;
+  // Agent's configured per-role models first
   var seen={};
-  for(var k in a.models){
+  if(a&&a.models)for(var k in a.models){
     var m=a.models[k];if(!m||seen[m])continue;
     seen[m]=1;
-    o+='<option value="'+esc(m)+'">'+esc(k)+': '+esc(m.length>32?m.slice(0,30)+'\\u2026':m)+'</option>';
+    o+='<option value="'+esc(m)+'">'+esc(k)+': '+esc(m)+'</option>';
+  }
+  // Then all available provider models (deduplicated)
+  var all=S.chat.allModels||[];
+  if(all.length){
+    o+='<optgroup label="All provider models">';
+    all.forEach(function(m){
+      if(seen[m])return;seen[m]=1;
+      o+='<option value="'+esc(m)+'">'+esc(m)+'</option>';
+    });
+    o+='</optgroup>';
   }
   return o;
 }
@@ -132,6 +142,12 @@ async function loadMessages(sid){
     S.chat.msgs=r.messages||[];S.chat.qtns=r.openQuestions||[];
   }catch(e){S.chat.msgs=[];S.chat.qtns=[];}
   renderMainOnly();scrollChat();
+}
+
+async function loadModelList(aid){
+  try{var r=await api('/api/agents/'+aid+'/models');S.chat.allModels=r.models||[];}
+  catch(e){S.chat.allModels=[];}
+  renderMainOnly();
 }
 
 function scrollChat(){
@@ -618,7 +634,7 @@ async function answerQ(qid){
 ═══════════════════════════════════════════ */
 function selectAgent(id){
   S.agentId=id;S.tab='tasks';
-  S.chat={sessions:[],sid:null,msgs:[],qtns:[],sending:false};
+  S.chat={sessions:[],sid:null,msgs:[],qtns:[],sending:false,allModels:[]};
   S.filter={q:'',status:''};S.exp={};S.ingestOpen=false;S.newOpen=false;
   var layout=$e('layout');if(layout)layout.classList.toggle('main-view',window.innerWidth<768);
   render();
@@ -629,8 +645,11 @@ function backToAgents(){
 }
 function setTab(t){
   S.tab=t;
-  if(t==='chat'&&S.agentId&&!S.chat.sessions.length){renderMainOnly();loadChatSessions(S.agentId);}
-  else renderMainOnly();
+  if(t==='chat'&&S.agentId){
+    if(!S.chat.sessions.length)loadChatSessions(S.agentId);
+    if(!S.chat.allModels.length)loadModelList(S.agentId);
+    setTimeout(function(){renderMainOnly();scrollChat();},10);
+  }else{renderMainOnly();}
   renderBottomNav();
 }
 function toggleExpand(id){
@@ -663,6 +682,7 @@ window.doDispatch=doDispatch;window.doApprove=doApprove;window.doRestart=doResta
 window.doDispatchNext=doDispatchNext;window.savePolicy=savePolicy;window.createTask=createTask;
 window.previewIngest=previewIngest;window.runIngest=runIngest;window.clearIngest=clearIngest;
 window.pickSession=pickSession;window.newSession=newSession;window.sendMsg=sendMsg;window.answerQ=answerQ;
+window.loadModelList=loadModelList;
 window.ask=ask;window.yesConfirm=yesConfirm;window.noConfirm=noConfirm;
 window.doRefresh=doRefresh;window.render=render;window.refresh=refresh;
 window.refreshTasks=refreshTasks;window.renderTasksPanelOnly=renderTasksPanelOnly;window.renderMainOnly=renderMainOnly;

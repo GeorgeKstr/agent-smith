@@ -13,6 +13,7 @@ import { revertCheckpoint } from "../checkpoints/gitCheckpoint.js";
 import { startOrganizerServer } from "../organizer/server.js";
 import { startOrganizerHeartbeat } from "../organizer/heartbeat.js";
 import { extractFileDiff, compactDiffPreview } from "../changes/diffPreview.js";
+import { createChatSession, addChatMessage, listChatSessions } from "../chat/chatStore.js";
 import { BootScreen } from "./screens/BootScreen.js";
 import { MainScreen } from "./screens/MainScreen.js";
 import { IndexDashboard } from "./screens/IndexDashboard.js";
@@ -136,6 +137,8 @@ export function App({ root, config, db, events, indexer }) {
     const escTimerRef = useRef(null);
     const seenWebChatRef = useRef(new Set());
     const webTaskActiveRef = useRef(false);
+    const tuiSessionIdRef = useRef(null);
+    const lastSyncedMsgRef = useRef("");
     const [animationEnabled, setAnimationEnabled] = useState(config.theme.animations);
     const [setupAwaitingInput, setSetupAwaitingInput] = useState(null);
     const [activeQuestion, setActiveQuestion] = useState(null);
@@ -528,9 +531,46 @@ export function App({ root, config, db, events, indexer }) {
         }
     }, [ready, uiStateLoaded, refreshModels]);
     // Refresh models when busy transitions to false (after a task completes)
+    // Also sync TUI interactions to a chat session so the organizer dashboard can see them
     useEffect(() => {
         if (!busy && uiStateLoaded) {
             void refreshModels();
+            // Sync last TUI prompt + answer to chat session for organizer dashboard
+            void (async () => {
+                const last = executions[executions.length - 1];
+                if (!last || !answer)
+                    return;
+                const key = last.prompt + "|" + answer.slice(0, 120);
+                if (key === lastSyncedMsgRef.current)
+                    return;
+                lastSyncedMsgRef.current = key;
+                try {
+                    if (!tuiSessionIdRef.current) {
+                        const sessions = listChatSessions(db, { scope: "local" });
+                        const existing = sessions.find(s => s.title === "TUI");
+                        tuiSessionIdRef.current = existing
+                            ? existing.id
+                            : createChatSession(db, { title: "TUI", scope: "local" }).id;
+                    }
+                    addChatMessage(db, {
+                        sessionId: tuiSessionIdRef.current,
+                        role: "user",
+                        content: last.prompt,
+                        status: "complete",
+                        model: modelOverride ?? undefined,
+                        actionKind: mode === "discuss" ? "ask" : "patch"
+                    });
+                    addChatMessage(db, {
+                        sessionId: tuiSessionIdRef.current,
+                        role: "assistant",
+                        content: answer,
+                        status: "complete",
+                        model: modelOverride ?? undefined,
+                        actionKind: mode === "discuss" ? "ask" : "patch"
+                    });
+                }
+                catch { /* chat store writes are best-effort */ }
+            })();
         }
     }, [busy]);
     const undoLast = useCallback(async () => {

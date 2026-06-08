@@ -4,6 +4,7 @@ import type { SmithRuntimeDeps, RuntimeStatus } from "../runtime/smithRuntime.js
 import type { RuntimeAction, RuntimeTaskResult, WorkItemStatus } from "../types/index.js";
 import { createWorkItem, listWorkItems, getWorkItem, updateWorkItemStatus, deleteWorkItem } from "../tasks/taskStore.js";
 import { sendChatMessage, getSessionWithMessages } from "../chat/chatRuntime.js";
+import { listProviderModels } from "../providers/providers.js";
 import { createChatSession, listChatSessions, getChatSession, listChatMessages, addChatMessage } from "../chat/chatStore.js";
 import { getOpenQuestions, answerUserQuestion, cancelUserQuestion } from "../chat/chatStore.js";
 import { createTaskPlanStep, listTaskPlanSteps, replaceTaskPlan, updateTaskPlanStepStatus, updateTaskPlanStepNotes, updateTaskPlanStepTitle, reorderTaskPlanStep, deleteTaskPlanStep } from "../tasks/taskPlanStore.js";
@@ -462,6 +463,13 @@ export async function startApiServer(args: {
         const hunk = updateChangedHunkStatus(db, parts[2], body.status as "pending" | "accepted" | "rejected");
         if (!hunk) { sendJson(res, 404, { ok: false, error: "Hunk not found" }); return; }
         sendJson(res, 200, { ok: true, hunk });
+        return;
+      }
+
+      // GET /api/models — returns all available models from all providers
+      if (url === "/api/models" && method === "GET") {
+        const models = await listProviderModels(deps.config);
+        sendJson(res, 200, { ok: true, models });
         return;
       }
 

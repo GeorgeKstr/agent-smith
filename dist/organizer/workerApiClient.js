@@ -106,6 +106,10 @@ export function createWorkerApiClient(args) {
             const r = await get(`/api/questions/open`);
             return r.ok ? { ok: true, questions: r.data?.questions } : r;
         },
+        listModels: async () => {
+            const r = await get(`/api/models`);
+            return r.ok ? { ok: true, models: r.data?.models } : r;
+        },
         answerQuestion: async (questionId, answer) => {
             const r = await post(`/api/questions/${questionId}/answer`, { answer });
             return r.ok ? { ok: true, question: r.data?.question } : r;

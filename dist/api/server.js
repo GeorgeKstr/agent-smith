@@ -2,6 +2,7 @@ import http from "node:http";
 import { createSmithRuntime } from "../runtime/smithRuntime.js";
 import { createWorkItem, listWorkItems, getWorkItem, updateWorkItemStatus, deleteWorkItem } from "../tasks/taskStore.js";
 import { sendChatMessage, getSessionWithMessages } from "../chat/chatRuntime.js";
+import { listProviderModels } from "../providers/providers.js";
 import { createChatSession, listChatSessions } from "../chat/chatStore.js";
 import { getOpenQuestions, answerUserQuestion, cancelUserQuestion } from "../chat/chatStore.js";
 import { createTaskPlanStep, listTaskPlanSteps, replaceTaskPlan, updateTaskPlanStepStatus, updateTaskPlanStepNotes, updateTaskPlanStepTitle, reorderTaskPlanStep, deleteTaskPlanStep } from "../tasks/taskPlanStore.js";
@@ -483,6 +484,12 @@ export async function startApiServer(args) {
                     return;
                 }
                 sendJson(res, 200, { ok: true, hunk });
+                return;
+            }
+            // GET /api/models — returns all available models from all providers
+            if (url === "/api/models" && method === "GET") {
+                const models = await listProviderModels(deps.config);
+                sendJson(res, 200, { ok: true, models });
                 return;
             }
             notFound(res);

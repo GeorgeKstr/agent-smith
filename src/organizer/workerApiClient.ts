@@ -21,6 +21,7 @@ export type WorkerApiClient = {
   createChatSession?(input: { title?: string; scope?: string }): Promise<{ ok: boolean; session?: unknown; error?: string }>;
   getChatSession?(sessionId: string): Promise<{ ok: boolean; session?: unknown; messages?: unknown[]; openQuestions?: unknown[]; error?: string }>;
   sendChatMessage?(sessionId: string, input: { prompt: string; actionKind?: string; model?: string }): Promise<{ ok: boolean; session?: unknown; messages?: unknown[]; error?: string }>;
+  listModels?(): Promise<{ ok: boolean; models?: string[]; error?: string }>;
   getOpenQuestions?(): Promise<{ ok: boolean; questions?: unknown[]; error?: string }>;
   answerQuestion?(questionId: string, answer: unknown): Promise<{ ok: boolean; question?: unknown; error?: string }>;
 };
@@ -130,6 +131,10 @@ export function createWorkerApiClient(args: {
     getOpenQuestions: async () => {
       const r = await get(`/api/questions/open`);
       return r.ok ? { ok: true, questions: (r.data as { questions?: unknown[] })?.questions } : r;
+    },
+    listModels: async () => {
+      const r = await get(`/api/models`);
+      return r.ok ? { ok: true, models: (r.data as { models?: string[] })?.models } : r;
     },
     answerQuestion: async (questionId, answer) => {
       const r = await post(`/api/questions/${questionId}/answer`, { answer });
