@@ -683,18 +683,20 @@ export function App({ root, config, db, events, indexer }) {
                         }
                         byProv[prov].push(name);
                     }
-                    const lines = [`Available models (${models.length}, current: ${current})`];
+                    const options = [];
                     for (const prov of order) {
-                        const list = byProv[prov];
-                        lines.push(`  ${prov} (${list.length})`);
-                        for (const name of list) {
-                            const full = prov + ":" + name;
-                            const mark = full === current ? "→ " : "  ";
-                            lines.push(`${mark}  ${name}`);
+                        options.push(prov + " (" + byProv[prov].length + ")");
+                        for (const name of byProv[prov]) {
+                            options.push(prov + ":" + name);
                         }
                     }
-                    lines.push("", "  /model <name> to set · /model reset to clear");
-                    appendOutput(lines);
+                    questionFromCommand.current = true;
+                    setActiveQuestion({
+                        question: `Models (${models.length}, current: ${current})`,
+                        options,
+                        selectedIndex: 0,
+                        command: "/model-pick",
+                    });
                     return true;
                 }
                 if (argLower === "reset" || argLower === "default" || argLower === "auto") {
@@ -712,6 +714,14 @@ export function App({ root, config, db, events, indexer }) {
                     appendOutput(`Model not found: ${arg}`);
                     return true;
                 }
+                setModelOverride(selected);
+                appendOutput(`✓ Model set to ${selected}`);
+                return true;
+            }
+            case "/model-pick": {
+                const selected = rawParts.slice(1).join(" ").trim();
+                if (!selected || !selected.includes(":"))
+                    return true;
                 setModelOverride(selected);
                 appendOutput(`✓ Model set to ${selected}`);
                 return true;

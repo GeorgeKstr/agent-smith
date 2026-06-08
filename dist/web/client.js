@@ -73,7 +73,7 @@ async function refresh(silent){
 async function loadTimeline(id){if(S.tlQ[id])return;S.tlQ[id]=true;try{S.tl[id]=(await aapi('/tasks/'+id+'/timeline').catch(function(){return null;})).timeline;}catch(e){S.tl[id]=null;}delete S.tlQ[id];renderTasksOnly();}
 async function loadSessions(){try{S.chat.sessions=(await aapi('/chat/sessions').catch(function(){return{sessions:[]};})).sessions||[];}catch(e){S.chat.sessions=[];}if(!S.chat.sid&&S.chat.sessions.length===0){try{var r=await aapi('/chat/sessions',{method:'POST',body:{}});if(r.session){S.chat.sessions=[r.session];S.chat.sid=r.session.id;await loadMsgs(r.session.id);if(!S.chat.allModels.length)await loadModels();}}catch(e){}}else if(!S.chat.sid&&S.chat.sessions.length===1){S.chat.sid=S.chat.sessions[0].id;await loadMsgs(S.chat.sessions[0].id);}else renderMainOnly();}
 async function loadMsgs(sid){if(!sid)return;try{var r=await aapi('/chat/sessions/'+sid);S.chat.msgs=r.messages||[];S.chat.qtns=r.openQuestions||[];}catch(e){S.chat.msgs=[];S.chat.qtns=[];}renderMainOnly();scrollChat();}
-async function loadModels(){try{S.chat.allModels=(await aapi('/models').catch(function(){return{models:[]};})).models||[];}catch(e){S.chat.allModels=[];}}
+async function loadModels(){try{S.chat.allModels=(await aapi('/models').catch(function(){return{models:[]};})).models||[];}catch(e){S.chat.allModels=[];}if(S.tab==='chat')renderMainOnly();}
 async function loadDashboard(){try{S.dashData=await aapi('/dashboard').catch(function(){return null;});}catch(e){S.dashData=null;}renderMainOnly();}
 async function loadFileTree(){try{S._fileTree=(await aapi('/filetree').catch(function(){return{files:[]};})).files||[];}catch(e){S._fileTree=[];}if(S.tab==='files')renderFileTree();}
 
