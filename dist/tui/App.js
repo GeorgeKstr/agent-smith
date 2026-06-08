@@ -18,6 +18,7 @@ import { MainScreen } from "./screens/MainScreen.js";
 import { IndexDashboard } from "./screens/IndexDashboard.js";
 import { ContextPreview } from "./screens/ContextPreview.js";
 import { ChangesScreen } from "./screens/ChangesScreen.js";
+import { OrganizerScreen } from "./screens/OrganizerScreen.js";
 const initialBoot = {
     phase: "idle",
     progress: 0,
@@ -1066,6 +1067,7 @@ export function App({ root, config, db, events, indexer }) {
                     if (dashboardRef.current) {
                         dashboardRef.current.stop();
                         dashboardRef.current = null;
+                        setView("main");
                         appendOutput("Organizer stopped.");
                     }
                     else {
@@ -1083,18 +1085,19 @@ export function App({ root, config, db, events, indexer }) {
                     return true;
                 }
                 if (dashboardRef.current) {
-                    appendOutput(`Organizer already running at http://127.0.0.1:${dashboardRef.current.port}/dashboard`);
+                    setView("organizer");
                     return true;
                 }
                 try {
                     const dashPort = arg && /^\d+$/.test(arg) ? Number(arg) : 8787;
                     const server = await startOrganizerServer({
                         port: dashPort,
+                        host: "0.0.0.0",
                         onLog: (msg) => appendOutput(msg)
                     });
                     dashboardRef.current = { port: dashPort, stop: () => server.stop() };
-                    appendOutput(`Organizer listening at ${server.url}`);
-                    appendOutput(`Dashboard: http://127.0.0.1:${dashPort}/dashboard`);
+                    appendOutput(`Organizer listening on port ${dashPort}`);
+                    setView("organizer");
                 }
                 catch (err) {
                     appendOutput(`✗ Failed to start organizer: ${err instanceof Error ? err.message : String(err)}`);
@@ -1659,6 +1662,9 @@ export function App({ root, config, db, events, indexer }) {
                     appendOutput(`Rejected all hunks in ${selFilePath}`);
                 }
             } }));
+    }
+    if (view === "organizer") {
+        return (_jsx(OrganizerScreen, { onBack: () => setView("main") }));
     }
     return (_jsx(MainScreen, { root: root, model: modelOverride
             ? resolveModelLocal(modelOverride, availableModels)

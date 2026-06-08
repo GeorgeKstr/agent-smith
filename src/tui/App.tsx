@@ -21,7 +21,7 @@ import { MainScreen } from "./screens/MainScreen.js"
 import { IndexDashboard } from "./screens/IndexDashboard.js"
 import { ContextPreview } from "./screens/ContextPreview.js"
 import { ChangesScreen } from "./screens/ChangesScreen.js"
-
+import { OrganizerScreen } from "./screens/OrganizerScreen.js"
 const initialBoot: BootState = {
   phase: "idle",
   progress: 0,
@@ -153,7 +153,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   const [promptHistoryIndex, setPromptHistoryIndex] = useState<number | null>(null)
   const [executions, setExecutions] = useState<ExecutionRecord[]>([])
   const [uiStateLoaded, setUiStateLoaded] = useState(false)
-  const [view, setView] = useState<"main" | "index" | "context" | "changes">("main")
+  const [view, setView] = useState<"main" | "index" | "context" | "changes" | "organizer">("main")
   const [selChangeId, setSelChangeId] = useState<string | null>(null)
   const [selChangeSet, setSelChangeSet] = useState<ChangeSet | null>(null)
   const [selChangedFiles, setSelChangedFiles] = useState<ChangedFileReview[]>([])
@@ -1090,6 +1090,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           if (dashboardRef.current) {
             dashboardRef.current.stop()
             dashboardRef.current = null
+            setView("main")
             appendOutput("Organizer stopped.")
           } else {
             appendOutput("Organizer is not running.")
@@ -1105,18 +1106,19 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           return true
         }
         if (dashboardRef.current) {
-          appendOutput(`Organizer already running at http://127.0.0.1:${dashboardRef.current.port}/dashboard`)
+          setView("organizer")
           return true
         }
         try {
           const dashPort = arg && /^\d+$/.test(arg) ? Number(arg) : 8787
           const server = await startOrganizerServer({
             port: dashPort,
+            host: "0.0.0.0",
             onLog: (msg) => appendOutput(msg)
           })
           dashboardRef.current = { port: dashPort, stop: () => server.stop() }
-          appendOutput(`Organizer listening at ${server.url}`)
-          appendOutput(`Dashboard: http://127.0.0.1:${dashPort}/dashboard`)
+          appendOutput(`Organizer listening on port ${dashPort}`)
+          setView("organizer")
         } catch (err) {
           appendOutput(`✗ Failed to start organizer: ${err instanceof Error ? err.message : String(err)}`)
         }
@@ -1667,6 +1669,14 @@ export function App({ root, config, db, events, indexer }: AppProps) {
             appendOutput(`Rejected all hunks in ${selFilePath}`)
           }
         }}
+      />
+    )
+  }
+
+  if (view === "organizer") {
+    return (
+      <OrganizerScreen
+        onBack={() => setView("main")}
       />
     )
   }
