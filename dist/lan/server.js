@@ -7,6 +7,8 @@ import { listProviderModels, resolveProviderModelName } from "../providers/provi
 import { html } from "../web/html.js";
 import { styles } from "../web/styles.js";
 import { clientJs } from "../web/client.js";
+import { sendChatMessage, getSessionWithMessages } from "../chat/chatRuntime.js";
+import { createChatSession, listChatSessions, getOpenQuestions, answerUserQuestion } from "../chat/chatStore.js";
 function parseOutputToChat(lines) {
     const chat = [];
     for (const line of lines) {
@@ -554,8 +556,103 @@ export function startLanServer(args) {
             res.end(clientJs);
             return;
         }
+        // Chat session API (same as the API server so dashboards can use these paths universally)
+        if (pathname === "/api/chat/sessions" && req.method === "GET") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true, sessions: listChatSessions(db) }));
+            return;
+        }
+        if (pathname === "/api/chat/sessions" && req.method === "POST") {
+            let bdy = "";
+            req.on("data", (c) => { bdy += c; });
+            req.on("end", () => {
+                try {
+                    const b = JSON.parse(bdy);
+                    const s = createChatSession(db, { title: typeof b?.title === "string" ? b.title : undefined, scope: typeof b?.scope === "string" ? b.scope : undefined, taskId: typeof b?.taskId === "string" ? b.taskId : undefined });
+                    res.writeHead(200, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ ok: true, session: s }));
+                }
+                catch (e) {
+                    res.writeHead(500, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ ok: false, error: String(e) }));
+                }
+            });
+            return;
+        }
+        // Match /api/chat/sessions/:id
+        {
+            const m = pathname.match(/^\/api\/chat\/sessions\/([^/]+)$/);
+            if (m && req.method === "GET") {
+                void (async () => {
+                    const data = await getSessionWithMessages(db, m[1]);
+                    if (!data) {
+                        res.writeHead(404, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({ ok: false, error: "Not found" }));
+                        return;
+                    }
+                    res.writeHead(200, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ ok: true, session: data.session, messages: data.messages, openQuestions: data.openQuestions }));
+                })();
+                return;
+            }
+            if (m && req.method === "POST") {
+                let bdy = "";
+                req.on("data", (c) => { bdy += c; });
+                req.on("end", async () => {
+                    try {
+                        const b = JSON.parse(bdy);
+                        const result = await sendChatMessage({ root, config, db, events, indexer, sessionId: m[1], prompt: b?.prompt || "", actionKind: typeof b?.actionKind === "string" ? b.actionKind : undefined, model: typeof b?.model === "string" ? b.model : undefined });
+                        res.writeHead(200, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({ ok: result.ok, session: result.session, userMessage: result.userMessage, assistantMessage: result.assistantMessage, result: result.result }));
+                    }
+                    catch (e) {
+                        res.writeHead(500, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({ ok: false, error: String(e) }));
+                    }
+                });
+                return;
+            }
+        }
+        // GET /api/questions/open
+        if (pathname === "/api/questions/open" && req.method === "GET") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true, questions: getOpenQuestions(db) }));
+            return;
+        }
+        // POST /api/questions/:id/answer
+        {
+            const m = pathname.match(/^\/api\/questions\/([^/]+)\/answer$/);
+            if (m && req.method === "POST") {
+                let bdy = "";
+                req.on("data", (c) => { bdy += c; });
+                req.on("end", () => {
+                    try {
+                        const b = JSON.parse(bdy);
+                        const q = answerUserQuestion(db, m[1], b?.answer);
+                        res.writeHead(200, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({ ok: !!q, question: q }));
+                    }
+                    catch (e) {
+                        res.writeHead(500, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({ ok: false, error: String(e) }));
+                    }
+                });
+                return;
+            }
+        }
+        // GET /api/dashboard
+        if (pathname === "/api/dashboard" && req.method === "GET") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(dashboardData()));
+            return;
+        }
+        // Default: serve the SPA shell
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(html.replace("_STYLE_", "/style.css").replace("_SCRIPT_", "/script.js"));
+        res.end(html
+            .replace("_STYLE__URL_", "/style.css")
+            .replace("_SCRIPT__URL_", "/script.js")
+            .replace("_API_BASE_", "/api")
+            .replace("_HAS_SIDEBAR_", "false"));
     });
     server.listen(port, () => {
         lanState.uptime = Date.now();

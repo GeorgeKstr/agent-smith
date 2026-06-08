@@ -91,7 +91,11 @@ export async function startOrganizerServer(args) {
             }
             if (url === "/dashboard" || url === "/dashboard/") {
                 res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-                res.end(html.replace("_STYLE_", "/dashboard/styles.css").replace("_SCRIPT_", "/dashboard/client.js"));
+                res.end(html
+                    .replace("_STYLE__URL_", "/dashboard/styles.css")
+                    .replace("_SCRIPT__URL_", "/dashboard/client.js")
+                    .replace("_API_BASE_", "/api/agents/__NONE__")
+                    .replace("_HAS_SIDEBAR_", "true"));
                 return;
             }
             if (url === "/dashboard/styles.css") {

@@ -5,9 +5,9 @@ export const html = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0d1117">
 <title>Agent Smith</title>
-<link rel="stylesheet" href="_STYLE_">
+<link rel="stylesheet" href="_STYLE__URL_">
 </head>
-<body>
+<body data-api-base="_API_BASE_" data-has-sidebar="_HAS_SIDEBAR_">
 <div id="app">
   <header id="topbar"></header>
   <div id="layout">
@@ -18,6 +18,6 @@ export const html = `<!DOCTYPE html>
 </div>
 <div id="modal-root"></div>
 <div id="toast" role="status" aria-live="polite"></div>
-<script src="_SCRIPT_"></script>
+<script src="_SCRIPT__URL_"></script>
 </body>
 </html>`
