@@ -3,7 +3,7 @@ var $=function(id){return document.getElementById(id);};
 var S={
   view:'overview',loading:false,error:null,
   status:null,agents:[],projects:[],buckets:[],tasks:[],
-  selAgent:null,selTask:null,timeline:null,
+  selAgent:null,selAgentView:'info',selTask:null,timeline:null,
   chats:{selAgent:null,sessions:[],selSession:null,messages:[]},
   importPreview:null,tplPreview:null,tplFilename:null,confirmCb:null
 };
@@ -88,11 +88,9 @@ function render(){
 
   if(S.view==='tasks'&&S.selTask){dt.style.display='block';renderTaskDetail(dt);}
   if(S.view==='agents'&&S.selAgent){
-    if(S.chats.selAgent&&S.chats.selAgent===S.selAgent){
-      dt.style.display='block';renderChatDetail(dt);
-    }else{
-      renderAgentDetail(dt);
-    }
+    if(S.selAgentView==='chat'){dt.style.display='block';renderChatDetail(dt);}
+    else if(S.selAgentView==='tasks'){dt.style.display='block';renderAgentTasksDetail(dt);}
+    else{renderAgentDetail(dt);}
   }
 }
 
@@ -149,8 +147,8 @@ function renderAgents(el){
     var selCls=S.selAgent===a.id?' selected':'';
     h+='<div class="card'+selCls+'" onclick="selectAgent(\\''+a.id+'\\')">'+
       '<div class=btns style="margin-bottom:4px">'+
-        '<button class="btn btn-sm btn-accent" style="min-height:28px;font-size:9px" onclick="event.stopPropagation();selectAgent(\\''+a.id+'\\');openAgentTasks(\\''+a.id+'\\')">Tasks</button>'+
-        '<button class="btn btn-sm" style="min-height:28px;font-size:9px" onclick="event.stopPropagation();selectAgent(\\''+a.id+'\\');openAgentChat(\\''+a.id+'\\')">Chat</button>'+
+        '<button class="btn btn-sm btn-accent" style="min-height:28px;font-size:9px" onclick="event.stopPropagation();openAgentTasks(\\''+a.id+'\\')">Tasks</button>'+
+        '<button class="btn btn-sm" style="min-height:28px;font-size:9px" onclick="event.stopPropagation();openAgentChat(\\''+a.id+'\\')">Chat</button>'+
       '</div>'+
       '<div class=c-title><span class="dot '+dotC(a.status)+'"></span> '+esc(a.name||short(a.id))+'</div>'+
       '<div class=c-meta>'+esc(a.status)+' · '+esc(a.project_name||a.hostname||'')+'</div>'+
@@ -160,12 +158,12 @@ function renderAgents(el){
   el.innerHTML=h;
 }
 
-function selectAgent(id){S.selAgent=id;S.chats={selAgent:null,sessions:[],selSession:null,messages:[]};render();}
+function selectAgent(id){S.selAgent=id;S.selAgentView='info';S.chats={selAgent:null,sessions:[],selSession:null,messages:[]};render();}
 
-function openAgentTasks(aid){S.selAgent=aid;S.chats={selAgent:null,sessions:[],selSession:null,messages:[]};render();}
+function openAgentTasks(aid){S.selAgent=aid;S.selAgentView='tasks';S.chats={selAgent:null,sessions:[],selSession:null,messages:[]};render();}
 
 function openAgentChat(aid){
-  S.selAgent=aid;S.chats.selAgent=aid;S.chats.sessions=[];S.chats.selSession=null;S.chats.messages=[];
+  S.selAgent=aid;S.selAgentView='chat';S.chats.selAgent=aid;S.chats.sessions=[];S.chats.selSession=null;S.chats.messages=[];
   render();loadChatSessions(aid);
 }
 
@@ -176,7 +174,12 @@ function renderAgentDetail(el){
   var models=[];if(a.models)for(var k in a.models)if(a.models[k])models.push(k+': '+a.models[k]);
   var caps=Array.isArray(a.capabilities)?a.capabilities.join(', '):'';
   var ix=a.index||{};
-  var h='<div class=panel><div class=panel-title>'+esc(a.name||short(a.id))+'</div>'+
+  var h='<div class=btns style=margin-bottom:8px>'+
+    '<button class="btn btn-sm'+(S.selAgentView==='info'?' btn-accent':'')+'" onclick="S.selAgentView=\\'info\\';render()">Info</button>'+
+    '<button class="btn btn-sm'+(S.selAgentView==='tasks'?' btn-accent':'')+'" onclick="openAgentTasks(\\''+a.id+'\\')">Tasks</button>'+
+    '<button class="btn btn-sm'+(S.selAgentView==='chat'?' btn-accent':'')+'" onclick="openAgentChat(\\''+a.id+'\\')">Chat</button>'+
+  '</div>'+
+  '<div class=panel><div class=panel-title>'+esc(a.name||short(a.id))+'</div>'+
     '<div class=dl-row>'+st(a.status)+'</div>'+
     '<div class=dl-row><span class=dl-label>Project</span><span class=dl-value>'+esc(a.project_name)+'</span></div>'+
     '<div class=dl-row><span class=dl-label>Host</span><span class=dl-value>'+esc(a.hostname)+'</span></div>'+
@@ -187,6 +190,91 @@ function renderAgentDetail(el){
   if(ix&&ix.files)h+='<div class=dl-row><span class=dl-label>Index</span><span class=dl-value>'+ix.files+' files, '+ix.symbols+' symbols, '+(Math.round((ix.freshness||1)*100))+'% fresh</span></div>';
   h+='</div>';
   el.innerHTML=h;
+}
+
+/* ── Agent Tasks Detail ── */
+function renderAgentTasksDetail(el){
+  if(!S.selAgent){el.innerHTML='<div class=empty>Select an agent</div>';return;}
+  var a=S.agents.find(function(x){return x.id===S.selAgent;});
+  if(!a){el.innerHTML='<div class=empty>Agent not found</div>';return;}
+
+  var agentTasks=S.tasks.filter(function(t){return t.assignedAgentId===S.selAgent;});
+
+  /* Tab bar */
+  var h='<div class=btns style=margin-bottom:8px>'+
+    '<button class="btn btn-sm" onclick="S.selAgentView=\\'info\\';render()">Info</button>'+
+    '<button class="btn btn-sm btn-accent" onclick="openAgentTasks(\\''+a.id+'\\')">Tasks</button>'+
+    '<button class="btn btn-sm" onclick="openAgentChat(\\''+a.id+'\\')">Chat</button>'+
+  '</div>';
+
+  h+='<div class=panel><div class=panel-title>Tasks for '+esc(a.name||short(a.id))+' ('+agentTasks.length+')</div>';
+
+  /* Quick action: create from JSON */
+  h+='<div class=btns>'+
+    '<button class="btn btn-accent btn-sm" onclick="var f=$i(\\'jform-'+S.selAgent+'\\');f.style.display=f.style.display===\\'none\\'?\\'block\\':\\'none\\'">+ New (JSON)</button>'+
+    '<button class="btn btn-sm" onclick="dispatchNextForAgent(\\''+S.selAgent+'\\')">▶ Dispatch Next</button>'+
+  '</div>';
+
+  /* JSON create form */
+  h+='<div id=jform-'+S.selAgent+' style=display:none class=form>'+
+    '<label>Task JSON <textarea id=json-tasks-'+S.selAgent+' rows=6 placeholder=\\'[{"title":"...","prompt":"...","mode":"patch","maxIterations":3,"autoApprove":false}]\\'></textarea></label>'+
+    '<button class="btn btn-accent btn-sm" onclick="createTasksFromJSON(\\''+S.selAgent+'\\')">Create Tasks</button>'+
+    '<button class="btn btn-sm" onclick="$i(\\'jform-'+S.selAgent+'\\').style.display=\\'none\\'">Cancel</button>'+
+  '</div>';
+
+  if(!agentTasks.length){
+    h+='<div class=empty>No tasks assigned to this agent.<br>Create one with the + New button above.</div>';
+  }else{
+    var groups={};
+    agentTasks.forEach(function(t){groups[t.status]=groups[t.status]||[];groups[t.status].push(t);});
+    var order=['running','iterating','reviewing','needs_review','auto_approved','assigned','queued','completed','failed','skipped','cancelled'];
+    order.forEach(function(grp){
+      var arr=groups[grp];if(!arr||!arr.length)return;
+      h+='<div class=gh>'+grp.replace(/_/g,' ')+' ('+arr.length+')</div>';
+      arr.forEach(function(t){
+        h+='<div class=card onclick="openTask(\\''+t.id+'\\')">'+
+          '<div class=c-title>'+esc(t.title)+'</div><div class=c-meta>'+st(t.status)+' '+bd(t)+'</div>'+
+          '<div class=btns style=margin-top:3px>'+
+            '<button class="btn btn-sm btn-accent" onclick="event.stopPropagation();doAct(\\'/api/tasks/'+t.id+'/dispatch\\')">▶</button>'+
+            '<button class="btn btn-sm" onclick="event.stopPropagation();cf(\\'Restart?\\',function(){doAct(\\'/api/tasks/'+t.id+'/restart\\')})">↺</button>'+
+            '<button class="btn btn-sm" onclick="event.stopPropagation();cf(\\'Skip?\\',function(){doAct(\\'/api/tasks/'+t.id+'/skip\\')})">⏭</button>'+
+            (t.status==='needs_review'?'<button class="btn btn-sm btn-accent" onclick="event.stopPropagation();doAct(\\'/api/tasks/'+t.id+'/approve\\',{apply:'+!!t.autoApply+'})">✓</button>':'')+
+          '</div></div>';
+      });
+    });
+  }
+  h+='</div>';
+  el.innerHTML=h;
+}
+
+/* Create tasks from JSON textarea */
+async function createTasksFromJSON(aid){
+  var ta=$('json-tasks-'+aid);if(!ta)return;
+  var text=ta.value.trim();if(!text){alert('Paste JSON task array');return;}
+  var parsed;
+  try{parsed=JSON.parse(text);}catch(e){alert('Invalid JSON: '+e.message);return;}
+  if(!Array.isArray(parsed)){alert('Expected a JSON array of tasks');return;}
+  var created=0,errors=0;
+  for(var i=0;i<parsed.length;i++){
+    var t=parsed[i];
+    if(!t.title||!t.prompt){errors++;continue;}
+    try{
+      var r=await api('/api/tasks',{method:'POST',body:{
+        projectId:t.projectId||'default',title:t.title,prompt:t.prompt,
+        mode:t.mode||'patch',priority:t.priority||5,
+        maxIterations:t.maxIterations||1,
+        autoApprove:!!t.autoApprove,autoApply:!!t.autoApply,
+        checks:t.checks||undefined
+      }});
+      if(r.task){
+        await api('/api/tasks/'+r.task.id+'/assign',{method:'POST',body:{agentId:aid}});
+        created++;
+      }
+    }catch(e){errors++;}
+  }
+  alert('Created: '+created+', errors: '+errors);
+  ta.value='';$i('jform-'+aid).style.display='none';
+  await fetchAll(true);render();
 }
 
 /* ── Tasks ── */
@@ -551,7 +639,15 @@ function renderChatDetail(el){
   if(!a){el.innerHTML='<div class=empty>Agent not found</div>';return;}
 
   var sessions=S.chats.sessions||[],hasSessions=sessions.length>0;
-  var h='<div class=panel><div class=panel-title>Chat: '+esc(a.name||short(a.id))+'</div>';
+
+  /* Tab bar */
+  var h='<div class=btns style=margin-bottom:8px>'+
+    '<button class="btn btn-sm" onclick="S.selAgentView=\\'info\\';render()">Info</button>'+
+    '<button class="btn btn-sm" onclick="openAgentTasks(\\''+a.id+'\\')">Tasks</button>'+
+    '<button class="btn btn-sm btn-accent" onclick="openAgentChat(\\''+a.id+'\\')">Chat</button>'+
+  '</div>';
+
+  h+='<div class=panel><div class=panel-title>Chat: '+esc(a.name||short(a.id))+'</div>';
 
   /* Sessions */
   h+='<div class=chat-tb>'+
@@ -578,7 +674,14 @@ function renderChatDetail(el){
       '<textarea id=chat-msg placeholder="Type a message…" onkeydown="if(event.key===\\'Enter\\'&&!event.shiftKey){event.preventDefault();sendChatMsg();}" rows=2></textarea>'+
       '<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">'+
         '<select id=chat-action style="width:100%;min-height:28px;font-size:9px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px;font-family:var(--font)"><option value="">ask/patch</option><option value=ask>ask</option><option value=patch>patch</option><option value=retrieve>retrieve</option><option value=context>context</option></select>'+
-        '<select id=chat-model style="width:100%;min-height:28px;font-size:9px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px;font-family:var(--font)"><option value="">model</option></select>'+
+        '<select id=chat-model style="width:100%;min-height:28px;font-size:9px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px;font-family:var(--font)">'+
+          '<option value="">model</option>'+
+          (function(){
+            var opts='';
+            if(a.models)for(var k in a.models){if(a.models[k])opts+='<option value="'+esc(a.models[k])+'">'+esc(k)+': '+esc(a.models[k].slice(0,20))+'</option>';}
+            return opts;
+          })()+
+        '</select>'+
         '<button class="btn btn-accent btn-sm" onclick=sendChatMsg() style=min-height:28px>Send</button>'+
       '</div>'+
     '</div>';
@@ -593,6 +696,11 @@ function renderChatDetail(el){
 function cf(msg,cb){S.confirmCb=cb;$('confirm-text').textContent=msg;$('confirm-overlay').style.display='flex';}
 function confirmYes(){if(S.confirmCb)try{S.confirmCb();}catch(e){}finally{S.confirmCb=null;$('confirm-overlay').style.display='none';}}
 function confirmNo(){S.confirmCb=null;$('confirm-overlay').style.display='none';}
+
+async function dispatchNextForAgent(aid){
+  try{await api('/api/tasks/dispatch-next',{method:'POST',body:{agentId:aid}});await fetchAll(true);}
+  catch(e){alert(e.message);}
+}
 
 /* ── Init ── */
 window.$i=function(id){return document.getElementById(id);};
@@ -616,5 +724,6 @@ window.cf=cf;window.confirmYes=confirmYes;window.confirmNo=confirmNo;
 window.doImportPreview=doImportPreview;window.doImport=doImport;
 window.doRenderTpl=doRenderTpl;window.copyTpl=copyTpl;window.downloadTpl=downloadTpl;
 window.filterTasks=filterTasks;window.md=md;
+window.createTasksFromJSON=createTasksFromJSON;window.dispatchNextForAgent=dispatchNextForAgent;
 })();
 `
