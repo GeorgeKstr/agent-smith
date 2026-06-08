@@ -365,10 +365,6 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   const refreshModels = useCallback(async () => {
     const online = await isProviderAvailable(config)
     setOllamaReady(online)
-    if (!online) {
-      setAvailableModels([])
-      return [] as string[]
-    }
     const models = await listProviderModels(config)
     setAvailableModels(models)
     return models

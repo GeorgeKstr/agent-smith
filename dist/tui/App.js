@@ -320,10 +320,6 @@ export function App({ root, config, db, events, indexer }) {
     const refreshModels = useCallback(async () => {
         const online = await isProviderAvailable(config);
         setOllamaReady(online);
-        if (!online) {
-            setAvailableModels([]);
-            return [];
-        }
         const models = await listProviderModels(config);
         setAvailableModels(models);
         return models;
