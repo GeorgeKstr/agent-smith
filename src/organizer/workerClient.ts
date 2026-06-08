@@ -11,10 +11,11 @@ export function createOrganizerClient(args: { url: string; token?: string }): Or
   async function post(path: string, payload: unknown): Promise<{ ok: boolean; error?: string }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
+    const fullUrl = `${url}${path}`;
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (token) headers["Authorization"] = `Bearer ${token}`;
-      const res = await fetch(`${url}${path}`, {
+      const res = await fetch(fullUrl, {
         method: "POST",
         headers,
         body: JSON.stringify(payload),
@@ -26,6 +27,9 @@ export function createOrganizerClient(args: { url: string; token?: string }): Or
       }
       return { ok: true };
     } catch (err) {
+      if (err instanceof TypeError && err.message === "fetch failed") {
+        return { ok: false, error: `Cannot reach organizer at ${fullUrl}. Is the organizer running? Run: smith organize` };
+      }
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     } finally {
       clearTimeout(timer);
