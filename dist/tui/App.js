@@ -3,13 +3,20 @@ import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useApp, useInput, useStdout } from "ink";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { runAsk, runPatch, undoPatchFromDiff } from "../core/taskRunner.js";
-import { isProviderAvailable, listProviderModels, resolveProviderModelName, invalidateProviderCache } from "../core/providers.js";
-import { startLanServer } from "../core/lanServer.js";
+import { runAsk, runPatch, undoPatchFromDiff } from "../agent/taskRunner.js";
+import { isProviderAvailable, listProviderModels, resolveProviderModelName, invalidateProviderCache } from "../providers/providers.js";
+import { startLanServer } from "../lan/server.js";
+import { startApiServer } from "../api/server.js";
+import { listChangeSets, getChangeSet, listChangedFiles, listChangedHunks, updateChangeSetStatus, updateChangedFileStatus, updateChangedHunkStatus, updateChangedHunksForFile } from "../changes/changeSetStore.js";
+import { applyAcceptedChangeSet } from "../changes/changeSetApply.js";
+import { revertCheckpoint } from "../checkpoints/gitCheckpoint.js";
+import { startOrganizerServer } from "../organizer/server.js";
+import { extractFileDiff, compactDiffPreview } from "../changes/diffPreview.js";
 import { BootScreen } from "./screens/BootScreen.js";
 import { MainScreen } from "./screens/MainScreen.js";
 import { IndexDashboard } from "./screens/IndexDashboard.js";
 import { ContextPreview } from "./screens/ContextPreview.js";
+import { ChangesScreen } from "./screens/ChangesScreen.js";
 const initialBoot = {
     phase: "idle",
     progress: 0,
@@ -80,7 +87,6 @@ export function App({ root, config, db, events, indexer }) {
     const { exit } = useApp();
     const { stdout } = useStdout();
     const quit = useCallback(() => {
-        console.clear();
         exit();
     }, [exit]);
     const [boot, setBoot] = useState(initialBoot);
@@ -104,6 +110,14 @@ export function App({ root, config, db, events, indexer }) {
     const [executions, setExecutions] = useState([]);
     const [uiStateLoaded, setUiStateLoaded] = useState(false);
     const [view, setView] = useState("main");
+    const [selChangeId, setSelChangeId] = useState(null);
+    const [selChangeSet, setSelChangeSet] = useState(null);
+    const [selChangedFiles, setSelChangedFiles] = useState([]);
+    const [selFilePath, setSelFilePath] = useState(null);
+    const [selDiffPreview, setSelDiffPreview] = useState("");
+    const [selHunks, setSelHunks] = useState([]);
+    const [selHunkIndex, setSelHunkIndex] = useState(0);
+    const [reviewFocus, setReviewFocus] = useState("files");
     const [streamText, setStreamText] = useState("");
     const [streamTokens, setStreamTokens] = useState(0);
     const streamStartRef = useRef(0);
@@ -113,6 +127,8 @@ export function App({ root, config, db, events, indexer }) {
     const streamTokRef = useRef(0);
     const [pendingPrompt, setPendingPrompt] = useState(null);
     const lanRef = useRef(null);
+    const apiRef = useRef(null);
+    const dashboardRef = useRef(null);
     const abortRef = useRef(null);
     const escTimerRef = useRef(null);
     const seenWebChatRef = useRef(new Set());
@@ -127,7 +143,7 @@ export function App({ root, config, db, events, indexer }) {
     const answeredQuestionFp = useRef(new Set());
     const questionFromCommand = useRef(false);
     const setupRef = useRef(null);
-    const CMD_LIST = ["/help", "/mode", "/model", "/provider", "/setup", "/reindex", "/index", "/dashboard", "/clear", "/summarize", "/lan", "/undo", "/exit", "/quit", "/animation", "/context"];
+    const CMD_LIST = ["/help", "/mode", "/model", "/provider", "/setup", "/reindex", "/index", "/dashboard", "/clear", "/summarize", "/lan", "/api", "/changes", "/change", "/accept", "/reject", "/apply", "/revert", "/undo", "/exit", "/quit", "/animation", "/context"];
     const PROVIDER_SUBS = ["list", "add", "remove", "default", "key"];
     const [autocompleteIndex, setAutocompleteIndex] = useState(0);
     const autocomplete = useMemo(() => {
@@ -151,6 +167,15 @@ export function App({ root, config, db, events, indexer }) {
                 }
                 else if (cmd === "/mode" && arg) {
                     suggestions = ["build", "discuss"].filter(m => m.startsWith(arg)).map(m => cmd + " " + m);
+                }
+                else if (cmd === "/api" && arg) {
+                    suggestions = ["stop", "status"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s);
+                }
+                else if (cmd === "/lan" && arg) {
+                    suggestions = ["stop", "status"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s);
+                }
+                else if (cmd === "/dashboard" && arg) {
+                    suggestions = ["stop", "status"].filter(s => s.startsWith(arg)).map(s => cmd + " " + s);
                 }
             }
             else {
@@ -179,13 +204,20 @@ export function App({ root, config, db, events, indexer }) {
         catch { }
     }, [root, config]);
     useEffect(() => {
-        // Use alternate screen buffer so the UI owns a bounded area and does not
-        // accumulate rows from prior terminal output.
         if (!stdout.isTTY)
             return;
-        stdout.write("\u001B[?1049h\u001B[2J\u001B[H");
+        process.stdout.write("\u001B[?1049h\u001B[2J\u001B[H");
+        let cleaned = false;
+        const restore = () => {
+            if (cleaned)
+                return;
+            cleaned = true;
+            process.stdout.write("\u001B[?1049l\u001B[?25h");
+        };
+        process.on("exit", restore);
         return () => {
-            stdout.write("\u001B[?1049l");
+            process.off("exit", restore);
+            restore();
         };
     }, [stdout]);
     useEffect(() => {
@@ -258,6 +290,8 @@ export function App({ root, config, db, events, indexer }) {
     useEffect(() => {
         return () => {
             lanRef.current?.stop();
+            void apiRef.current?.stop();
+            dashboardRef.current?.stop();
         };
     }, []);
     // Flush streaming refs to rendered state at ~12fps while busy.
@@ -566,7 +600,9 @@ export function App({ root, config, db, events, indexer }) {
                     "  /index       Show the index dashboard (file summaries, graph, stats)",
                     "  /model [name|list|reset]  List or switch AI provider model",
                     "  /tools       Show Qwen tool-calling integration notes",
-                    "  /lan         Start/stop LAN web server",
+                    "  /lan [port|status|stop]  Start/stop local project web UI",
+                    "  /api [port|status|stop]  Start/stop local runtime API",
+                    "  /dashboard [port|status|stop]  Organizer dashboard placeholder",
                     "  /undo        Undo last prompt result (files + convo)",
                     "  /clear       Clear the output area",
                     "  /animation   Toggle terminal animations on/off",
@@ -881,32 +917,291 @@ export function App({ root, config, db, events, indexer }) {
                 return true;
             }
             case "/lan": {
+                const arg = (rawParts[1] ?? "").toLowerCase();
+                if (arg === "stop") {
+                    if (lanRef.current) {
+                        lanRef.current.stop();
+                        lanRef.current = null;
+                        appendOutput("Agent Smith web UI stopped.");
+                    }
+                    else {
+                        appendOutput("Web UI is not running.");
+                    }
+                    return true;
+                }
+                if (arg === "status") {
+                    if (lanRef.current) {
+                        appendOutput(`Web UI running at http://localhost:${lanRef.current.port}`);
+                    }
+                    else {
+                        appendOutput("Web UI is not running.");
+                    }
+                    return true;
+                }
+                const portArg = rawParts[1] ?? "";
+                const lanPort = portArg && /^\d+$/.test(portArg) ? Number(portArg) : config.lan.port;
                 if (lanRef.current) {
+                    if (lanRef.current.port === lanPort) {
+                        appendOutput(`Web UI already running at http://localhost:${lanRef.current.port}`);
+                        return true;
+                    }
                     lanRef.current.stop();
                     lanRef.current = null;
-                    appendOutput("✓ LAN server stopped");
+                }
+                try {
+                    const lan = startLanServer({
+                        root,
+                        config,
+                        db,
+                        events,
+                        indexer,
+                        port: lanPort,
+                        initialOutput: output,
+                        initialMode: mode,
+                        initialModelOverride: modelOverride
+                    });
+                    lanRef.current = lan;
+                    const url = `http://localhost:${lan.port}`;
+                    appendOutput(`Agent Smith web UI listening at ${url}`);
+                }
+                catch (err) {
+                    appendOutput(`✗ Failed to start web UI: ${err instanceof Error ? err.message : String(err)}`);
+                }
+                return true;
+            }
+            case "/api": {
+                const arg = (rawParts[1] ?? "").toLowerCase();
+                if (arg === "stop") {
+                    if (apiRef.current) {
+                        await apiRef.current.stop();
+                        apiRef.current = null;
+                        appendOutput("Agent Smith API stopped.");
+                    }
+                    else {
+                        appendOutput("API is not running.");
+                    }
+                    return true;
+                }
+                if (arg === "status") {
+                    if (apiRef.current) {
+                        appendOutput(`API running at ${apiRef.current.url}`);
+                    }
+                    else {
+                        appendOutput("API is not running.");
+                    }
+                    return true;
+                }
+                const apiHost = config.api.host;
+                const portArg = rawParts[1] ?? "";
+                const apiPort = portArg && /^\d+$/.test(portArg) ? Number(portArg) : config.api.port;
+                if (apiRef.current) {
+                    if (apiRef.current.port === apiPort && apiRef.current.host === apiHost) {
+                        appendOutput(`API already running at ${apiRef.current.url}`);
+                        return true;
+                    }
+                    await apiRef.current.stop();
+                    apiRef.current = null;
+                }
+                try {
+                    const apiToken = config.api.token;
+                    const api = await startApiServer({
+                        root,
+                        config,
+                        db,
+                        events,
+                        indexer,
+                        host: apiHost,
+                        port: apiPort,
+                        token: apiToken
+                    });
+                    apiRef.current = api;
+                    let msg = `Agent Smith API listening at ${api.url}`;
+                    if (apiHost === "0.0.0.0" && !apiToken) {
+                        msg += "\nWARNING: API is exposed on LAN without a token.";
+                    }
+                    appendOutput(msg);
+                }
+                catch (err) {
+                    appendOutput(`✗ Failed to start API: ${err instanceof Error ? err.message : String(err)}`);
+                }
+                return true;
+            }
+            case "/dashboard": {
+                const arg = (rawParts[1] ?? "").toLowerCase();
+                if (arg === "stop") {
+                    if (dashboardRef.current) {
+                        dashboardRef.current.stop();
+                        dashboardRef.current = null;
+                        appendOutput("Organizer dashboard stopped.");
+                    }
+                    else {
+                        appendOutput("Organizer dashboard is not running.");
+                    }
+                    return true;
+                }
+                if (arg === "status") {
+                    if (dashboardRef.current) {
+                        appendOutput(`Organizer dashboard running at http://127.0.0.1:${dashboardRef.current.port}`);
+                    }
+                    else {
+                        appendOutput("Organizer dashboard is not running.");
+                    }
+                    return true;
+                }
+                if (dashboardRef.current) {
+                    appendOutput(`Organizer dashboard already running at http://127.0.0.1:${dashboardRef.current.port}`);
+                    return true;
+                }
+                try {
+                    const dashPort = arg && /^\d+$/.test(arg) ? Number(arg) : 8787;
+                    const server = await startOrganizerServer({
+                        port: dashPort,
+                        onLog: (msg) => appendOutput(msg)
+                    });
+                    dashboardRef.current = { port: dashPort, stop: () => server.stop() };
+                    appendOutput(`Agent Smith Organizer listening at ${server.url}`);
+                }
+                catch (err) {
+                    appendOutput(`✗ Failed to start organizer: ${err instanceof Error ? err.message : String(err)}`);
+                }
+                return true;
+            }
+            case "/changes": {
+                const all = listChangeSets(db);
+                if (all.length === 0) {
+                    appendOutput("No change sets.");
+                    return true;
+                }
+                const lines = ["— CHANGE SETS —"];
+                for (const cs of all) {
+                    const files = listChangedFiles(db, cs.id);
+                    lines.push(`${cs.id}  ${cs.status.padEnd(20)} ${files.length} files  ${cs.summary ?? ""}`);
+                }
+                appendOutput(lines);
+                return true;
+            }
+            case "/change": {
+                const id = rawParts[1];
+                if (!id) {
+                    appendOutput("Usage: /change <id>");
+                    return true;
+                }
+                const cs = getChangeSet(db, id);
+                if (!cs) {
+                    appendOutput(`Change set not found: ${id}`);
+                    return true;
+                }
+                const files = listChangedFiles(db, id);
+                const firstPath = files.length > 0 ? files[0].path : null;
+                const diffPreview = firstPath ? compactDiffPreview(extractFileDiff(cs.diff, firstPath)) : "";
+                const hunks = firstPath ? listChangedHunks(db, id, firstPath) : [];
+                setSelChangeId(id);
+                setSelChangeSet(cs);
+                setSelChangedFiles(files);
+                setSelFilePath(firstPath);
+                setSelDiffPreview(diffPreview);
+                setSelHunks(hunks);
+                setSelHunkIndex(0);
+                setReviewFocus("files");
+                setView("changes");
+                appendOutput(`Opened change set ${id} in review view.`);
+                return true;
+            }
+            case "/accept": {
+                const id = rawParts[1];
+                if (!id) {
+                    appendOutput("Usage: /accept <id> [<path>]");
+                    return true;
+                }
+                const filePath = rawParts[2];
+                if (filePath) {
+                    const review = updateChangedFileStatus(db, id, filePath, "accepted");
+                    if (review) {
+                        const cs = getChangeSet(db, id);
+                        appendOutput(`✓ Accepted file: ${filePath} (set: ${cs?.status ?? "?"})`);
+                    }
+                    else {
+                        appendOutput(`File not found in change set: ${filePath}`);
+                    }
                 }
                 else {
-                    try {
-                        const lan = startLanServer({
-                            root,
-                            config,
-                            db,
-                            events,
-                            indexer,
-                            port: config.lan.port,
-                            initialOutput: output,
-                            initialMode: mode,
-                            initialModelOverride: modelOverride
-                        });
-                        lanRef.current = lan;
-                        const url = `http://localhost:${lan.port}`;
-                        appendOutput(`✓ LAN server started at ${url}`);
+                    const cs = updateChangeSetStatus(db, id, "accepted");
+                    if (cs) {
+                        appendOutput(`✓ Accepted change set: ${cs.id}`);
                     }
-                    catch (err) {
-                        appendOutput(`✗ Failed to start LAN server: ${err instanceof Error ? err.message : String(err)}`);
+                    else {
+                        appendOutput(`Change set not found: ${id}`);
                     }
                 }
+                return true;
+            }
+            case "/reject": {
+                const id = rawParts[1];
+                if (!id) {
+                    appendOutput("Usage: /reject <id> [<path>]");
+                    return true;
+                }
+                const filePath = rawParts[2];
+                if (filePath) {
+                    const review = updateChangedFileStatus(db, id, filePath, "rejected");
+                    if (review) {
+                        const cs = getChangeSet(db, id);
+                        appendOutput(`✓ Rejected file: ${filePath} (set: ${cs?.status ?? "?"})`);
+                    }
+                    else {
+                        appendOutput(`File not found in change set: ${filePath}`);
+                    }
+                }
+                else {
+                    const cs = updateChangeSetStatus(db, id, "rejected");
+                    if (cs) {
+                        appendOutput(`✓ Rejected change set: ${cs.id}`);
+                    }
+                    else {
+                        appendOutput(`Change set not found: ${id}`);
+                    }
+                }
+                return true;
+            }
+            case "/apply": {
+                const id = rawParts[1];
+                if (!id) {
+                    appendOutput("Usage: /apply <id>");
+                    return true;
+                }
+                const result = await applyAcceptedChangeSet({ root, db, indexer, changeSetId: id });
+                const lines = [result.ok ? "✓" : "✗", result.message];
+                if (result.files.length)
+                    lines.push(`files: ${result.files.join(", ")}`);
+                if (result.checkpointId)
+                    lines.push(`checkpoint: ${result.checkpointId}`);
+                appendOutput(lines.join(" "));
+                return true;
+            }
+            case "/revert": {
+                const id = rawParts[1];
+                if (!id) {
+                    appendOutput("Usage: /revert <id>");
+                    return true;
+                }
+                const cs = getChangeSet(db, id);
+                if (!cs) {
+                    appendOutput(`Change set not found: ${id}`);
+                    return true;
+                }
+                if (!cs.checkpointId) {
+                    appendOutput("Change set has no checkpoint to revert.");
+                    return true;
+                }
+                const result = await revertCheckpoint({ root, db, id: cs.checkpointId });
+                if (result.ok) {
+                    updateChangeSetStatus(db, id, "reverted");
+                    await indexer.reindexPaths(result.files);
+                }
+                const lines = [result.ok ? "✓" : "✗", result.message];
+                if (result.files.length)
+                    lines.push(`files: ${result.files.join(", ")}`);
+                appendOutput(lines.join(" "));
                 return true;
             }
             case "/undo": {
@@ -1255,6 +1550,80 @@ export function App({ root, config, db, events, indexer }) {
     }
     if (view === "context") {
         return (_jsx(ContextPreview, { packet: packet, maxTokens: config.context.maxPromptTokens, onBack: () => setView("main") }));
+    }
+    if (view === "changes") {
+        const reloadFilesAndHunks = () => {
+            if (selChangeId) {
+                setSelChangedFiles(listChangedFiles(db, selChangeId));
+                if (selFilePath) {
+                    setSelHunks(listChangedHunks(db, selChangeId, selFilePath));
+                }
+            }
+        };
+        return (_jsx(ChangesScreen, { changeSet: selChangeSet, files: selChangedFiles, selectedPath: selFilePath, diffPreview: selDiffPreview, hunks: selHunks, selectedHunkIndex: selHunkIndex, reviewFocus: reviewFocus, onBack: () => setView("main"), onSelectFile: (path) => {
+                setSelFilePath(path);
+                setSelDiffPreview(compactDiffPreview(extractFileDiff(selChangeSet?.diff ?? "", path)));
+                setSelHunks(listChangedHunks(db, selChangeId, path));
+                setSelHunkIndex(0);
+                setReviewFocus("files");
+            }, onAcceptFile: () => {
+                if (selFilePath) {
+                    updateChangedFileStatus(db, selChangeId, selFilePath, "accepted");
+                    reloadFilesAndHunks();
+                    appendOutput(`Accepted ${selFilePath}`);
+                }
+            }, onRejectFile: () => {
+                if (selFilePath) {
+                    updateChangedFileStatus(db, selChangeId, selFilePath, "rejected");
+                    reloadFilesAndHunks();
+                    appendOutput(`Rejected ${selFilePath}`);
+                }
+            }, onAcceptAll: async () => {
+                const cs = updateChangeSetStatus(db, selChangeId, "accepted");
+                if (cs) {
+                    reloadFilesAndHunks();
+                    appendOutput(`Accepted change set ${selChangeId}`);
+                }
+            }, onRejectAll: async () => {
+                const cs = updateChangeSetStatus(db, selChangeId, "rejected");
+                if (cs) {
+                    reloadFilesAndHunks();
+                    appendOutput(`Rejected change set ${selChangeId}`);
+                }
+            }, onApply: async () => {
+                const result = await applyAcceptedChangeSet({ root, db, indexer, changeSetId: selChangeId });
+                appendOutput(`${result.ok ? "✓" : "✗"} ${result.message}`);
+                const cs = getChangeSet(db, selChangeId);
+                if (cs) {
+                    reloadFilesAndHunks();
+                }
+            }, onFocusChange: (focus) => setReviewFocus(focus), onSelectHunk: (index) => setSelHunkIndex(index), onAcceptHunk: () => {
+                const h = selHunks[selHunkIndex];
+                if (h) {
+                    updateChangedHunkStatus(db, h.id, "accepted");
+                    reloadFilesAndHunks();
+                    appendOutput(`Accepted hunk ${h.path}#${h.hunkIndex}`);
+                }
+            }, onRejectHunk: () => {
+                const h = selHunks[selHunkIndex];
+                if (h) {
+                    updateChangedHunkStatus(db, h.id, "rejected");
+                    reloadFilesAndHunks();
+                    appendOutput(`Rejected hunk ${h.path}#${h.hunkIndex}`);
+                }
+            }, onAcceptFileHunks: () => {
+                if (selFilePath) {
+                    updateChangedHunksForFile(db, selChangeId, selFilePath, "accepted");
+                    reloadFilesAndHunks();
+                    appendOutput(`Accepted all hunks in ${selFilePath}`);
+                }
+            }, onRejectFileHunks: () => {
+                if (selFilePath) {
+                    updateChangedHunksForFile(db, selChangeId, selFilePath, "rejected");
+                    reloadFilesAndHunks();
+                    appendOutput(`Rejected all hunks in ${selFilePath}`);
+                }
+            } }));
     }
     return (_jsx(MainScreen, { root: root, model: modelOverride
             ? resolveModelLocal(modelOverride, availableModels)

@@ -24,7 +24,7 @@ import { renderTaskFlowTemplate } from "./tasks/taskFlowTemplateRenderer.js";
 import { buildWorkerHeartbeat, startOrganizerHeartbeat } from "./organizer/heartbeat.js";
 import { createOrganizerClient } from "./organizer/workerClient.js";
 import { startOrganizerServer } from "./organizer/server.js";
-import { formatLanUrls } from "./utils/network.js";
+import { formatLanUrls, getLanAddresses } from "./utils/network.js";
 import { createGitCheckpoint, revertCheckpoint } from "./checkpoints/gitCheckpoint.js";
 import { listCheckpoints, getCheckpoint, deleteCheckpoint } from "./checkpoints/checkpointStore.js";
 import { createChangeSet, listChangeSets, getChangeSet, listChangedFiles, listChangedHunks, getAcceptedHunkRefs, updateChangeSetStatus, updateChangedFileStatus, updateChangedHunkStatus, updateChangedHunksForFile, deleteChangeSet } from "./changes/changeSetStore.js";
@@ -32,8 +32,8 @@ import { buildAcceptedHunksDiff } from "./changes/hunkDiffBuilder.js";
 import { applyAcceptedChangeSet, validateAcceptedHunksDiff, applyAcceptedHunksChangeSet } from "./changes/changeSetApply.js";
 import { App } from "./tui/App.js";
 
-async function bootstrap() {
-  const root = await detectProjectRoot(process.cwd());
+async function bootstrap(rootOverride?: string) {
+  const root = rootOverride ?? await detectProjectRoot(process.cwd());
   await ensureConfig(root);
   const config = await loadConfig(root);
   const db = openDatabase(root);
@@ -1451,23 +1451,46 @@ export function createCli() {
     .option("--host <host>", "bind address")
     .option("--port <port>", "listen port")
     .option("--token <token>", "bearer token for auth")
-    .action(async (opts: { host?: string; port?: string; token?: string }) => {
-      const { root, config, db, events } = await bootstrap();
+    .option("--root <path>", "project root directory")
+    .option("--create-root", "create project root if it does not exist")
+    .action(async (opts: { host?: string; port?: string; token?: string; root?: string; createRoot?: boolean }) => {
+      let rootOverride: string | undefined;
+      if (opts.root) {
+        rootOverride = path.resolve(opts.root);
+        try {
+          await fs.access(rootOverride);
+        } catch {
+          if (opts.createRoot) {
+            await fs.mkdir(rootOverride, { recursive: true });
+          } else {
+            console.log("Project root does not exist. Use --create-root to create it.");
+            process.exit(1);
+          }
+        }
+      }
+      const { root, config, db, events } = await bootstrap(rootOverride);
       const indexer = createIndexer({ root, config, db, events });
 
-      const host = opts.host ?? config.api.host;
-      const port = Number(opts.port ?? config.api.port);
+      const host = opts.host ?? config.api.host ?? "127.0.0.1";
+      const port = Number(opts.port ?? config.api.port ?? 31337);
       const token = opts.token ?? config.api.token;
 
       const api = await startApiServer({ root, config, db, events, indexer, host, port, token });
-      const urls = formatLanUrls(port, host);
-      console.log(`Agent Smith API listening`);
-      console.log(`  Local:  ${urls.local}`);
-      if (urls.lan.length > 0) {
-        console.log(`  LAN:`);
-        for (const u of urls.lan) console.log(`    ${u}`);
+
+      console.log(`Agent Smith API listening at http://${host}:${port}`);
+      console.log(`Project root: ${root}`);
+
+      if (host === "0.0.0.0") {
+        console.log(`Local URL: http://127.0.0.1:${port}`);
+        const lanUrls = getLanAddresses(port);
+        if (lanUrls.length > 0) {
+          console.log("LAN URLs:");
+          for (const u of lanUrls) console.log(`  ${u}`);
+        }
+        if (!token) {
+          console.log("WARNING: API is reachable from your LAN without a token.");
+        }
       }
-      for (const w of urls.warnings) console.log(w);
 
       const shutdown = async () => {
         await api.stop();
@@ -1575,23 +1598,24 @@ export function createCli() {
       const port = Number(opts.port ?? 8787);
       const staleAfterMs = opts.staleAfter ? Number(opts.staleAfter) : 15000;
 
-      if (host === "0.0.0.0" && !opts.token) {
-        console.log("WARNING: Organizer is exposed on LAN without a token.");
-      }
-
       const server = await startOrganizerServer({
         host, port, token: opts.token, dbPath: opts.db, staleAfterMs,
         onLog: (msg) => console.log(msg)
       });
-      const urls = formatLanUrls(port, host, "/dashboard");
-      console.log(`Agent Smith Organizer listening`);
-      console.log(`  Local Dashboard:  ${urls.local}`);
-      if (urls.lan.length > 0) {
-        console.log(`  LAN Dashboard:`);
-        for (const u of urls.lan) console.log(`    ${u}`);
+
+      console.log(`Agent Smith Organizer listening at http://${host}:${port}`);
+      console.log(`Dashboard: http://127.0.0.1:${port}/dashboard`);
+
+      if (host === "0.0.0.0") {
+        const lanUrls = getLanAddresses(port);
+        if (lanUrls.length > 0) {
+          console.log("LAN Dashboard URLs:");
+          for (const u of lanUrls) console.log(`  ${u}/dashboard`);
+        }
+        if (!opts.token) {
+          console.log("WARNING: Organizer is reachable from your LAN without a token.");
+        }
       }
-      for (const w of urls.warnings) console.log(w);
-      console.log(`TODO: optional QR code for dashboard URL.`);
 
       const shutdown = async () => { await server.stop(); process.exit(0); };
       process.on("SIGINT", shutdown);
