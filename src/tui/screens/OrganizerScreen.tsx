@@ -91,7 +91,8 @@ export function OrganizerScreen({ onBack }: OrganizerScreenProps) {
       <Box flexDirection="column" marginBottom={1}>
         <Text>
           <Text color={theme.primary} bold>Agent Smith Organizer</Text>
-          <Text color={theme.dim}>  port 8787</Text>
+          <Text color={theme.dim}>  port 8787  </Text>
+          <Text color={theme.accent}>http://127.0.0.1:8787/dashboard</Text>
         </Text>
         <Text color={theme.dim}>
           {agents.length} agent{agents.length !== 1 ? "s" : ""}

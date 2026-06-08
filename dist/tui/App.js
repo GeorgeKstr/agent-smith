@@ -1404,6 +1404,11 @@ export function App({ root, config, db, events, indexer }) {
         setupAwaitingInput
     ]);
     useInput((char, key) => {
+        if (view !== "main") {
+            if (key.escape)
+                setView("main");
+            return;
+        }
         if (key.ctrl && char === "c") {
             quit();
             return;
