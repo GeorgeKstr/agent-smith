@@ -19,6 +19,7 @@ export type WorkerApiClient = {
   applyChange?(changeSetId: string, opts?: { hunks?: boolean }): Promise<{ ok: boolean; result?: unknown; error?: string }>;
   listChatSessions?(): Promise<{ ok: boolean; sessions?: unknown[]; error?: string }>;
   createChatSession?(input: { title?: string; scope?: string }): Promise<{ ok: boolean; session?: unknown; error?: string }>;
+  getChatSession?(sessionId: string): Promise<{ ok: boolean; session?: unknown; messages?: unknown[]; openQuestions?: unknown[]; error?: string }>;
   sendChatMessage?(sessionId: string, input: { prompt: string; actionKind?: string; model?: string }): Promise<{ ok: boolean; session?: unknown; messages?: unknown[]; error?: string }>;
   getOpenQuestions?(): Promise<{ ok: boolean; questions?: unknown[]; error?: string }>;
   answerQuestion?(questionId: string, answer: unknown): Promise<{ ok: boolean; question?: unknown; error?: string }>;
@@ -115,6 +116,12 @@ export function createWorkerApiClient(args: {
     createChatSession: async (input) => {
       const r = await post(`/api/chat/sessions`, input);
       return r.ok ? { ok: true, session: (r.data as { session?: unknown })?.session } : r;
+    },
+    getChatSession: async (sessionId) => {
+      const r = await get(`/api/chat/sessions/${sessionId}`);
+      if (!r.ok) return { ok: false, error: r.error };
+      const d = r.data as { session?: unknown; messages?: unknown[]; openQuestions?: unknown[] } | null;
+      return { ok: true, session: d?.session, messages: d?.messages, openQuestions: d?.openQuestions };
     },
     sendChatMessage: async (sessionId, input) => {
       const r = await post(`/api/chat/sessions/${sessionId}`, input);

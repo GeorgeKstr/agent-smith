@@ -7,14 +7,15 @@ export const html = `<!DOCTYPE html>
 <link rel="stylesheet" href="/dashboard/styles.css">
 </head>
 <body>
-<div id="app" class="app-shell">
+<div id="app">
   <header id="topbar"></header>
-  <aside id="sidebar"></aside>
-  <main id="content"></main>
-  <aside id="detail"></aside>
-  <nav id="bottomnav"></nav>
+  <div id="layout">
+    <nav id="agent-panel"></nav>
+    <main id="main-panel"></main>
+  </div>
 </div>
 <div id="modal-root"></div>
+<div id="toast" class="toast"></div>
 <script src="/dashboard/client.js"></script>
 </body>
 </html>`;

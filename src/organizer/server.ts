@@ -482,9 +482,8 @@ export async function startOrganizerServer(args: {
         if (parts.length === 5 && parts[3] === "chats") {
           const sessionId = parts[4];
           if (method === "GET") {
-            // Use sendChatMessage with empty prompt to validate connectivity and get session data
-            const msgRes = await client.sendChatMessage?.(sessionId, { prompt: ".status" });
-            sendJson(res, msgRes?.ok ? 200 : 502, msgRes?.ok ? { ok: true, session: msgRes.session, messages: msgRes.messages } : { ok: false, error: msgRes?.error ?? "Agent API unreachable" });
+            const r = await client.getChatSession?.(sessionId);
+            sendJson(res, r?.ok ? 200 : 502, r?.ok ? { ok: true, session: r.session, messages: r.messages, openQuestions: r.openQuestions } : { ok: false, error: r?.error ?? "Agent API unreachable" });
             return;
           }
           if (method === "POST") {

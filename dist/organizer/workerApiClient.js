@@ -91,6 +91,13 @@ export function createWorkerApiClient(args) {
             const r = await post(`/api/chat/sessions`, input);
             return r.ok ? { ok: true, session: r.data?.session } : r;
         },
+        getChatSession: async (sessionId) => {
+            const r = await get(`/api/chat/sessions/${sessionId}`);
+            if (!r.ok)
+                return { ok: false, error: r.error };
+            const d = r.data;
+            return { ok: true, session: d?.session, messages: d?.messages, openQuestions: d?.openQuestions };
+        },
         sendChatMessage: async (sessionId, input) => {
             const r = await post(`/api/chat/sessions/${sessionId}`, input);
             return r.ok ? { ok: true, session: r.data?.session, messages: r.data?.messages } : r;
