@@ -1,131 +1,69 @@
-import React, { useEffect, useState } from "react"
-import { Box, Text, useInput } from "ink"
+import React, { useEffect, useState, useCallback } from "react"
+import { Box, Text, useInput, useStdout } from "ink"
 import { theme } from "../theme.js"
 import { openOrganizerDatabase, listOrganizerAgents, markStaleAgentsOffline, listOrganizerTasks } from "../../organizer/organizerDb.js"
 
 type AgentRow = {
-  id: string
-  name: string
-  hostname: string
-  project_name: string
-  project_root: string
-  status: string
-  api_base_url: string
-  api_enabled: number
-  actions_json: string
-  models_json: string
-  index_json: string
-  capabilities_json: string
-  current_task_id: string | null
-  last_heartbeat_at: number
-  registered_at: number
-  updated_at: number
+  id: string; name: string; status: string; last_heartbeat_at: number
 }
-
 type TaskRow = {
-  id: string
-  title: string
-  status: string
-  assignedAgentId: string | null
-  currentIteration: number
-  maxIterations: number
-  priority: number
-  mode: string
-  autoApprove: boolean
-  autoApply: boolean
+  id: string; title: string; status: string; assignedAgentId: string | null
+  implementModel: string; reviewModel: string; updatedAt: number
 }
 
-export type OrganizerScreenProps = {
-  onBack: () => void
+export type OrganizerScreenProps = { onBack: () => void }
+
+function truncEnd(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + "…" : s
+}
+
+function pad(s: string | number, n: number): string {
+  const str = String(s)
+  return str.length > n ? str.slice(0, n) : str + " ".repeat(n - str.length)
 }
 
 function ago(ts: number): string {
   const s = Math.round((Date.now() - ts) / 1000)
   if (s < 0) return "now"
   if (s < 5) return "now"
-  if (s < 60) return `${s}s ago`
-  if (s < 3600) return `${Math.round(s / 60)}m ago`
-  return `${Math.round(s / 3600)}h ago`
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.round(s / 60)}m`
+  return `${Math.round(s / 3600)}h`
 }
 
-function statusColor(s: string): string {
-  switch (s) {
-    case "offline": return theme.dim
-    case "error": return theme.error
-    case "busy":
-    case "indexing": return theme.warn
-    default: return theme.primary
+function countMap<T extends Record<string, number>>(items: Array<{ status: string }>, keys: string[]): T {
+  const out: Record<string, number> = {}
+  for (const k of keys) out[k] = 0
+  for (const i of items) {
+    if (out[i.status] !== undefined) out[i.status]++
   }
-}
-
-function dot(s: string): string {
-  switch (s) {
-    case "offline":
-    case "error": return "○"
-    case "busy":
-    case "indexing": return "◉"
-    default: return "●"
-  }
-}
-
-function parseModels(json: string): string {
-  try { const m = JSON.parse(json) as Record<string, string>; return Object.values(m).find(Boolean) ?? "?"; } catch { return "?" }
-}
-
-function parseModelsAll(json: string): Record<string, string> {
-  try { return JSON.parse(json) as Record<string, string>; } catch { return {} }
-}
-
-function parseIndex(json: string): { files: number; symbols: number; dirty: number; freshness: number } {
-  try { return JSON.parse(json) as { files: number; symbols: number; dirty: number; freshness: number }; } catch { return { files: 0, symbols: 0, dirty: 0, freshness: 1 }; }
-}
-
-function parseCapabilities(json: string): string[] {
-  try { return JSON.parse(json) as string[]; } catch { return [] }
-}
-
-function taskStatusColor(s: string): string {
-  switch (s) {
-    case "running":
-    case "iterating": return theme.warn
-    case "needs_review": return theme.accent
-    case "failed": return theme.error
-    case "completed":
-    case "auto_approved": return theme.primary
-    case "skipped":
-    case "cancelled": return theme.dim
-    default: return theme.dim
-  }
-}
-
-function taskStatusTag(s: string): string {
-  return s.replace(/_/g, " ")
-}
-
-function pad(s: string | number, n: number): string {
-  return String(s).padEnd(n, " ").slice(0, n)
-}
-
-function trunc(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n - 1) + "…" : s
+  return out as T
 }
 
 export function OrganizerScreen({ onBack }: OrganizerScreenProps) {
+  const { stdout } = useStdout()
   const [agents, setAgents] = useState<AgentRow[]>([])
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [tick, setTick] = useState(0)
-  const [selectedIdx, setSelectedIdx] = useState(0)
-  const [detailTab, setDetailTab] = useState<"overview" | "tasks" | "capabilities">("overview")
+  const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    const db = openOrganizerDatabase()
-    markStaleAgentsOffline(db, 15000)
-    const agentList = listOrganizerAgents(db) as AgentRow[]
-    const taskList = listOrganizerTasks(db) as TaskRow[]
-    setAgents(agentList)
-    setTasks(taskList)
-    db.close()
-  }, [tick])
+  const cols = stdout.columns ?? 80
+  const rows = stdout.rows ?? 24
+
+  const load = useCallback(() => {
+    try {
+      const db = openOrganizerDatabase()
+      markStaleAgentsOffline(db, 15000)
+      setAgents(listOrganizerAgents(db) as AgentRow[])
+      setTasks(listOrganizerTasks(db) as TaskRow[])
+      db.close()
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [])
+
+  useEffect(() => { load() }, [tick, load])
 
   useEffect(() => {
     const interval = setInterval(() => setTick(t => t + 1), 2000)
@@ -133,280 +71,153 @@ export function OrganizerScreen({ onBack }: OrganizerScreenProps) {
   }, [])
 
   useInput((char, key) => {
-    if (key.escape) { onBack(); return }
-    if (key.downArrow || (char === "j" && !key.ctrl)) {
-      setSelectedIdx((v) => Math.min(v + 1, agents.length - 1))
-      return
-    }
-    if (key.upArrow || (char === "k" && !key.ctrl)) {
-      setSelectedIdx((v) => Math.max(0, v - 1))
-      return
-    }
-    if (key.tab) {
-      setDetailTab((t) => {
-        const tabs: Array<"overview" | "tasks" | "capabilities"> = ["overview", "tasks", "capabilities"]
-        const idx = tabs.indexOf(t)
-        return tabs[(idx + 1) % tabs.length]
-      })
-      return
-    }
-    if (char === "1") { setDetailTab("overview"); return }
-    if (char === "2") { setDetailTab("tasks"); return }
-    if (char === "3") { setDetailTab("capabilities"); return }
+    if (key.escape || char === "q") { onBack(); return }
+    if (char === "r") { load(); return }
   })
 
-  const online = agents.filter(a => a.status !== "offline")
-  const offline = agents.filter(a => a.status === "offline")
-  const selected = agents[selectedIdx]
-
-  const taskCounts = { total: tasks.length, running: 0, needs_review: 0, completed: 0, failed: 0, queued: 0, assigned: 0 }
-  for (const t of tasks) {
-    if (t.status in taskCounts) (taskCounts as Record<string, number>)[t.status]++
+  if (error) {
+    return (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <Text color={theme.error}>Organizer unavailable: {error}</Text>
+        <Text color={theme.dim}>Dashboard: http://127.0.0.1:8787/dashboard</Text>
+        <Text color={theme.dim}>Press q or Esc to exit</Text>
+      </Box>
+    )
   }
 
-  const agentTasks = selected ? tasks.filter(t => t.assignedAgentId === selected.id) : []
+  const agentCounts = countMap<Record<string, number>>(agents, ["online", "busy", "indexing", "idle", "offline", "error", "paused"])
+  const agentOnline = agentCounts.online + agentCounts.idle
+  const agentBusy = agentCounts.busy + agentCounts.indexing
+  const agentOff = agentCounts.offline + (agentCounts.error ?? 0)
 
-  const LIST_WIDTH = 36
+  const taskCounts = countMap<Record<string, number>>(tasks, [
+    "queued", "assigned", "running", "reviewing", "iterating",
+    "needs_review", "auto_approved", "completed", "failed", "skipped", "cancelled"
+  ])
+  const taskActive = taskCounts.running + taskCounts.iterating + taskCounts.reviewing
+  const taskReview = taskCounts.needs_review + taskCounts.auto_approved
+  const taskDone = taskCounts.completed
+
+  // Model usage from tasks with assignedAgentId
+  type ModelUsage = { model: string; impl: number; review: number }
+  const modelMap = new Map<string, ModelUsage>()
+  for (const t of tasks) {
+    if (t.implementModel) {
+      const m = modelMap.get(t.implementModel) ?? { model: t.implementModel, impl: 0, review: 0 }
+      m.impl++
+      modelMap.set(t.implementModel, m)
+    }
+    if (t.reviewModel) {
+      const m = modelMap.get(t.reviewModel) ?? { model: t.reviewModel, impl: 0, review: 0 }
+      m.review++
+      modelMap.set(t.reviewModel, m)
+    }
+  }
+  const models = [...modelMap.values()].sort((a, b) => (b.impl + b.review) - (a.impl + b.review))
+
+  // Recent activity from task updatedAt
+  const recent = [...tasks]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 12)
+
+  const innerWidth = cols - 2
+  const maxModelLines = rows > 40 ? 6 : 4
+  const fixedRows = 11
+  const maxRecent = Math.max(2, Math.min(12, rows - fixedRows - maxModelLines))
+
+  function line(label: string, value: string, color?: string): string {
+    const labelLen = label.length
+    const valueLen = innerWidth - 2 - labelLen
+    const d = truncEnd(value, valueLen)
+    const padLen = Math.max(0, innerWidth - labelLen - d.length)
+    return label + d + " ".repeat(padLen)
+  }
+
+  function makeline(label: string, ...parts: Array<{ text: string; color?: string }>) {
+    const labelStr = truncEnd(label, 14)
+    let rest = ""
+    for (const p of parts) rest += p.text + " "
+    rest = truncEnd(rest.trim(), innerWidth - labelStr.length)
+    return (
+      <Text>
+        <Text color={theme.dim}>{labelStr}</Text>
+        <Text>{rest}</Text>
+      </Text>
+    )
+  }
 
   return (
-    <Box flexDirection="column" width="100%" height="100%" paddingX={0}>
-      {/* Header bar */}
-      <Box flexDirection="column" borderStyle="single" borderColor={theme.border} paddingX={1}>
-        <Box>
-          <Text>
-            <Text color={theme.primary} bold>Agent Smith Organizer</Text>
-            <Text color={theme.dim}>  port 8787  </Text>
-            <Text color={theme.accent}>http://127.0.0.1:8787/dashboard</Text>
-          </Text>
-        </Box>
-        <Box>
-          <Text color={theme.dim}>
-            {agents.length} agents · {online.length} online · {offline.length} offline
-            {" · "}{taskCounts.running} running · {taskCounts.needs_review} needs review · {taskCounts.completed} done
-            {"  "}<Text color={theme.dim}>[↑↓:nav] [Tab:switch tab] [1/2/3:tabs] [Esc:exit]</Text>
-          </Text>
-        </Box>
+    <Box flexDirection="column" width={cols} height={rows} paddingX={1}>
+      {/* Title line */}
+      <Box flexDirection="row">
+        <Text>
+          <Text color={theme.primary} bold>Agent Smith Organizer</Text>
+          <Text color={theme.dim}>  http://127.0.0.1:8787/dashboard</Text>
+        </Text>
       </Box>
 
-      {/* Main content: left agent list + right detail */}
-      <Box flexDirection="row" flexGrow={1}>
-        {/* Left panel: agent list */}
-        <Box
-          flexDirection="column"
-          width={LIST_WIDTH}
-          borderStyle="single"
-          borderColor={theme.border}
-          borderTop={false}
-          paddingX={1}
-          flexShrink={0}
-        >
-          <Text color={theme.accent} bold>AGENTS ({agents.length})</Text>
-          <Box flexDirection="column" marginTop={0}>
-            {agents.length === 0 && (
-              <Box marginY={1}>
-                <Text color={theme.dim}>No agents connected.</Text>
-                <Text color={theme.dim}>Workers auto-register via</Text>
-                <Text color={theme.dim}>smith api or /api</Text>
-              </Box>
-            )}
-            {agents.map((a, i) => {
-              const active = i === selectedIdx
-              const agentTaskCount = tasks.filter(t => t.assignedAgentId === a.id && (t.status === "running" || t.status === "iterating" || t.status === "assigned" || t.status === "reviewing" || t.status === "needs_review")).length
-              const bgColor = active ? theme.accent : undefined
-              const fgColor = active ? "black" : statusColor(a.status)
-              const nameColor = active ? "black" : theme.primary
-              return (
-                <Box key={a.id} flexDirection="column">
-                  <Text>
-                    {active ? <Text color={bgColor} inverse>{">"}</Text> : <Text> </Text>}
-                    <Text color={active ? "black" : undefined} inverse={active}>
-                      <Text color={statusColor(a.status)}>{dot(a.status)}</Text>
-                      <Text color={active ? "black" : theme.primary} bold={!active}> {trunc(a.name, 20)}</Text>
-                    </Text>
-                  </Text>
-                  <Text color={active ? "black" : theme.dim} inverse={active}>
-                    {"  "}{trunc(a.status, 8)} · {trunc(a.project_name || a.hostname, 16)}
-                  </Text>
-                  {agentTaskCount > 0 && (
-                    <Text color={active ? "black" : theme.warn} inverse={active}>
-                      {"  "}{agentTaskCount} active task{agentTaskCount > 1 ? "s" : ""}
-                    </Text>
-                  )}
-                  <Text color={active ? "black" : theme.dim} inverse={active}>
-                    {"  "}seen {ago(a.last_heartbeat_at)}
-                  </Text>
-                </Box>
-              )
-            })}
-          </Box>
-        </Box>
-
-        {/* Right panel: agent detail */}
-        <Box
-          flexDirection="column"
-          flexGrow={1}
-          borderStyle="single"
-          borderColor={theme.border}
-          borderTop={false}
-          borderLeft={false}
-          paddingX={1}
-        >
-          {!selected ? (
-            <Box flexDirection="column" alignItems="center" marginTop={2}>
-              <Text color={theme.dim}>← Select an agent to view details</Text>
-            </Box>
-          ) : (
-            <Box flexDirection="column">
-              {/* Tabs */}
-              <Box flexDirection="row" marginBottom={1} gap={2}>
-                <Text color={detailTab === "overview" ? theme.accent : theme.dim} inverse={detailTab === "overview"} bold={detailTab === "overview"}>
-                  [1] Overview
-                </Text>
-                <Text color={detailTab === "tasks" ? theme.accent : theme.dim} inverse={detailTab === "tasks"} bold={detailTab === "tasks"}>
-                  [2] Tasks ({agentTasks.length})
-                </Text>
-                <Text color={detailTab === "capabilities" ? theme.accent : theme.dim} inverse={detailTab === "capabilities"} bold={detailTab === "capabilities"}>
-                  [3] Capabilities
-                </Text>
-              </Box>
-
-              {detailTab === "overview" && (
-                <Box flexDirection="column">
-                  <Text><Text color={theme.primary} bold>{selected.name}</Text></Text>
-                  <Text color={theme.dim}>{selected.id}</Text>
-                  <Box marginTop={1} flexDirection="column">
-                    <Text><Text color={theme.dim}>Status:     </Text><Text color={statusColor(selected.status)}>{selected.status}</Text></Text>
-                    <Text><Text color={theme.dim}>Host:       </Text><Text>{selected.hostname}</Text></Text>
-                    <Text><Text color={theme.dim}>Project:    </Text><Text>{selected.project_name}</Text></Text>
-                    <Text><Text color={theme.dim}>Root:       </Text><Text>{trunc(selected.project_root, 50)}</Text></Text>
-                    <Text><Text color={theme.dim}>API URL:    </Text><Text>{selected.api_base_url || "—"}</Text></Text>
-                    <Text><Text color={theme.dim}>API Enabled:</Text><Text>{selected.api_enabled ? "Yes" : "No"}</Text></Text>
-                    <Text><Text color={theme.dim}>Model:      </Text><Text>{parseModels(selected.models_json)}</Text></Text>
-                    <Text>
-                      <Text color={theme.dim}>Last seen:  </Text>
-                      <Text color={selected.status === "offline" ? theme.error : theme.dim}>{ago(selected.last_heartbeat_at)}</Text>
-                    </Text>
-                  </Box>
-
-                  {(() => { const ix = parseIndex(selected.index_json); return ix.files > 0 ? (
-                    <Box flexDirection="column" marginTop={1}>
-                      <Text color={theme.accent} bold>Index</Text>
-                      <Text color={theme.dim}>  Files: {ix.files}  Symbols: {ix.symbols}  Dirty: {ix.dirty}</Text>
-                      <Text color={theme.dim}>  Freshness: {Math.round(ix.freshness * 100)}%</Text>
-                    </Box>
-                  ) : null })()}
-
-                  {(() => {
-                    const allModels = parseModelsAll(selected.models_json)
-                    const entries = Object.entries(allModels).filter(([,v]) => v)
-                    if (entries.length === 0) return null
-                    return (
-                      <Box flexDirection="column" marginTop={1}>
-                        <Text color={theme.accent} bold>Models</Text>
-                        {entries.map(([k, v]) => (
-                          <Text key={k} color={theme.dim}>  {k}: {v}</Text>
-                        ))}
-                      </Box>
-                    )
-                  })()}
-
-                  {selected.current_task_id && (
-                    <Box flexDirection="column" marginTop={1}>
-                      <Text color={theme.warn} bold>Current Task</Text>
-                      <Text color={theme.dim}>  ID: {selected.current_task_id}</Text>
-                      {(() => {
-                        const ct = tasks.find(t => t.id === selected.current_task_id)
-                        if (!ct) return null
-                        return (
-                          <Box flexDirection="column">
-                            <Text color={theme.primary}>  {ct.title}</Text>
-                            <Text color={taskStatusColor(ct.status)}>  Status: {taskStatusTag(ct.status)}</Text>
-                            <Text color={theme.dim}>  Iteration: {ct.currentIteration}/{ct.maxIterations}</Text>
-                            <Text color={theme.dim}>  Mode: {ct.mode || "—"}</Text>
-                          </Box>
-                        )
-                      })()}
-                    </Box>
-                  )}
-                </Box>
-              )}
-
-              {detailTab === "tasks" && (
-                <Box flexDirection="column">
-                  <Text color={theme.dim} bold>Tasks for {selected.name}</Text>
-                  {agentTasks.length === 0 ? (
-                    <Box marginY={1}>
-                      <Text color={theme.dim}>No tasks assigned to this agent.</Text>
-                    </Box>
-                  ) : (
-                    agentTasks.map(t => (
-                      <Box key={t.id} flexDirection="column" marginBottom={0}>
-                        <Text>
-                          <Text color={taskStatusColor(t.status)}>● </Text>
-                          <Text color={theme.primary}>{trunc(t.title, 50)}</Text>
-                        </Text>
-                        <Text color={theme.dim}>
-                          {"  "}Status: {taskStatusTag(t.status)} · Iter: {t.currentIteration}/{t.maxIterations} · Mode: {t.mode || "—"}
-                          {" · Priority: "}{t.priority}
-                          {t.autoApprove ? <Text color={theme.primary}> AUTO</Text> : null}
-                          {t.autoApply ? <Text color={theme.accent}> APPLY</Text> : null}
-                        </Text>
-                      </Box>
-                    ))
-                  )}
-                </Box>
-              )}
-
-              {detailTab === "capabilities" && (
-                <Box flexDirection="column">
-                  <Text color={theme.dim} bold>Capabilities</Text>
-                  {(() => {
-                    const caps = parseCapabilities(selected.capabilities_json)
-                    if (caps.length === 0) return <Text color={theme.dim}>No capabilities listed</Text>
-                    return (
-                      <Box flexDirection="column" marginTop={1}>
-                        {caps.map(c => (
-                          <Text key={c} color={theme.primary}>  ✓ {c}</Text>
-                        ))}
-                      </Box>
-                    )
-                  })()}
-
-                  <Box marginTop={1}>
-                    <Text color={theme.dim} bold>Actions</Text>
-                  </Box>
-                  {(() => {
-                    try {
-                      const actions = JSON.parse(selected.actions_json) as Array<{ name: string; description: string }>
-                      if (!Array.isArray(actions) || actions.length === 0) return <Text color={theme.dim}>No actions listed</Text>
-                      return (
-                        <Box flexDirection="column" marginTop={0}>
-                          {actions.map((a, i) => (
-                            <Text key={i} color={theme.dim}>  {a.name}: {a.description}</Text>
-                          ))}
-                        </Box>
-                      )
-                    } catch { return <Text color={theme.dim}>—</Text> }
-                  })()}
-                </Box>
-              )}
-
-              {/* Agent actions */}
-              <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor={theme.border} paddingX={1}>
-                <Text color={theme.dim}>
-                  API: {selected.api_base_url} (use <Text color={theme.accent}>/agent {selected.name}</Text> in web dashboard or agent chat proxy)
-                </Text>
-              </Box>
-            </Box>
-          )}
-        </Box>
+      {/* Stats */}
+      <Box flexDirection="column" marginTop={0}>
+        <Text>
+          <Text color={theme.accent}>Agents: </Text>
+          <Text>total {agents.length} · </Text>
+          <Text color={theme.primary}>online {agentOnline} </Text>
+          <Text>· </Text>
+          <Text color={theme.warn}>busy {agentBusy} </Text>
+          <Text>· </Text>
+          <Text color={theme.dim}>off {agentOff}</Text>
+        </Text>
+        <Text>
+          <Text color={theme.accent}>Tasks:  </Text>
+          <Text>total {tasks.length} · </Text>
+          <Text color={theme.warn}>active {taskActive} </Text>
+          <Text>· review {taskReview} · done {taskDone}</Text>
+          {taskCounts.queued > 0 && <Text color={theme.dim}> · queued {taskCounts.queued}</Text>}
+          {taskCounts.failed > 0 && <Text color={theme.error}> · failed {taskCounts.failed}</Text>}
+        </Text>
       </Box>
+
+      {/* Models */}
+      {models.length > 0 && (
+        <Box flexDirection="column" marginTop={0}>
+          <Text color={theme.dim}>Models</Text>
+          {models.slice(0, maxModelLines).map(m => (
+            <Text key={m.model}>
+              <Text color={theme.dim}>  {truncEnd(m.model, 30)} </Text>
+              <Text color={theme.primary}>impl {m.impl}</Text>
+              <Text color={m.review > 0 ? theme.accent : theme.dim}> review {m.review}</Text>
+            </Text>
+          ))}
+        </Box>
+      )}
+
+      {/* Recent activity */}
+      {recent.length > 0 && (
+        <Box flexDirection="column" marginTop={0}>
+          <Text color={theme.dim}>Recent</Text>
+          {recent.slice(0, maxRecent).map(t => {
+            const title = truncEnd(t.title, innerWidth - 28)
+            return (
+              <Text key={t.id}>
+                <Text color={theme.dim}>{ago(t.updatedAt).padEnd(4)} </Text>
+                <Text color={theme.dim}>{truncEnd(t.status, 14).padEnd(15)}</Text>
+                <Text>{title}</Text>
+              </Text>
+            )
+          })}
+        </Box>
+      )}
+
+      {agents.length === 0 && (
+        <Box marginTop={1}>
+          <Text color={theme.dim}>No agents connected. Full dashboard: http://127.0.0.1:8787/dashboard</Text>
+        </Box>
+      )}
 
       {/* Footer */}
-      <Box borderStyle="single" borderColor={theme.border} paddingX={1}>
+      <Box marginTop={0} flexDirection="row">
         <Text color={theme.dim}>
-          Port 8787 · Tasks: {taskCounts.total} total ({taskCounts.running} running, {taskCounts.needs_review} needs review, {taskCounts.completed} done)
-          {" · Agents: "}{online.length} online / {agents.length} total
+          q quit · r refresh · full controls at http://127.0.0.1:8787/dashboard
         </Text>
       </Box>
     </Box>

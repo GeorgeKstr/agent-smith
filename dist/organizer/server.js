@@ -72,7 +72,12 @@ export async function startOrganizerServer(args) {
                 res.end();
                 return;
             }
-            if (url === "/" || url === "/api") {
+            if (url === "/") {
+                res.writeHead(302, { Location: "/dashboard" });
+                res.end();
+                return;
+            }
+            if (url === "/api") {
                 sendText(res, 200, [
                     "Agent Smith Organizer online.",
                     "GET  /dashboard",
