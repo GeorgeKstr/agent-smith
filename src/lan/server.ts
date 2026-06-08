@@ -11,7 +11,7 @@ import { html } from "../web/html.js"
 import { styles } from "../web/styles.js"
 import { clientJs } from "../web/client.js"
 import { sendChatMessage, getSessionWithMessages } from "../chat/chatRuntime.js"
-import { createChatSession, listChatSessions, getChatSession, listChatMessages, getOpenQuestions, answerUserQuestion } from "../chat/chatStore.js"
+import { createChatSession, listChatSessions, getChatSession, deleteChatSession, updateChatSessionTitle, listChatMessages, getOpenQuestions, answerUserQuestion } from "../chat/chatStore.js"
 
 export type ChatEntry = {
   role: "user" | "assistant" | "system" | "patch"
@@ -311,13 +311,26 @@ export function startLanServer(args: {
       }
       void (async () => {
         try {
-          const content = await readFile(absPath, "utf-8")
-          const fileRow = db.prepare("SELECT summary, importance FROM files WHERE path=?").get(rel) as { summary: string | null; importance: number } | undefined
-          res.writeHead(200, { "Content-Type": "application/json" })
-          res.end(JSON.stringify({ content, summary: fileRow?.summary ?? null, importance: fileRow?.importance ?? 0 }))
+          const ext = path.extname(rel).toLowerCase()
+          const imageExts = new Set([".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico"])
+          const isImage = imageExts.has(ext)
+          if (isImage) {
+            const extMap: Record<string, string> = { ".svg": "image/svg+xml", ".jpg": "image/jpeg", ".jpeg": "image/jpeg" }
+            const mime = extMap[ext] ?? `image/${ext.slice(1)}`
+            const buf = await readFile(absPath)
+            const content = buf.toString("base64")
+            const fileRow = db.prepare("SELECT summary FROM files WHERE path=?").get(rel) as { summary: string | null } | undefined
+            res.writeHead(200, { "Content-Type": "application/json" })
+            res.end(JSON.stringify({ ok: true, content, mimeType: mime, isImage: true, summary: fileRow?.summary ?? null }))
+          } else {
+            const content = await readFile(absPath, "utf-8")
+            const fileRow = db.prepare("SELECT summary, importance FROM files WHERE path=?").get(rel) as { summary: string | null; importance: number } | undefined
+            res.writeHead(200, { "Content-Type": "application/json" })
+            res.end(JSON.stringify({ ok: true, content, summary: fileRow?.summary ?? null, importance: fileRow?.importance ?? 0 }))
+          }
         } catch {
           res.writeHead(404, { "Content-Type": "application/json" })
-          res.end(JSON.stringify({ error: "file not found" }))
+          res.end(JSON.stringify({ ok: false, error: "file not found" }))
         }
       })()
       return
@@ -620,6 +633,26 @@ export function startLanServer(args: {
             const result = await sendChatMessage({ root, config, db, events, indexer, sessionId: m[1], prompt: (b?.prompt as string) || "", actionKind: typeof b?.actionKind === "string" ? b.actionKind : undefined, model: typeof b?.model === "string" ? b.model : undefined });
             res.writeHead(200, { "Content-Type": "application/json" })
             res.end(JSON.stringify({ ok: result.ok, session: result.session, userMessage: result.userMessage, assistantMessage: result.assistantMessage, result: result.result }))
+          } catch (e) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: false, error: String(e) })) }
+        })
+        return
+      }
+      if (m && req.method === "DELETE") {
+        const deleted = deleteChatSession(db, m[1])
+        res.writeHead(deleted ? 200 : 404, { "Content-Type": "application/json" })
+        res.end(JSON.stringify({ ok: deleted, sessionId: m[1] }))
+        return
+      }
+      if (m && req.method === "PATCH") {
+        let bdy = ""; req.on("data", (c: string) => { bdy += c });
+        req.on("end", () => {
+          try {
+            const b = JSON.parse(bdy) as Record<string, unknown> | null;
+            if (!b || typeof b.title !== "string") { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: false, error: "title required" })); return }
+            const updated = updateChatSessionTitle(db, m[1], b.title as string)
+            if (!updated) { res.writeHead(404, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: false, error: "Not found" })); return }
+            res.writeHead(200, { "Content-Type": "application/json" })
+            res.end(JSON.stringify({ ok: true, session: updated }))
           } catch (e) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: false, error: String(e) })) }
         })
         return

@@ -19,7 +19,7 @@ var S={
   ingestOpen:false,newOpen:false,
   filter:{q:'',status:''},
   ing:{format:'auto',text:'',implModel:'',revModel:'',maxIter:3,autoapr:false,autoapl:false,preview:null},
-  currentFile:null,fileContent:null,fileEditing:false,treeFilter:'',fileSummary:null,
+  currentFile:null,fileContent:null,fileEditing:false,treeFilter:'',fileSummary:null,fileMimeType:null,fileIsImage:false,
   dashData:null,
   typing:false,confirmCb:null
 };
@@ -177,7 +177,7 @@ function selectAgent(id){
   S.agentId=id;S.tab='chat';
   if(hasSidebar&&id){agentBase='/api/agents/'+id;window.__setAgentApiBase(agentBase);}
   S.chat={sessions:[],sid:null,msgs:[],qtns:[],sending:false,allModels:[]};
-  S.exp={};S.tl={};S.ingestOpen=false;S.newOpen=false;S.currentFile=null;S.dashData=null;
+  S.exp={};S.tl={};S.ingestOpen=false;S.newOpen=false;S.currentFile=null;S.fileContent=null;S.fileMimeType=null;S.fileIsImage=false;S.dashData=null;
   render();
   loadSessions();
   loadModels();
@@ -185,7 +185,7 @@ function selectAgent(id){
 
 /* ── Chat ── */
 function renderChat(el,a){
-  var h='<div class=chat-outer><div class=chat-tb><select id=chat-sess class="sel ct-sel" onchange="pickSession(this.value)"><option value="">Select session...</option>'+S.chat.sessions.map(function(s){return'<option value="'+s.id+'"'+(S.chat.sid===s.id?' selected':'')+'>'+esc(s.title||short(s.id))+'</option>';}).join('')+'</select><button class="btn btn-sm btn-primary" onclick=newSession()>+ New</button></div>';
+  var h='<div class=chat-outer><div class=chat-tb><select id=chat-sess class="sel ct-sel" onchange="pickSession(this.value)"><option value="">Select session...</option>'+S.chat.sessions.map(function(s){return'<option value="'+s.id+'"'+(S.chat.sid===s.id?' selected':'')+'>'+esc(s.title||short(s.id))+'</option>';}).join('')+'</select><button class="btn btn-sm btn-primary" onclick=newSession()>+ New</button>'+(S.chat.sid?'<button class="btn btn-sm" onclick=renameSession() title="Rename">&#9998;</button><button class="btn btn-sm btn-danger" onclick=deleteSession() title="Delete">&#10005;</button>':'')+'</div>';
   if(!S.chat.sid)h+='<div class=chat-no-sess>Select or create a session</div>';
   else{
     h+='<div class=chat-msgs id=chat-msgs>';
@@ -201,6 +201,8 @@ async function pickSession(s){S.chat.sid=s||null;S.chat.msgs=[];S.chat.qtns=[];i
 async function newSession(){try{var r=await aapi('/chat/sessions',{method:'POST',body:{}});if(r.session){S.chat.sid=r.session.id;if(!S.chat.allModels.length)await loadModels();await loadSessions();await loadMsgs(r.session.id);}}catch(e){toast(e.message,true);}}
 async function sendMsg(){if(!S.chat.sid)return;var inp=$e('chat-ta');if(!inp)return;var p=inp.value.trim();if(!p)return;var btn=$e('send-btn');S.chat.sending=true;inp.disabled=true;if(btn)btn.disabled=true;S.chat.msgs.push({role:'user',content:p,ts:Date.now()});inp.value='';inp.style.height='auto';renderMainOnly();scrollChat();try{var b={prompt:p};var ak=$e('chat-kind');if(ak&&ak.value)b.actionKind=ak.value;var mk=$e('chat-model');if(mk&&mk.value)b.model=mk.value;await aapi('/chat/sessions/'+S.chat.sid,{method:'POST',body:b});await loadMsgs(S.chat.sid);}catch(e){toast(e.message,true);}S.chat.sending=false;var i=$e('chat-ta');if(i)i.disabled=false;var b2=$e('send-btn');if(b2)b2.disabled=false;}
 async function answerQ(qid){var inp=$e('qa-'+qid);if(!inp)return;var a=inp.value.trim();if(!a){toast('Enter an answer',true);return;}try{await aapi('/questions/'+qid,{method:'POST',body:{answer:a}});toast('Answered','');await loadMsgs(S.chat.sid);}catch(e){toast(e.message,true);}}
+async function deleteSession(){if(!S.chat.sid)return;ask('Delete this session and all its messages?',async function(){try{await aapi('/chat/sessions/'+S.chat.sid,{method:'DELETE'});toast('Deleted','');S.chat.sid=null;S.chat.msgs=[];S.chat.qtns=[];await loadSessions();}catch(e){toast(e.message,true);}});}
+async function renameSession(){if(!S.chat.sid)return;var cur=S.chat.sessions.find(function(s){return s.id===S.chat.sid;});var nm=prompt('New session name:',cur?cur.title:'');if(!nm||!nm.trim())return;try{await aapi('/chat/sessions/'+S.chat.sid,{method:'PATCH',body:{title:nm.trim()}});toast('Renamed','');var sel=$e('chat-sess');if(sel){var opt=sel.querySelector('option[value="'+S.chat.sid+'"]');if(opt)opt.textContent=nm.trim();}}catch(e){toast(e.message,true);}}
 
 /* ── Tasks ── */
 function renderTasks(el,a){
@@ -246,10 +248,17 @@ function filterTree(q){S.treeFilter=q;var lq=q.toLowerCase();document.querySelec
 async function openFile(path){
   S.currentFile=path;S.fileEditing=false;S.fileSummary=null;
   var pp=$e('file-preview-pane');if(!pp)return;
-  pp.innerHTML='<div class=fpp-hdr><span class=fpp-path>'+esc(path)+'</span><div class=fpp-actions><button class="btn btn-xs" id=edit-btn onclick=toggleEdit()>Edit</button></div></div><div class=fpp-body id=fpp-body><div class=fpp-pre id=fpp-pre>Loading...</div><textarea class=fpp-ta id=fpp-ta style=display:none></textarea></div><div class=fpp-summary id=fpp-sum style=display:none></div>';
-  try{var r=await aapi('/file?path='+encodeURIComponent(path));S.fileContent=r.content||'';S.fileSummary=r.summary||null;updateFilePreview();}catch(e){var pre=$e('fpp-pre');if(pre)pre.textContent='Error: '+e.message;}
+  var ext=(path.split('.').pop()||'').toLowerCase();
+  var imgExts={png:1,jpg:1,jpeg:1,gif:1,svg:1,webp:1,bmp:1,ico:1};
+  pp.innerHTML='<div class=fpp-hdr><span class=fpp-path>'+esc(path)+'</span><div class=fpp-actions>'+(imgExts[ext]?'':'<button class="btn btn-xs" id=edit-btn onclick=toggleEdit()>Edit</button>')+'</div></div><div class=fpp-body id=fpp-body>'+(imgExts[ext]?'<div class=fpp-img-wrap id=fpp-img-wrap>Loading...</div>':'<div class=fpp-pre id=fpp-pre>Loading...</div><textarea class=fpp-ta id=fpp-ta style=display:none></textarea>')+'</div><div class=fpp-summary id=fpp-sum style=display:none></div>';
+  try{var r=await aapi('/file?path='+encodeURIComponent(path));S.fileContent=r.content||'';S.fileSummary=r.summary||null;S.fileMimeType=r.mimeType||null;S.fileIsImage=r.isImage||false;updateFilePreview();}catch(e){var pre=$e('fpp-pre');if(pre)pre.textContent='Error: '+e.message;var iw=$e('fpp-img-wrap');if(iw)iw.textContent='Error: '+e.message;}
 }
 function updateFilePreview(){
+  if(S.fileIsImage){
+    var iw=$e('fpp-img-wrap');if(iw&&S.fileContent){iw.innerHTML='<img src="data:'+(S.fileMimeType||'image/png')+';base64,'+S.fileContent+'" style="max-width:100%;max-height:70vh;display:block;margin:0 auto" alt="'+esc(S.currentFile||'')+'">';}
+    var sum=$e('fpp-sum');if(sum){if(S.fileSummary){sum.textContent=S.fileSummary;sum.style.display='';}else sum.style.display='none';}
+    return;
+  }
   var pre=$e('fpp-pre'),ta=$e('fpp-ta'),eb=$e('edit-btn'),sum=$e('fpp-sum');
   if(S.fileEditing){if(pre)pre.style.display='none';if(ta){ta.value=S.fileContent||'';ta.style.display='';}if(eb)eb.textContent='View';}else{if(pre){pre.textContent=S.fileContent||'';pre.style.display='';}if(ta)ta.style.display='none';if(eb)eb.textContent='Edit';}
   if(sum){if(S.fileSummary){sum.textContent=S.fileSummary;sum.style.display='';}else sum.style.display='none';}
@@ -292,6 +301,7 @@ window.doDispatch=doDispatch;window.doAct=doAct;window.savePolicy=savePolicy;
 window.createTask=createTask;window.previewIngest=previewIngest;window.runIngest=runIngest;
 window.toggleIngest=toggleIngest;window.toggleNew=toggleNew;
 window.pickSession=pickSession;window.newSession=newSession;window.sendMsg=sendMsg;window.answerQ=answerQ;
+window.deleteSession=deleteSession;window.renameSession=renameSession;
 window.openFile=openFile;window.filterTree=filterTree;window.toggleEdit=toggleEdit;
 window.ask=ask;window.yesConfirm=yesConfirm;window.noConfirm=noConfirm;
 window.render=render;window.refresh=refresh;window.renderTasksOnly=renderTasksOnly;

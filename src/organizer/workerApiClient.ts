@@ -21,9 +21,11 @@ export type WorkerApiClient = {
   createChatSession?(input: { title?: string; scope?: string }): Promise<{ ok: boolean; session?: unknown; error?: string }>;
   getChatSession?(sessionId: string): Promise<{ ok: boolean; session?: unknown; messages?: unknown[]; openQuestions?: unknown[]; error?: string }>;
   sendChatMessage?(sessionId: string, input: { prompt: string; actionKind?: string; model?: string }): Promise<{ ok: boolean; session?: unknown; messages?: unknown[]; error?: string }>;
+  deleteChatSession?(sessionId: string): Promise<{ ok: boolean; error?: string }>;
+  renameChatSession?(sessionId: string, title: string): Promise<{ ok: boolean; session?: unknown; error?: string }>;
   listModels?(): Promise<{ ok: boolean; models?: string[]; error?: string }>;
   getFileTree?(): Promise<{ ok: boolean; files?: unknown[]; error?: string }>;
-  getFile?(filePath: string): Promise<{ ok: boolean; content?: string; summary?: string; importance?: number; error?: string }>;
+  getFile?(filePath: string): Promise<{ ok: boolean; content?: string; summary?: string; importance?: number; mimeType?: string; isImage?: boolean; error?: string }>;
   getDashboard?(): Promise<{ ok: boolean; data?: unknown; error?: string }>;
   getOpenQuestions?(): Promise<{ ok: boolean; questions?: unknown[]; error?: string }>;
   answerQuestion?(questionId: string, answer: unknown): Promise<{ ok: boolean; question?: unknown; error?: string }>;
@@ -69,6 +71,44 @@ export function createWorkerApiClient(args: {
       const res = await fetch(`${baseUrl}${path}`, { headers, signal: controller.signal });
       const data = await res.json().catch(() => null);
       if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+      return { ok: true, data };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function del(path: string): Promise<{ ok: boolean; error?: string }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const res = await fetch(`${baseUrl}${path}`, { method: "DELETE", headers, signal: controller.signal });
+      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function patch(path: string, body?: unknown): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const headers: Record<string, string> = body ? { "Content-Type": "application/json" } : {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const res = await fetch(`${baseUrl}${path}`, {
+        method: "PATCH",
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) return { ok: false, error: `HTTP ${res.status}: ${JSON.stringify(data).slice(0, 200)}` };
       return { ok: true, data };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -131,6 +171,13 @@ export function createWorkerApiClient(args: {
       const r = await post(`/api/chat/sessions/${sessionId}`, input);
       return r.ok ? { ok: true, session: (r.data as { session?: unknown })?.session, messages: (r.data as { messages?: unknown[] })?.messages } : r;
     },
+    deleteChatSession: async (sessionId) => {
+      return del(`/api/chat/sessions/${sessionId}`);
+    },
+    renameChatSession: async (sessionId, title) => {
+      const r = await patch(`/api/chat/sessions/${sessionId}`, { title });
+      return r.ok ? { ok: true, session: (r.data as { session?: unknown })?.session } : r;
+    },
     getOpenQuestions: async () => {
       const r = await get(`/api/questions/open`);
       return r.ok ? { ok: true, questions: (r.data as { questions?: unknown[] })?.questions } : r;
@@ -146,8 +193,8 @@ export function createWorkerApiClient(args: {
     getFile: async (filePath) => {
       const r = await get(`/api/file?path=${encodeURIComponent(filePath)}`);
       if (!r.ok) return { ok: false, error: r.error };
-      const d = r.data as { content?: string; summary?: string; importance?: number } | null;
-      return { ok: true, content: d?.content, summary: d?.summary, importance: d?.importance };
+      const d = r.data as { content?: string; summary?: string; importance?: number; mimeType?: string; isImage?: boolean } | null;
+      return { ok: true, content: d?.content, summary: d?.summary, importance: d?.importance, mimeType: d?.mimeType, isImage: d?.isImage };
     },
     getDashboard: async () => {
       const r = await get(`/api/dashboard`);
