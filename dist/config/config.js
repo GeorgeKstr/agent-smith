@@ -30,7 +30,10 @@ const configSchema = z.object({
         debounceMs: z.number(),
         workerCount: z.number(),
         summaryConcurrency: z.number(),
-        ignore: z.array(z.string())
+        ignore: z.array(z.string()),
+        fileCards: z.boolean().optional(),
+        fileCardModel: z.string().optional(),
+        fileCardConcurrency: z.number().optional()
     }),
     context: z.object({
         maxPromptTokens: z.number(),
@@ -39,7 +42,17 @@ const configSchema = z.object({
         graphDepth: z.number(),
         includeTests: z.boolean(),
         includeTypes: z.boolean(),
-        includeSummaries: z.boolean()
+        includeSummaries: z.boolean(),
+        maxLiveCodeTokens: z.number().optional(),
+        maxToolHistoryTokens: z.number().optional(),
+        maxFileCards: z.number().optional(),
+        maxReadLines: z.number().optional(),
+        maxSearchResults: z.number().optional(),
+        compactAfterToolCalls: z.number().optional(),
+        compactAtTokenRatio: z.number().optional(),
+        maxLeads: z.number().optional(),
+        maxEvidencePerLead: z.number().optional(),
+        maxEvidenceTextChars: z.number().optional()
     }),
     commands: z.object({
         test: z.string(),
@@ -69,6 +82,8 @@ const configSchema = z.object({
         preferNativeToolsForLargeModels: z.boolean(),
         preferDiffOnlyForLocalModels: z.boolean()
     }).optional(),
+    toolCallingMode: z.enum(["local_text", "native_provider", "auto"]).optional(),
+    conversationMode: z.enum(["compact_rebuild", "full_history"]).optional(),
     organizer: z.object({
         enabled: z.boolean(),
         url: z.string(),
@@ -96,11 +111,11 @@ export const DEFAULT_CONFIG = {
     ollama: {
         baseUrl: "http://127.0.0.1:11434",
         temperature: 0,
-        numPredict: 2048
+        numPredict: 4096
     },
     options: {
         temperature: 0,
-        numPredict: 2048
+        numPredict: 4096
     },
     index: {
         watch: true,
@@ -117,7 +132,10 @@ export const DEFAULT_CONFIG = {
             "target",
             ".agent",
             "vendor"
-        ]
+        ],
+        fileCards: false,
+        fileCardModel: "",
+        fileCardConcurrency: 2
     },
     context: {
         maxPromptTokens: 8000,
@@ -126,7 +144,17 @@ export const DEFAULT_CONFIG = {
         graphDepth: 2,
         includeTests: true,
         includeTypes: true,
-        includeSummaries: true
+        includeSummaries: true,
+        maxLiveCodeTokens: 2500,
+        maxToolHistoryTokens: 1000,
+        maxFileCards: 8,
+        maxReadLines: 160,
+        maxSearchResults: 8,
+        compactAfterToolCalls: 6,
+        compactAtTokenRatio: 0.65,
+        maxLeads: 12,
+        maxEvidencePerLead: 4,
+        maxEvidenceTextChars: 240
     },
     commands: {
         test: "npm test",
@@ -155,6 +183,8 @@ export const DEFAULT_CONFIG = {
         preferNativeToolsForLargeModels: true,
         preferDiffOnlyForLocalModels: true
     },
+    toolCallingMode: "local_text",
+    conversationMode: "compact_rebuild",
     organizer: {
         enabled: true,
         url: "http://127.0.0.1:8787",
@@ -183,12 +213,33 @@ export async function loadConfig(root) {
     const parsed = configSchema.parse(JSON.parse(raw));
     return {
         ...parsed,
+        index: {
+            ...parsed.index,
+            fileCards: parsed.index.fileCards ?? false,
+            fileCardModel: parsed.index.fileCardModel ?? "",
+            fileCardConcurrency: parsed.index.fileCardConcurrency ?? 2,
+        },
+        context: {
+            ...parsed.context,
+            maxLiveCodeTokens: parsed.context.maxLiveCodeTokens ?? 2500,
+            maxToolHistoryTokens: parsed.context.maxToolHistoryTokens ?? 1000,
+            maxFileCards: parsed.context.maxFileCards ?? 8,
+            maxReadLines: parsed.context.maxReadLines ?? 160,
+            maxSearchResults: parsed.context.maxSearchResults ?? 8,
+            compactAfterToolCalls: parsed.context.compactAfterToolCalls ?? 6,
+            compactAtTokenRatio: parsed.context.compactAtTokenRatio ?? 0.65,
+            maxLeads: parsed.context.maxLeads ?? 12,
+            maxEvidencePerLead: parsed.context.maxEvidencePerLead ?? 4,
+            maxEvidenceTextChars: parsed.context.maxEvidenceTextChars ?? 240,
+        },
         lan: parsed.lan ?? { port: 3000 },
         api: parsed.api ?? { enabled: false, host: "127.0.0.1", port: 31337, allowLan: false },
         compatibility: parsed.compatibility ?? { mode: "auto", toolMode: "auto", preferNativeToolsForLargeModels: true, preferDiffOnlyForLocalModels: true },
+        toolCallingMode: parsed.toolCallingMode ?? "local_text",
+        conversationMode: parsed.conversationMode ?? "compact_rebuild",
         organizer: parsed.organizer ?? { enabled: true, url: "http://127.0.0.1:8787", heartbeatMs: 5000 },
         providers: parsed.providers ?? {},
         defaultProvider: parsed.defaultProvider ?? "ollama",
-        options: parsed.options ?? { temperature: 0, numPredict: 2048 }
+        options: parsed.options ?? { temperature: 0, numPredict: 4096 }
     };
 }

@@ -36,6 +36,7 @@ export type QwenChatMessage = {
   role: "system" | "user" | "assistant" | "function" | "tool";
   content: string;
   name?: string;
+  tool_call_id?: string;
   reasoning_content?: string;
   function_call?: {
     name: string;
@@ -184,20 +185,14 @@ function normalizeAssistantMessage(raw: unknown): QwenChatMessage {
 }
 
 function toOllamaMessages(messages: QwenChatMessage[]): Array<Record<string, unknown>> {
-  return messages.map((m) => {
-    // Ollama wants tool results as role: "tool". Qwen-Agent examples often use
-    // role: "function"; keep that API internally and convert at the boundary.
-    if (m.role === "function") {
-      return { role: "tool", name: m.name, content: m.content };
-    }
-    return {
-      role: m.role,
-      content: m.content,
-      name: m.name,
-      tool_calls: m.tool_calls,
-      function_call: m.function_call
-    };
-  });
+  return messages.map((m) => ({
+    role: m.role === "function" ? "tool" : m.role,
+    content: m.content,
+    name: m.name,
+    tool_call_id: m.tool_call_id,
+    tool_calls: m.tool_calls,
+    function_call: m.function_call
+  }));
 }
 
 /**

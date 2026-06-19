@@ -67,7 +67,6 @@ type PersistedUiState = {
   modelOverride: string | null
   output: string[]
   promptHistory: string[]
-  answeredQuestions: string[]
   animationEnabled: boolean
 }
 
@@ -109,9 +108,7 @@ async function loadUiState(root: string): Promise<PersistedUiState | null> {
       modelOverride: typeof parsed.modelOverride === "string" ? parsed.modelOverride : null,
       output: [],
       promptHistory: [],
-      answeredQuestions: Array.isArray(parsed.answeredQuestions)
-        ? parsed.answeredQuestions.filter((v): v is string => typeof v === "string")
-        : [],
+
       animationEnabled: typeof parsed.animationEnabled === "boolean" ? parsed.animationEnabled : true
     }
   } catch {
@@ -183,14 +180,12 @@ export function App({ root, config, db, events, indexer }: AppProps) {
 
   const [animationEnabled, setAnimationEnabled] = useState(config.theme.animations)
   const [setupAwaitingInput, setSetupAwaitingInput] = useState<string | null>(null)
-  const [activeQuestion, setActiveQuestion] = useState<{ question: string; options: string[]; selectedIndex: number; command: string | null } | null>(null)
+  const [activeQuestion, setActiveQuestion] = useState<{ question: string; options: string[]; selectedIndex: number; command: string | null; source: "slash_command" | "database"; questionId?: string } | null>(null)
   const [textInputModal, setTextInputModal] = useState<{ prompt: string; onSubmit: string; onCancel?: string } | null>(null)
   const [textInputModalValue, setTextInputModalValue] = useState("")
   const [answerMetrics, setAnswerMetrics] = useState<{ totalTimeMs: number; totalTokens: number } | null>(null)
   const [assistantMetrics, setAssistantMetrics] = useState<Array<{ totalTimeMs: number; totalTokens: number } | null>>([])
 
-  const answeredQuestionFp = useRef<Set<string>>(new Set())
-  const questionFromCommand = useRef(false)
   const setupRef = useRef<{ providerId: string; providerType: string; step: number } | null>(null)
 
   const CMD_LIST = ["/help", "/mode", "/model", "/provider", "/setup", "/reindex", "/index", "/organize", "/clear", "/summarize", "/lan", "/api", "/changes", "/change", "/accept", "/reject", "/apply", "/revert", "/undo", "/exit", "/quit", "/animation", "/context", "/session"]
@@ -254,17 +249,10 @@ export function App({ root, config, db, events, indexer }: AppProps) {
 
   useEffect(() => {
     if (!stdout.isTTY) return
-    process.stdout.write("\u001B[?1049h\u001B[2J\u001B[H")
-    let cleaned = false
-    const restore = () => {
-      if (cleaned) return
-      cleaned = true
-      process.stdout.write("\u001B[?1049l\u001B[?25h")
-    }
-    process.on("exit", restore)
+    // Clear screen once at startup — no alternate buffer so text selection works
+    process.stdout.write("\u001B[2J\u001B[H")
     return () => {
-      process.off("exit", restore)
-      restore()
+      process.stdout.write("\u001B[?25h")
     }
   }, [stdout])
 
@@ -278,9 +266,6 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         setModelOverride(persisted.modelOverride)
         setOutput(limitLines(persisted.output, MAX_OUTPUT_LINES))
         setPromptHistory(limitLines(persisted.promptHistory, MAX_PROMPT_HISTORY))
-        for (const q of persisted.answeredQuestions) {
-          answeredQuestionFp.current.add(q)
-        }
         setAnimationEnabled(persisted.animationEnabled)
       }
       setUiStateLoaded(true)
@@ -300,7 +285,6 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         modelOverride,
         output: limitLines(output, MAX_OUTPUT_LINES),
         promptHistory: limitLines(promptHistory, MAX_PROMPT_HISTORY),
-        answeredQuestions: [...answeredQuestionFp.current],
         animationEnabled
       })
     }, 120)
@@ -428,18 +412,22 @@ export function App({ root, config, db, events, indexer }: AppProps) {
       models = fallbacks[providerType] || fallbacks["openai"] || ["default-model"]
     }
 
-    questionFromCommand.current = true
     setActiveQuestion({
       question: `Select model for ${providerId}:`,
       options: models,
       selectedIndex: 0,
       command: `/setup-step 2`,
+      source: "slash_command",
     })
   }, [config, setActiveQuestion])
 
   useEffect(() => {
     const onPhase = (p: string) => {
       setPhase(p)
+      // Dismiss any lingering question when a new pipeline run starts
+      if (p === "distilling" || p === "triaging") {
+        setActiveQuestion(null)
+      }
       if (webTaskActiveRef.current) {
         if (p === "idle") {
           setBusy(false)
@@ -740,12 +728,12 @@ export function App({ root, config, db, events, indexer }: AppProps) {
               options.push(prov + ":" + name)
             }
           }
-          questionFromCommand.current = true
           setActiveQuestion({
             question: `Models (${models.length}, current: ${current})`,
             options,
             selectedIndex: 0,
             command: "/model-pick",
+            source: "slash_command",
           })
           return true
         }
@@ -848,9 +836,9 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         return true
       }
       case "/setup": {
-        questionFromCommand.current = true
         setActiveQuestion({
           question: "Choose an AI provider to configure:",
+          source: "slash_command",
           options: [
             "Ollama (local, auto-detect)",
             "OpenAI (needs API key)",
@@ -1595,9 +1583,18 @@ export function App({ root, config, db, events, indexer }: AppProps) {
       if (key.return) {
         const aq = activeQuestion
         setActiveQuestion(null)
-        if (aq?.command) {
+        if (aq?.source === "database" && aq?.questionId) {
+          const selectedValue = aq.options[aq.selectedIndex]
+          void import("../chat/questions.js").then(({ resolveQuestion }) => {
+            resolveQuestion(db, aq.questionId!, selectedValue)
+          })
+          appendOutput(`Answered: ${selectedValue}`)
+        } else if (aq?.command) {
           const selectedValue = aq.options[aq.selectedIndex]
           void handleSlashCommand(`${aq.command} ${selectedValue}`)
+        } else if (aq) {
+          const selectedValue = aq.options[aq.selectedIndex]
+          setInput(`I choose: ${selectedValue}`)
         }
         return
       }
@@ -1675,34 +1672,6 @@ export function App({ root, config, db, events, indexer }: AppProps) {
     if (key.backspace || key.delete) { setPromptHistoryIndex(null); setAutocompleteIndex(0); setInput((v) => v.slice(0, -1)); return }
     if (char && !key.ctrl && !key.meta) { setPromptHistoryIndex(null); setAutocompleteIndex(0); setInput((v) => v + char) }
   })
-
-  // Question detection effect: watch the answer for question patterns
-  // when not busy and no programmatic question is being shown
-  useEffect(() => {
-    if (busy || !answer) return
-    if (questionFromCommand.current) {
-      questionFromCommand.current = false
-      return
-    }
-    if (activeQuestion) return
-
-    const lines = answer.split("\n").map((l) => l.trim()).filter(Boolean)
-    const questionLines = lines.filter((l) =>
-      /^\d+[\.\)]\s/.test(l) ||
-      /^[-*]\s/.test(l) ||
-      /^(select|choose|pick|which|option|would you like)/i.test(l)
-    )
-    if (questionLines.length >= 2) {
-      const question = questionLines[0].replace(/^\d+[\.\)]\s*/, "").replace(/^[-*]\s*/, "")
-      const options = questionLines.map((l) => l.replace(/^\d+[\.\)]\s*/, "").replace(/^[-*]\s*/, ""))
-      setActiveQuestion({
-        question,
-        options,
-        selectedIndex: 0,
-        command: null,
-      })
-    }
-  }, [busy, answer, activeQuestion])
 
   if (!ready && config.theme.showBootAnimation) {
     return <BootScreen state={boot} animate={config.theme.animations} />

@@ -70,6 +70,10 @@ export type OrganizerWorkerHeartbeat = {
   timestamp: number;
 };
 
+export type ToolCallingMode = "local_text" | "native_provider" | "auto";
+
+export type ConversationMode = "compact_rebuild" | "full_history";
+
 export type OrganizerConfig = {
   enabled: boolean;
   url: string;
@@ -104,6 +108,9 @@ export type SmithConfig = {
     workerCount: number;
     summaryConcurrency: number;
     ignore: string[];
+    fileCards?: boolean;
+    fileCardModel?: string;
+    fileCardConcurrency?: number;
   };
   context: {
     maxPromptTokens: number;
@@ -113,6 +120,16 @@ export type SmithConfig = {
     includeTests: boolean;
     includeTypes: boolean;
     includeSummaries: boolean;
+    maxLiveCodeTokens?: number;
+    maxToolHistoryTokens?: number;
+    maxFileCards?: number;
+    maxReadLines?: number;
+    maxSearchResults?: number;
+    compactAfterToolCalls?: number;
+    compactAtTokenRatio?: number;
+    maxLeads?: number;
+    maxEvidencePerLead?: number;
+    maxEvidenceTextChars?: number;
   };
   commands: {
     test: string;
@@ -142,6 +159,8 @@ export type SmithConfig = {
     preferNativeToolsForLargeModels: boolean;
     preferDiffOnlyForLocalModels: boolean;
   };
+  toolCallingMode: ToolCallingMode;
+  conversationMode: ConversationMode;
   theme: {
     mode: "matrix";
     showBootAnimation: boolean;

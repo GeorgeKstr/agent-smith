@@ -234,6 +234,7 @@ export function openDatabase(root: string): SmithDatabase {
       id TEXT PRIMARY KEY, session_id TEXT NOT NULL, message_id TEXT NOT NULL,
       kind TEXT NOT NULL, prompt TEXT NOT NULL, options_json TEXT,
       default_value_json TEXT, answer_json TEXT, status TEXT NOT NULL,
+      task_id TEXT, run_id TEXT,
       created_at INTEGER NOT NULL, answered_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_scope ON chat_sessions(scope);
@@ -242,6 +243,21 @@ export function openDatabase(root: string): SmithDatabase {
     CREATE INDEX IF NOT EXISTS idx_chat_messages_created ON chat_messages(created_at);
     CREATE INDEX IF NOT EXISTS idx_user_questions_session ON user_questions(session_id);
     CREATE INDEX IF NOT EXISTS idx_user_questions_status ON user_questions(status);
+
+    CREATE TABLE IF NOT EXISTS file_cards (
+      path TEXT PRIMARY KEY,
+      hash TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      exports_json TEXT NOT NULL,
+      imports_json TEXT NOT NULL,
+      important_functions_json TEXT NOT NULL,
+      state_touched_json TEXT NOT NULL,
+      side_effects_json TEXT NOT NULL,
+      common_edit_warnings_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_file_cards_hash ON file_cards(hash);
   `);
 
   seedTags(db);

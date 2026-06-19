@@ -34,7 +34,7 @@ export interface Provider {
   readonly id: string;
   readonly type: ProviderType;
   generate(model: string, prompt: string, options?: GenerateOptions): Promise<GenerateResult>;
-  chat(model: string, messages: QwenChatMessage[], functions?: QwenFunctionDefinition[], options?: ChatOptions): Promise<ChatResult>;
+  chat(model: string, messages: QwenChatMessage[] | Array<Record<string, unknown>>, functions?: QwenFunctionDefinition[] | Array<Record<string, unknown>>, options?: ChatOptions): Promise<ChatResult>;
   listModels(): Promise<string[]>;
   isAvailable(): Promise<boolean>;
 }
@@ -77,19 +77,35 @@ class OllamaProvider implements Provider {
 
   async chat(
     model: string,
-    messages: QwenChatMessage[],
-    functions?: QwenFunctionDefinition[],
+    messages: QwenChatMessage[] | Array<Record<string, unknown>>,
+    functions?: QwenFunctionDefinition[] | Array<Record<string, unknown>>,
     options?: ChatOptions
   ): Promise<ChatResult> {
     const ollamaOpts: OllamaGenerateOptions = {
       temperature: options?.temperature ?? this.config.ollama.temperature,
       num_predict: options?.maxTokens ?? this.config.ollama.numPredict,
     };
+    // Normalize generic messages to Qwen format
+    const qwenMsgs: QwenChatMessage[] = messages.map((m: any) => ({
+      role: m.role ?? "user",
+      content: m.content ?? "",
+      name: m.name,
+      tool_call_id: m.tool_call_id,
+      function_call: m.function_call,
+      tool_calls: m.tool_calls,
+    }));
+    const qwenFns: QwenFunctionDefinition[] | undefined = functions
+      ? (functions as any[]).map((f: any) => ({
+          name: f.name ?? f.function?.name ?? "",
+          description: f.description ?? f.function?.description ?? "",
+          parameters: f.parameters ?? f.function?.parameters ?? f.input_schema ?? {},
+        }))
+      : undefined;
     const result = await chatWithQwenFunctions({
       baseUrl: this.config.ollama.baseUrl,
       model,
-      messages,
-      functions,
+      messages: qwenMsgs,
+      functions: qwenFns,
       options: ollamaOpts,
     });
     return { ok: result.ok, messages: result.messages, text: result.text, error: result.error };
@@ -168,8 +184,8 @@ class OpenAIProvider implements Provider {
 
   async chat(
     model: string,
-    messages: QwenChatMessage[],
-    functions?: QwenFunctionDefinition[],
+    messages: QwenChatMessage[] | Array<Record<string, unknown>>,
+    functions?: QwenFunctionDefinition[] | Array<Record<string, unknown>>,
     options?: ChatOptions
   ): Promise<ChatResult> {
     const headers: Record<string, string> = {
@@ -177,18 +193,39 @@ class OpenAIProvider implements Provider {
     };
     if (this.apiKey) headers["Authorization"] = `Bearer ${this.apiKey}`;
 
-    const tools = functions?.map((fn) => ({
-      type: "function" as const,
-      function: {
-        name: fn.name,
-        description: fn.description,
-        parameters: fn.parameters,
-      },
-    }));
+    const bodyMsg: Array<Record<string, unknown>> = messages.map((m: any) => {
+      const out: Record<string, unknown> = { role: m.role, content: m.content ?? "" };
+      if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
+      if (m.name) out.name = m.name;
+      if (m.tool_calls) out.tool_calls = m.tool_calls;
+      if (m.function_call) {
+        out.function_call = m.function_call;
+        out.role = "assistant";
+      }
+      if (m.role === "tool" && !m.tool_call_id) {
+        out.role = "user";
+        out.content = `[Tool result] ${m.content}`;
+      }
+      return out;
+    });
+
+    const tools: Array<Record<string, unknown>> | undefined = functions
+      ? (functions as any[]).map((f: any) => {
+          if (f.type === "function") return f;
+          return {
+            type: "function",
+            function: {
+              name: f.name ?? "",
+              description: f.description ?? "",
+              parameters: f.parameters ?? f.input_schema ?? {},
+            },
+          };
+        })
+      : undefined;
 
     const body: Record<string, unknown> = {
       model,
-      messages,
+      messages: bodyMsg,
       max_tokens: options?.maxTokens ?? 2048,
       temperature: options?.temperature ?? 0,
       ...(tools?.length ? { tools, tool_choice: "auto" } : {}),
@@ -341,8 +378,8 @@ class AnthropicProvider implements Provider {
 
   async chat(
     model: string,
-    messages: QwenChatMessage[],
-    functions?: QwenFunctionDefinition[],
+    messages: QwenChatMessage[] | Array<Record<string, unknown>>,
+    functions?: QwenFunctionDefinition[] | Array<Record<string, unknown>>,
     options?: ChatOptions
   ): Promise<ChatResult> {
     const headers: Record<string, string> = {
@@ -351,16 +388,31 @@ class AnthropicProvider implements Provider {
       "anthropic-version": "2023-06-01",
     };
 
-    const systemMsg = messages.find((m) => m.role === "system")?.content;
-    const convMessages = messages
-      .filter((m) => m.role === "user" || m.role === "assistant")
-      .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
-
-    const tools = functions?.map((fn) => ({
-      name: fn.name,
-      description: fn.description,
-      input_schema: fn.parameters,
+    // Build convMessages from generic or Qwen messages
+    const allMsgs: Array<Record<string, unknown>> = messages.map((m: any) => ({
+      role: m.role ?? "user",
+      content: m.content ?? "",
+      name: m.name,
+      tool_call_id: m.tool_call_id,
+      function_call: m.function_call,
+      tool_calls: m.tool_calls,
     }));
+
+    const systemMsg = allMsgs.find((m) => m.role === "system")?.content as string | undefined;
+    const convMessages = allMsgs
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: Array.isArray(m.content) ? m.content : m.content,
+      }));
+
+    const tools: Array<Record<string, unknown>> | undefined = functions
+      ? (functions as any[]).map((f: any) => ({
+          name: f.name ?? f.function?.name ?? "",
+          description: f.description ?? f.function?.description ?? "",
+          input_schema: f.input_schema ?? f.parameters ?? f.function?.parameters ?? {},
+        }))
+      : undefined;
 
     const body: Record<string, unknown> = {
       model,

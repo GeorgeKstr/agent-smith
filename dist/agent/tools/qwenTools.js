@@ -16,7 +16,7 @@ function functionCalls(messages) {
         if (message.function_call)
             calls.push(message.function_call);
         for (const tc of message.tool_calls ?? []) {
-            calls.push({ name: tc.function.name, arguments: stringifyToolResult(tc.function.arguments) });
+            calls.push({ name: tc.function.name, arguments: stringifyToolResult(tc.function.arguments), callId: tc.id });
         }
     }
     return calls;
@@ -45,9 +45,8 @@ export async function runQwenFunctionLoop(args) {
             const handler = handlers.get(call.name);
             if (!handler) {
                 messages.push({
-                    role: "function",
-                    name: call.name,
-                    content: JSON.stringify({ error: `Unknown function: ${call.name}` })
+                    role: "user",
+                    content: `[System] Unknown function: ${call.name}`,
                 });
                 continue;
             }
@@ -55,13 +54,12 @@ export async function runQwenFunctionLoop(args) {
             args.onToolCall?.({ name: call.name, args: fnArgs });
             try {
                 const fnResult = await handler(fnArgs);
-                messages.push({ role: "function", name: call.name, content: stringifyToolResult(fnResult) });
+                messages.push({ role: "tool", name: call.name, tool_call_id: `call_${call.name}`, content: stringifyToolResult(fnResult) });
             }
             catch (error) {
                 messages.push({
-                    role: "function",
-                    name: call.name,
-                    content: JSON.stringify({ error: error instanceof Error ? error.message : String(error) })
+                    role: "user",
+                    content: `[System] Tool error: ${error instanceof Error ? error.message : String(error)}`,
                 });
             }
         }

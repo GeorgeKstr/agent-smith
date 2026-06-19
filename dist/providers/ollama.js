@@ -105,20 +105,14 @@ function normalizeAssistantMessage(raw) {
     return out;
 }
 function toOllamaMessages(messages) {
-    return messages.map((m) => {
-        // Ollama wants tool results as role: "tool". Qwen-Agent examples often use
-        // role: "function"; keep that API internally and convert at the boundary.
-        if (m.role === "function") {
-            return { role: "tool", name: m.name, content: m.content };
-        }
-        return {
-            role: m.role,
-            content: m.content,
-            name: m.name,
-            tool_calls: m.tool_calls,
-            function_call: m.function_call
-        };
-    });
+    return messages.map((m) => ({
+        role: m.role === "function" ? "tool" : m.role,
+        content: m.content,
+        name: m.name,
+        tool_call_id: m.tool_call_id,
+        tool_calls: m.tool_calls,
+        function_call: m.function_call
+    }));
 }
 /**
  * Returns true if a local Ollama server answers within a short window.

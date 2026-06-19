@@ -10,6 +10,7 @@ import { summarizeFile } from "../agent/summarizer.js";
 import { tagFile } from "./tagger.js";
 import { heuristicTags } from "./tags.js";
 import { detectLanguage } from "../utils/language.js";
+import { buildHeuristicFileCard, upsertFileCard } from "./fileCards.js";
 const PROJECT_SUM_SYSTEM = `You describe a software project. Given high-level stats and key tags, write a concise 2-3 sentence overview describing what the project does overall, its architecture, and its key technologies. No preamble, no markdown, no quotes.`;
 const TIPS = [
     "Dense context beats giant context.",
@@ -249,6 +250,34 @@ export function createIndexer({ root, config, db, events, enableIntel = true }) 
         for (const item of changedParseable) {
             indexImports(item.fileId, item.relPath, item.language, item.content);
         }
+        // Generate heuristic file cards synchronously for parseable files
+        if (config.index.fileCards) {
+            for (const item of changedParseable) {
+                try {
+                    const fileRow = db.prepare("SELECT hash, summary FROM files WHERE id = ?").get(item.fileId);
+                    if (!fileRow)
+                        continue;
+                    const dbSymbols = db.prepare("SELECT name, kind, start_line, end_line, signature FROM symbols WHERE file_id = ?").all(item.fileId);
+                    const symbols = dbSymbols.map((s) => ({
+                        name: s.name, kind: s.kind, startLine: s.start_line, endLine: s.end_line, signature: s.signature ?? undefined,
+                    }));
+                    const dbImports = db.prepare("SELECT import_text, COALESCE(resolved_path, import_text) as specifier FROM imports WHERE from_file_id = ?").all(item.fileId);
+                    const imports = dbImports.map((i) => ({ importText: i.import_text, specifier: i.specifier }));
+                    const card = buildHeuristicFileCard({
+                        path: item.relPath,
+                        content: item.content,
+                        hash: fileRow.hash,
+                        symbols,
+                        imports,
+                        summary: fileRow.summary || undefined,
+                    });
+                    upsertFileCard(db, card);
+                }
+                catch {
+                    // file card generation is best-effort
+                }
+            }
+        }
         // Mark dirty files ready and queue summaries/tags.
         db.prepare("UPDATE files SET status = 'fresh' WHERE status = 'dirty'").run();
         emitProgress("ready");
@@ -343,6 +372,29 @@ export function createIndexer({ root, config, db, events, enableIntel = true }) 
                     for (const id of tagIds)
                         insertTag.run(fileRow.id, id, 0.8, "model");
                     tagsRefreshed++;
+                }
+                // Generate/update file card after intelligence data is available
+                if (config.index.fileCards) {
+                    try {
+                        const dbSymbols = db.prepare("SELECT name, kind, start_line, end_line, signature FROM symbols WHERE file_id = ?").all(fileRow.id);
+                        const symbols = dbSymbols.map((s) => ({
+                            name: s.name, kind: s.kind, startLine: s.start_line, endLine: s.end_line, signature: s.signature ?? undefined,
+                        }));
+                        const dbImports = db.prepare("SELECT import_text, COALESCE(resolved_path, specifier) as specifier FROM imports WHERE from_file_id = ?").all(fileRow.id);
+                        const imports = dbImports.map((i) => ({ importText: i.import_text, specifier: i.specifier }));
+                        const card = buildHeuristicFileCard({
+                            path: relPath,
+                            content,
+                            hash: fileRow.hash,
+                            symbols,
+                            imports,
+                            summary: summary || undefined,
+                        });
+                        upsertFileCard(db, card);
+                    }
+                    catch {
+                        // file card generation is best-effort
+                    }
                 }
                 events.emit("index:progress", {
                     phase: "tagging",

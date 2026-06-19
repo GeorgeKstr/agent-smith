@@ -46,10 +46,14 @@ export function listChatMessages(db: SmithDatabase, sessionId: string): ChatMess
 export function getChatMessage(db: SmithDatabase, id: string): ChatMessage | undefined { return db.prepare("SELECT * FROM chat_messages WHERE id=?").get(id) as ChatMessage | undefined; }
 
 // Questions
-export function createUserQuestion(db: SmithDatabase, input: { sessionId: string; messageId: string; kind: UserQuestionKind; prompt: string; options?: string[]; defaultValue?: unknown }): UserQuestion {
+export function createUserQuestion(db: SmithDatabase, input: { sessionId: string; messageId: string; kind: UserQuestionKind; prompt: string; options?: string[]; defaultValue?: unknown; taskId?: string; runId?: string }): UserQuestion {
   const now = Date.now();
   const q: UserQuestion = { id: makeId("question"), sessionId: input.sessionId, messageId: input.messageId, kind: input.kind, prompt: input.prompt, optionsJson: input.options ? JSON.stringify(input.options) : null, defaultValueJson: input.defaultValue !== undefined ? JSON.stringify(input.defaultValue) : null, answerJson: null, status: "open", createdAt: now, answeredAt: null };
-  db.prepare("INSERT INTO user_questions (id,session_id,message_id,kind,prompt,options_json,default_value_json,answer_json,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(q.id, q.sessionId, q.messageId, q.kind, q.prompt, q.optionsJson, q.defaultValueJson, q.answerJson, q.status, q.createdAt);
+  try {
+    db.prepare("INSERT INTO user_questions (id,session_id,message_id,kind,prompt,options_json,default_value_json,answer_json,status,task_id,run_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(q.id, q.sessionId, q.messageId, q.kind, q.prompt, q.optionsJson, q.defaultValueJson, q.answerJson, q.status, input.taskId ?? null, input.runId ?? null, q.createdAt);
+  } catch {
+    db.prepare("INSERT INTO user_questions (id,session_id,message_id,kind,prompt,options_json,default_value_json,answer_json,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(q.id, q.sessionId, q.messageId, q.kind, q.prompt, q.optionsJson, q.defaultValueJson, q.answerJson, q.status, q.createdAt);
+  }
   return q;
 }
 export function getOpenQuestions(db: SmithDatabase, sessionId?: string): UserQuestion[] {

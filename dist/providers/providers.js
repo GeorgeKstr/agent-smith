@@ -34,11 +34,27 @@ class OllamaProvider {
             temperature: options?.temperature ?? this.config.ollama.temperature,
             num_predict: options?.maxTokens ?? this.config.ollama.numPredict,
         };
+        // Normalize generic messages to Qwen format
+        const qwenMsgs = messages.map((m) => ({
+            role: m.role ?? "user",
+            content: m.content ?? "",
+            name: m.name,
+            tool_call_id: m.tool_call_id,
+            function_call: m.function_call,
+            tool_calls: m.tool_calls,
+        }));
+        const qwenFns = functions
+            ? functions.map((f) => ({
+                name: f.name ?? f.function?.name ?? "",
+                description: f.description ?? f.function?.description ?? "",
+                parameters: f.parameters ?? f.function?.parameters ?? f.input_schema ?? {},
+            }))
+            : undefined;
         const result = await chatWithQwenFunctions({
             baseUrl: this.config.ollama.baseUrl,
             model,
-            messages,
-            functions,
+            messages: qwenMsgs,
+            functions: qwenFns,
             options: ollamaOpts,
         });
         return { ok: result.ok, messages: result.messages, text: result.text, error: result.error };
@@ -107,17 +123,41 @@ class OpenAIProvider {
         };
         if (this.apiKey)
             headers["Authorization"] = `Bearer ${this.apiKey}`;
-        const tools = functions?.map((fn) => ({
-            type: "function",
-            function: {
-                name: fn.name,
-                description: fn.description,
-                parameters: fn.parameters,
-            },
-        }));
+        const bodyMsg = messages.map((m) => {
+            const out = { role: m.role, content: m.content ?? "" };
+            if (m.tool_call_id)
+                out.tool_call_id = m.tool_call_id;
+            if (m.name)
+                out.name = m.name;
+            if (m.tool_calls)
+                out.tool_calls = m.tool_calls;
+            if (m.function_call) {
+                out.function_call = m.function_call;
+                out.role = "assistant";
+            }
+            if (m.role === "tool" && !m.tool_call_id) {
+                out.role = "user";
+                out.content = `[Tool result] ${m.content}`;
+            }
+            return out;
+        });
+        const tools = functions
+            ? functions.map((f) => {
+                if (f.type === "function")
+                    return f;
+                return {
+                    type: "function",
+                    function: {
+                        name: f.name ?? "",
+                        description: f.description ?? "",
+                        parameters: f.parameters ?? f.input_schema ?? {},
+                    },
+                };
+            })
+            : undefined;
         const body = {
             model,
-            messages,
+            messages: bodyMsg,
             max_tokens: options?.maxTokens ?? 2048,
             temperature: options?.temperature ?? 0,
             ...(tools?.length ? { tools, tool_choice: "auto" } : {}),
@@ -246,15 +286,29 @@ class AnthropicProvider {
             "x-api-key": this.apiKey,
             "anthropic-version": "2023-06-01",
         };
-        const systemMsg = messages.find((m) => m.role === "system")?.content;
-        const convMessages = messages
-            .filter((m) => m.role === "user" || m.role === "assistant")
-            .map((m) => ({ role: m.role, content: m.content }));
-        const tools = functions?.map((fn) => ({
-            name: fn.name,
-            description: fn.description,
-            input_schema: fn.parameters,
+        // Build convMessages from generic or Qwen messages
+        const allMsgs = messages.map((m) => ({
+            role: m.role ?? "user",
+            content: m.content ?? "",
+            name: m.name,
+            tool_call_id: m.tool_call_id,
+            function_call: m.function_call,
+            tool_calls: m.tool_calls,
         }));
+        const systemMsg = allMsgs.find((m) => m.role === "system")?.content;
+        const convMessages = allMsgs
+            .filter((m) => m.role === "user" || m.role === "assistant")
+            .map((m) => ({
+            role: m.role,
+            content: Array.isArray(m.content) ? m.content : m.content,
+        }));
+        const tools = functions
+            ? functions.map((f) => ({
+                name: f.name ?? f.function?.name ?? "",
+                description: f.description ?? f.function?.description ?? "",
+                input_schema: f.input_schema ?? f.parameters ?? f.function?.parameters ?? {},
+            }))
+            : undefined;
         const body = {
             model,
             messages: convMessages,

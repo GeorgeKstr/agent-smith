@@ -1547,6 +1547,108 @@ export function createCli() {
       process.on("SIGTERM", shutdown);
     });
 
+  program
+    .command("init-rules")
+    .description("Create an AGENTS.md project rules file")
+    .option("--force", "Overwrite existing file")
+    .action(async (opts: { force: boolean }) => {
+      const { root } = await bootstrap();
+      const target = path.join(root, "AGENTS.md");
+      try {
+        const exists = await fs.access(target).then(() => true).catch(() => false);
+        if (exists && !opts.force) {
+          console.log("AGENTS.md already exists. Use --force to overwrite.");
+          return;
+        }
+        const template = `# Agent Project Rules
+
+## General
+
+- Work only on the requested task.
+- Prefer small, focused patches.
+- Do not rewrite unrelated code.
+- Do not change UI layout unless explicitly requested.
+- Read relevant files before editing them.
+- Run the narrowest relevant check after edits.
+
+## Project-specific notes
+
+- Add notes here.
+`;
+        await fs.writeFile(target, template, "utf8");
+        console.log(`Created ${target}`);
+      } catch (err) {
+        console.error(`Failed to create AGENTS.md: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
+
+  program
+    .command("distill")
+    .description("Debug: convert a prompt into a TaskPacket")
+    .argument("[prompt...]", "The prompt to distill")
+    .action(async (promptParts: string[]) => {
+      const prompt = promptParts.join(" ").trim() || "fix a bug";
+      const packet = (await import("./context/taskPacket.js")).buildHeuristicTaskPacket(prompt);
+      console.log(JSON.stringify(packet, null, 2));
+    });
+
+  program
+    .command("leads")
+    .description("Debug: show retrieval leads for a prompt")
+    .argument("[prompt...]", "The prompt to analyze")
+    .action(async (promptParts: string[]) => {
+      const { root, config, db } = await bootstrap();
+      const prompt = promptParts.join(" ").trim() || "fix a bug";
+      const { buildHeuristicTaskPacket } = await import("./context/taskPacket.js");
+      const { classifyTask, retrieve } = await import("./context/retriever.js");
+      const { retrieveLeads } = await import("./context/retrievalLead.js");
+      const { renderRetrievalLeads } = await import("./context/renderLeads.js");
+      const packet = buildHeuristicTaskPacket(prompt);
+      const classification = await classifyTask({ db, config, task: prompt });
+      const retrieval = await retrieve({ db, root, config, task: prompt, classification });
+      const result = await retrieveLeads({
+        db, root, packet,
+        scoredFiles: retrieval.files,
+        maxLeads: config.context.maxLeads,
+        maxEvidencePerLead: config.context.maxEvidencePerLead,
+      });
+      console.log(`TaskPacket:\n${JSON.stringify(packet, null, 2)}\n`);
+      console.log(renderRetrievalLeads(result.leads));
+    });
+
+  program
+    .command("brief")
+    .description("Debug: preview the compact context sent to the model")
+    .argument("[prompt...]", "The prompt to build context for")
+    .action(async (promptParts: string[]) => {
+      const { root, config, db } = await bootstrap();
+      const prompt = promptParts.join(" ").trim() || "fix a bug";
+      const { buildHeuristicTaskPacket } = await import("./context/taskPacket.js");
+      const { classifyTask, retrieve } = await import("./context/retriever.js");
+      const { retrieveLeads } = await import("./context/retrievalLead.js");
+      const { packFocusedBriefing } = await import("./context/focusedBriefing.js");
+      const { budgetForTokenLimit } = await import("./context/contextBudget.js");
+      const { createWorkingMemory } = await import("./agent/workingMemory.js");
+      const { loadProjectRules } = await import("./context/projectRules.js");
+      const packet = buildHeuristicTaskPacket(prompt);
+      const classification = await classifyTask({ db, config, task: prompt });
+      const retrieval = await retrieve({ db, root, config, task: prompt, classification });
+      const result = await retrieveLeads({
+        db, root, packet,
+        scoredFiles: retrieval.files,
+        maxLeads: config.context.maxLeads,
+        maxEvidencePerLead: config.context.maxEvidencePerLead,
+      });
+      const projectRules = await loadProjectRules({ root }).then((r) => r.rendered).catch(() => "");
+      const memory = createWorkingMemory(packet);
+      const budget = budgetForTokenLimit(config.context.maxPromptTokens);
+      const briefing = packFocusedBriefing({
+        packet, leads: result.leads, projectRules, workingMemory: memory, tokenBudget: budget,
+      });
+      console.log(briefing.prompt);
+      console.log(`\n--- Estimated tokens: ${briefing.estimatedTokens} / ${config.context.maxPromptTokens} ---`);
+    });
+
   program.action(async () => {
     const { root, config, db, events } = await bootstrap();
 
@@ -1571,7 +1673,7 @@ export function createCli() {
       try { await watcher.stop(); } catch {}
       try { ink.unmount(); await ink.waitUntilExit(); } catch {}
       try { ink.clear(); } catch {}
-      process.stdout.write("\u001B[?1049l\u001B[?25h");
+      process.stdout.write("\u001B[?25h");
       process.exit(0);
     };
 
