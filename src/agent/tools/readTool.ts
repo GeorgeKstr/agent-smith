@@ -127,11 +127,30 @@ const readTool: AgentTool = {
     if (truncated) {
       nextActions.push(`Read remaining lines with startLine: ${endLine + 1}`);
     }
+    nextActions.push(
+      "If this file contains the requested change, call propose_edit, edit, or replace_lines.",
+      "Use exact old text from the content above. The 'search' field in edit must match exactly.",
+      "If unsure of exact text, use propose_edit to describe the change first.",
+      "Do not search again unless this file explicitly references another file you need to inspect."
+    );
+
+    const editGuidance = `\n\nEdit guidance:
+If this file needs changes, your next action should be:
+
+For known exact text:
+<tool_call>
+{"tool":"edit","args":{"path":"${rel}","search":"exact old text from above","replace":"new text","reason":"explain why"}}
+</tool_call>
+
+For uncertain exact text, use propose_edit first:
+<tool_call>
+{"tool":"propose_edit","args":{"path":"${rel}","target":"function or block name","intent":"what behavior to implement","proposedChange":"plain-English description of the change","reason":"why this change is needed"}}
+</tool_call>`;
 
     return {
       ok: true,
       summary: `Read ${rel}:${startLine}-${endLine} (${selected.length}/${totalLines} lines)${truncatedNote}`,
-      content: numbered,
+      content: numbered + editGuidance,
       truncated,
       metadata: {
         path: rel,

@@ -1482,9 +1482,11 @@ export function App({ root, config, db, events, indexer }: AppProps) {
           setAssistantMetrics(prev => [...prev, { totalTimeMs: Date.now() - streamStartRef.current, totalTokens: streamTokRef.current }])
         }
         if (outcome.applied && outcome.diff) undoDiff = outcome.diff
+        const intentLine = outcome.runtimeIntent ? `⌘ intent: ${outcome.runtimeIntent}` : undefined
         const statusLines = [outcome.message, ...outcome.checks.map((c) => `[${c.name}] ${c.ok ? "PASS" : "FAIL"} (exit ${c.exitCode})`)]
         appendOutput([
           promptLine,
+          ...(intentLine ? [intentLine] : []),
           ...(outcome.answer ? toChatLines("AI: ", outcome.answer) : []),
           ...(statusLines.filter(Boolean) as string[])
         ])

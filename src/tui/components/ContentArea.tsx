@@ -218,8 +218,9 @@ export const ContentArea = React.memo(function ContentArea({
 
 type BubbleRow = {
   id: string
-  kind: "HEAD" | "BODY" | "METRICS"
+  kind: "HEAD" | "BODY" | "METRICS" | "FOOT"
   text: string
+  pad: string
   labelColor: string
   bodyColor: string
   bg: string
@@ -299,23 +300,23 @@ type BubbleRow = {
       const head = ` ${style.label} `
       const content = b.lines.flatMap((ln) => wrapLine(ln, Math.max(20, maxWidth - 6)))
       const bodyWidth = Math.max(head.length, ...content.map((ln) => ln.length))
-      const paddedHead = head.padEnd(bodyWidth, " ")
-      const paddedContent = content.map((ln) => ln.padEnd(bodyWidth, " "))
 
       const rows: BubbleRow[] = [
         {
           id: `b-${i}-h`,
           kind: "HEAD",
-          text: paddedHead,
+          text: head,
+          pad: "─".repeat(bodyWidth - head.length),
           labelColor: style.labelColor,
           bodyColor: style.text,
           bg: style.bg,
           border: style.border,
         },
-        ...paddedContent.map((ln, lineIndex) => ({
+        ...content.map((ln, lineIndex) => ({
           id: `b-${i}-l-${lineIndex}`,
           kind: "BODY" as const,
           text: ln,
+          pad: " ".repeat(bodyWidth - ln.length),
           labelColor: style.labelColor,
           bodyColor: style.text,
           bg: style.bg,
@@ -327,10 +328,12 @@ type BubbleRow = {
         const m = metrics[asstIdx]
         asstIdx++
         if (m) {
+          const metricText = fmtMetric(m)
           rows.push({
             id: `b-${i}-m`,
             kind: "METRICS",
-            text: fmtMetric(m).padEnd(bodyWidth, " "),
+            text: metricText,
+            pad: " ".repeat(bodyWidth - metricText.length),
             labelColor: theme.dim,
             bodyColor: theme.dim,
             bg: style.bg,
@@ -338,6 +341,17 @@ type BubbleRow = {
           })
         }
       }
+
+      rows.push({
+        id: `b-${i}-f`,
+        kind: "FOOT",
+        text: "",
+        pad: "─".repeat(bodyWidth),
+        labelColor: style.labelColor,
+        bodyColor: style.text,
+        bg: style.bg,
+        border: style.border,
+      })
 
       return rows
     })
@@ -355,10 +369,20 @@ type BubbleRow = {
         {win.visible.map((row) => {
           if (row.kind === "HEAD") {
             return (
-              <Text key={row.id} backgroundColor={row.bg} color={row.labelColor} bold>
+              <Text key={row.id} backgroundColor={row.bg}>
                 <Text color={row.border} backgroundColor={row.bg}>┌ </Text>
-                {row.text}
+                <Text color={row.labelColor} bold backgroundColor={row.bg}>{row.text}</Text>
+                <Text color={row.border} backgroundColor={row.bg}>{row.pad}</Text>
                 <Text color={row.border} backgroundColor={row.bg}> ┐</Text>
+              </Text>
+            )
+          }
+          if (row.kind === "FOOT") {
+            return (
+              <Text key={row.id} backgroundColor={row.bg}>
+                <Text color={row.border} backgroundColor={row.bg}>└ </Text>
+                <Text color={row.border} backgroundColor={row.bg}>{row.pad}</Text>
+                <Text color={row.border} backgroundColor={row.bg}> ┘</Text>
               </Text>
             )
           }
@@ -366,12 +390,13 @@ type BubbleRow = {
             <Text key={row.id} backgroundColor={row.bg} color={row.kind === "METRICS" ? theme.dim : row.bodyColor}>
               <Text color={row.border} backgroundColor={row.bg}>│ </Text>
               {row.text}
+              {row.pad}
               <Text color={row.border} backgroundColor={row.bg}> │</Text>
             </Text>
           )
         })}
         {win.hasNewer && <Text color={theme.dim} backgroundColor={BG}>↓ newer messages</Text>}
-        {pendingPrompt && wrapPlainLines([pendingPrompt], maxWidth).map((line, i, arr) => (
+        {pendingPrompt && wrapPlainLines([pendingPrompt], Math.max(12, maxWidth - 6)).map((line, i, arr) => (
           <Text key={i} backgroundColor="#002800">
             <Text color="#00ff44" bold backgroundColor="#002800">
               {i === 0 ? "┃ ▶ " : "    "}
@@ -401,7 +426,7 @@ type BubbleRow = {
               )}
               <Text color={theme.primary} backgroundColor="#1a1a2a"> ┐</Text>
             </Text>
-            {wrapPlainLines(streamText.split("\n"), maxWidth).slice(-4).map((line, i, arr) => (
+            {wrapPlainLines(streamText.split("\n"), Math.max(12, maxWidth - 5)).slice(-4).map((line, i, arr) => (
               <Text key={i} color="white" backgroundColor="#1a1a2a">
                 <Text color={theme.primary} backgroundColor="#1a1a2a">│ </Text>
                 {line}

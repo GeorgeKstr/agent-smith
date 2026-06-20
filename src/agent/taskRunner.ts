@@ -6,6 +6,7 @@ import type { SmithConfig, PatchOutcome, ContextPacket, CheckResult } from "../t
 import type { SmithDatabase } from "../db/db.js";
 import type { Indexer } from "../index/indexer.js";
 import { isProviderAvailable, listProviderModels, resolveProviderModelName, createProviders, resolveModelProvider } from "../providers/providers.js";
+import type { Provider } from "../providers/providers.js";
 import { classifyTask, retrieve } from "../context/retriever.js";
 import { runChecks } from "./checks.js";
 import { reindexAffected } from "../index/reindexer.js";
@@ -26,9 +27,16 @@ import { checkTool } from "./tools/checkTool.js";
 import { finishTool } from "./tools/finishTool.js";
 import { askUserTool } from "./tools/askUserTool.js";
 import { createFileTool } from "./tools/createFileTool.js";
+import { proposeEditTool } from "./tools/proposeEditTool.js";
 import { runFocusedAgentLoop } from "./focusedAgentLoop.js";
+import { runPatchWorkflow } from "./runPatchWorkflow.js";
 import { loadProjectRules } from "../context/projectRules.js";
 import { getFileCards } from "../index/fileCards.js";
+import { classifyRuntimeIntent } from "./classifyRuntimeIntent.js";
+import { parseExplicitMode } from "./parseExplicitMode.js";
+import { runChatTurn } from "./runChatTurn.js";
+import type { RuntimeIntent } from "./runtimeIntent.js";
+import { loadSkills, findRelevantSkills, renderSkillsForPrompt } from "./skillsLoader.js";
 export type RunnerDeps = {
   db: SmithDatabase;
   root: string;
@@ -52,17 +60,44 @@ export async function runAsk(
   const { db, root, config, events } = deps;
   const emptyPacket: ContextPacket = { task, prompt: task, estimatedTokens: 0, files: [], symbols: [] };
 
+  const { explicitMode, cleanedPrompt } = parseExplicitMode(task);
+  const intentResult = classifyRuntimeIntent({
+    prompt: cleanedPrompt,
+    uiMode: "discuss",
+    explicitMode
+  });
+
   const ollamaReady = await isProviderAvailable(config);
   const installed = ollamaReady ? await listProviderModels(config) : [];
   const answerModel = options.modelOverride
     ? await resolveProviderModelName(config, options.modelOverride, installed)
     : await resolveProviderModelName(config, config.models.patcher, installed);
 
+  events.emit("runtime:intent", { intent: intentResult.intent, confidence: intentResult.confidence, reason: intentResult.reason });
+
+  if (intentResult.intent === "chat") {
+    const resolved = resolveFocusedProvider(config, answerModel, installed);
+    if (resolved) {
+      const chatResult = await runChatTurn({
+        prompt: cleanedPrompt,
+        provider: resolved.provider,
+        model: resolved.model,
+        config,
+      });
+      return {
+        ok: chatResult.ok,
+        answer: chatResult.finalText,
+        packet: emptyPacket,
+      };
+    }
+    return { ok: true, answer: "Hey — what would you like to work on?", packet: emptyPacket };
+  }
+
   events.emit("task:phase", "distilling");
-  const packet = await buildTaskPacket(config, task, answerModel);
+  const packet = await buildTaskPacket(config, cleanedPrompt, answerModel);
 
   events.emit("task:phase", "leading");
-  const leads = await buildRetrievalLeads(deps, task, packet);
+  const leads = await buildRetrievalLeads(deps, cleanedPrompt, packet);
 
   const projectRules = await loadProjectRules({ root }).then((r) => r.rendered).catch(() => "");
   const memory = createWorkingMemory(packet);
@@ -92,6 +127,7 @@ export async function runAsk(
     provider: resolved.provider,
     model: resolved.model,
     mode: "ask",
+    runtimeIntent: intentResult.intent,
     config,
     root,
     db,
@@ -122,25 +158,74 @@ export async function runPatch(
   const { db, root, config, events } = deps;
   const checks: CheckResult[] = [];
 
+  const { explicitMode, cleanedPrompt } = parseExplicitMode(task);
+  const intentResult = classifyRuntimeIntent({
+    prompt: cleanedPrompt,
+    uiMode: "build",
+    explicitMode
+  });
+
   const ollamaReady = await isProviderAvailable(config);
   if (!ollamaReady) {
     return {
       ok: false, applied: false, attempts: 0, files: [], checks,
-      message: "No AI provider available."
+      message: "No AI provider available.",
+      runtimeIntent: intentResult.intent,
     };
   }
 
-  const taskId = createTask(db, task, config.models.patcher);
   const installed = await listProviderModels(config);
   const patcherModel = options.modelOverride
     ? await resolveProviderModelName(config, options.modelOverride, installed)
     : await resolveProviderModelName(config, config.models.patcher, installed);
 
+  const resolved = resolveFocusedProvider(config, patcherModel, installed);
+  if (!resolved) {
+    return {
+      ok: false, applied: false, attempts: 0, files: [], checks,
+      message: "No provider resolved.",
+      runtimeIntent: intentResult.intent,
+    };
+  }
+
+  events.emit("runtime:intent", { intent: intentResult.intent, confidence: intentResult.confidence, reason: intentResult.reason });
+
+  const runtimeIntent: RuntimeIntent = intentResult.intent;
+
+  if (runtimeIntent === "chat") {
+    const chatResult = await runChatTurn({
+      prompt: cleanedPrompt,
+      provider: resolved.provider,
+      model: resolved.model,
+      config,
+    });
+    return {
+      ok: chatResult.ok,
+      applied: false,
+      attempts: 0,
+      answer: chatResult.finalText,
+      files: [],
+      checks,
+      message: `Chat: ${chatResult.finalText.slice(0, 100)}`,
+      runtimeIntent: "chat",
+    };
+  }
+
+  if (runtimeIntent === "ask") {
+    const askResult = await runBuildModeAskTurn({
+      deps, cleanedPrompt, resolved, config,
+      patcherModel, installed, checks,
+    });
+    return { ...askResult, runtimeIntent: "ask" };
+  }
+
+  const taskId = createTask(db, cleanedPrompt, config.models.patcher);
+
   events.emit("task:phase", "distilling");
-  const packet = await buildTaskPacket(config, task, patcherModel);
+  const packet = await buildTaskPacket(config, cleanedPrompt, patcherModel);
 
   events.emit("task:phase", "leading");
-  const leads = await buildRetrievalLeads(deps, task, packet);
+  const leads = await buildRetrievalLeads(deps, cleanedPrompt, packet);
 
   const projectRules = await loadProjectRules({ root }).then((r) => r.rendered).catch(() => "");
   const memory = createWorkingMemory(packet);
@@ -149,16 +234,92 @@ export async function runPatch(
   const fileCards = cardPaths.length > 0 ? getFileCards(db, cardPaths) : [];
   const cardBriefs = fileCards.map((c) => ({ path: c.path, purpose: c.purpose, exports: c.exports }));
 
-  const resolved = resolveFocusedProvider(config, patcherModel, installed);
-  if (!resolved) {
-    return {
-      ok: false, applied: false, attempts: 0, files: [], checks,
-      message: "No provider resolved."
-    };
-  }
+  const loadedSkills = await loadSkills({ root }).catch(() => ({ skills: [], extensions: [], rendered: "", loadedPaths: [] }));
+  const relevantSkills = findRelevantSkills(loadedSkills.skills, cleanedPrompt, 2);
+  const skillsText = renderSkillsForPrompt(relevantSkills);
 
   events.emit("task:phase", "briefing");
   const tools = buildToolRegistry("patch");
+  const workflowResult = await runPatchWorkflow({
+    packet,
+    leads,
+    memory,
+    tools,
+    provider: resolved.provider,
+    model: resolved.model,
+    runtimeIntent,
+    config,
+    root,
+    db,
+    events,
+    projectRules: [projectRules, skillsText].filter(Boolean).join("\n\n"),
+    fileCards: cardBriefs,
+    phaseModels: config.phaseModels as Partial<Record<string, string>> | undefined,
+    installedModels: installed,
+  });
+
+  for (const file of workflowResult.changedFiles) {
+    recordEdit(db, taskId, file, "");
+  }
+
+  if (workflowResult.checksRun.length > 0) {
+    const runResults = await runChecks(root, config.commands, ["typecheck", "test"]);
+    checks.push(...runResults);
+    for (const r of runResults) recordTestRun(db, taskId, r);
+  }
+
+  finishTask(db, taskId, workflowResult.ok);
+
+  events.emit("task:answer", workflowResult.finalText);
+
+  const m = workflowResult.metrics;
+  const e = workflowResult.evidence;
+  const applied = workflowResult.changedFiles.length > 0;
+  const statusMsg = workflowResult.status === "completed"
+    ? `Agent completed. Changed: ${workflowResult.changedFiles.length} (edited: ${e.filesEdited.length}, created: ${e.filesCreated.length}). Checks: ${workflowResult.checksRun.length}. Turns: ${m.modelTurns}, Tools: ${m.toolCallsRequested}. Phase: ${workflowResult.workflowPhase}.`
+    : `Agent ${workflowResult.status}. Reason: ${workflowResult.finalText.slice(0, 120)}. Phase: ${workflowResult.workflowPhase}.`;
+
+  return {
+    ok: workflowResult.ok,
+    applied,
+    attempts: 1,
+    answer: workflowResult.finalText,
+    files: workflowResult.changedFiles,
+    checks,
+    message: statusMsg,
+    changeSetId: workflowResult.applicationResult?.failedEdits.length ? undefined : undefined,
+    runtimeIntent: "patch",
+  };
+}
+
+async function runBuildModeAskTurn(input: {
+  deps: RunnerDeps;
+  cleanedPrompt: string;
+  resolved: { provider: Provider; model: string };
+  config: SmithConfig;
+  patcherModel: string;
+  installed: string[];
+  checks: CheckResult[];
+}): Promise<PatchOutcome> {
+  const { deps, cleanedPrompt, resolved, config, patcherModel, installed } = input;
+  const { db, root, events } = deps;
+  const emptyPacket: ContextPacket = { task: cleanedPrompt, prompt: cleanedPrompt, estimatedTokens: 0, files: [], symbols: [] };
+
+  events.emit("task:phase", "distilling");
+  const packet = await buildTaskPacket(config, cleanedPrompt, patcherModel);
+
+  events.emit("task:phase", "leading");
+  const leads = await buildRetrievalLeads(deps, cleanedPrompt, packet);
+
+  const projectRules = await loadProjectRules({ root }).then((r) => r.rendered).catch(() => "");
+  const memory = createWorkingMemory(packet);
+
+  const cardPaths = leads.slice(0, config.context.maxFileCards ?? 8).map((l) => l.path);
+  const fileCards = cardPaths.length > 0 ? getFileCards(db, cardPaths) : [];
+  const cardBriefs = fileCards.map((c) => ({ path: c.path, purpose: c.purpose, exports: c.exports }));
+
+  events.emit("task:phase", "briefing");
+  const tools = buildToolRegistry("ask");
   const result = await runFocusedAgentLoop({
     packet,
     leads,
@@ -166,7 +327,8 @@ export async function runPatch(
     tools,
     provider: resolved.provider,
     model: resolved.model,
-    mode: "patch",
+    mode: "ask",
+    runtimeIntent: "ask",
     config,
     root,
     db,
@@ -175,37 +337,14 @@ export async function runPatch(
     fileCards: cardBriefs,
   });
 
-  for (const file of result.changedFiles) {
-    recordEdit(db, taskId, file, "");
-  }
-
-  if (result.checksRun.length > 0) {
-    const runResults = await runChecks(root, config.commands, ["typecheck", "test"]);
-    checks.push(...runResults);
-    for (const r of runResults) recordTestRun(db, taskId, r);
-  }
-
-  finishTask(db, taskId, result.ok);
-
-  events.emit("task:answer", result.finalText);
-
-  const m = result.metrics;
-  const e = result.evidence;
-  const statusMsg = result.status === "waiting_for_user"
-    ? "Agent is waiting for your answer."
-    : result.status === "completed"
-      ? `Agent completed. Changed: ${result.changedFiles.length} (edited: ${e.filesEdited.length}, created: ${e.filesCreated.length}). Checks: ${result.checksRun.length}. Turns: ${m.modelTurns}, Tools: ${m.toolCallsRequested}.`
-      : `Agent ${result.status}. Reason: ${result.stopReason}. Changed: ${result.changedFiles.length} (edited: ${e.filesEdited.length}, created: ${e.filesCreated.length}). Checks: ${result.checksRun.length}. Turns: ${m.modelTurns}, Tools: ${m.toolCallsRequested}.`;
-
   return {
     ok: result.ok,
-    applied: result.changedFiles.length > 0,
-    attempts: 1,
+    applied: false,
+    attempts: 0,
     answer: result.finalText,
     files: result.changedFiles,
-    checks,
-    message: statusMsg,
-    changeSetId: result.questionId,
+    checks: [],
+    message: `Ask: ${result.finalText.slice(0, 100)}`,
   };
 }
 
@@ -285,7 +424,7 @@ function buildToolRegistry(mode: "ask" | "patch"): ToolRegistry {
   const registry = new ToolRegistry();
   registry.registerAll([searchTool, readTool, askUserTool, finishTool]);
   if (mode === "patch") {
-    registry.registerAll([createFileTool, editTool, replaceLinesTool, checkTool]);
+    registry.registerAll([proposeEditTool, createFileTool, editTool, replaceLinesTool, checkTool]);
   }
   return registry;
 }

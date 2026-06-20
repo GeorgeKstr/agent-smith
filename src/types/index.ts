@@ -161,6 +161,26 @@ export type SmithConfig = {
   };
   toolCallingMode: ToolCallingMode;
   conversationMode: ConversationMode;
+  localText: {
+    maxConsecutiveSearches: number;
+    maxTotalSearchesPerRun: number;
+    maxSearchesAfterFirstRead: number;
+    requireReasonForSearchAfterRead: boolean;
+    maxReadsBeforeEditPressure: number;
+    maxSearchesBeforeEditPressure: number;
+    allowReadAfterEditPressure: boolean;
+  };
+  approval: {
+    policy: "never" | "on_write" | "on_dangerous" | "always";
+    confirmDangerous: boolean;
+    maxAutoApplyFiles: number;
+  };
+  phaseModels: Partial<Record<string, string>>;
+  sandbox: {
+    createCheckpoints: boolean;
+    autoRollback: boolean;
+    warnDirtyFiles: boolean;
+  };
   theme: {
     mode: "matrix";
     showBootAnimation: boolean;
@@ -356,6 +376,7 @@ export type PatchOutcome = {
   message: string;
   changeSetId?: string;
   checkpointId?: string;
+  runtimeIntent?: string;
 };
 
 export type RuntimeActionKind =

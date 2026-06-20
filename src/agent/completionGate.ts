@@ -14,6 +14,7 @@ export function canCompleteRun(input: {
   metrics: AgentRunMetrics;
   evidence: RunEvidence;
   allowNoEditCompletion?: boolean;
+  allowInspectedNoEditFinal?: boolean;
 }): CompletionGateResult {
   const { mode, finalText, metrics, evidence } = input;
 
@@ -32,6 +33,19 @@ export function canCompleteRun(input: {
     return { canComplete: true, status: "completed", warnings: ["No edits were required for this task."], reason: "Patch mode allowed to complete without edits." };
   }
 
+  if (
+    input.allowInspectedNoEditFinal &&
+    evidence.filesRead.length > 0 &&
+    finalText.trim().length > 80
+  ) {
+    return {
+      canComplete: true,
+      status: "completed",
+      warnings: ["No file changes were made after inspection."],
+      reason: "The agent inspected relevant files and explained that no edit was needed."
+    };
+  }
+
   // Plain non-code file creation doesn't need code checks
   if (!evidence.filesEdited.length && evidence.filesCreated.length > 0 &&
       evidence.filesCreated.every((p) => !/[.](ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|c|cpp|h|hpp|cs|php|rb|swift|kt)$/i.test(p))) {
@@ -48,6 +62,8 @@ export function canCompleteRun(input: {
   if (evidence.filesCreated.length > 0 && !evidence.filesEdited.length) warnings.push("Files were created but no code edits or checks verified.");
   if (evidence.checksRun.length === 0) warnings.push("No checks were run.");
   else if (!checkPassed) warnings.push("No checks passed.");
+  if (metrics.progressPolicyRejections > 0) warnings.push(`${metrics.progressPolicyRejections} tool call(s) were blocked by progress policy (search/read loops).`);
+  if (metrics.searches > 2 && metrics.reads === 0) warnings.push("Search-only loop detected: multiple searches with no reads.");
 
   return {
     canComplete: false,
@@ -73,6 +89,12 @@ export function buildNoEvidenceMessage(input: {
   lines.push(`- Model turns: ${input.metrics.modelTurns}`);
   lines.push(`- Tool calls: ${input.metrics.toolCallsRequested} (${input.metrics.toolCallsSucceeded} ok, ${input.metrics.toolCallsFailed} failed)`);
   lines.push(`- Searches: ${input.metrics.searches}, Reads: ${input.metrics.reads}, Edits: ${input.metrics.edits}, Checks: ${input.metrics.checks}`);
+  if (input.metrics.progressPolicyRejections > 0) {
+    lines.push(`- Progress policy rejections: ${input.metrics.progressPolicyRejections}`);
+  }
+  if (input.metrics.tagNormalizations > 0) {
+    lines.push(`- Tag normalizations: ${input.metrics.tagNormalizations}`);
+  }
   lines.push(`- Files read: ${input.evidence.filesRead.length}, Files edited: ${input.evidence.filesEdited.length}`);
   lines.push(`- Checks run: ${input.evidence.checksRun.length}`);
 
