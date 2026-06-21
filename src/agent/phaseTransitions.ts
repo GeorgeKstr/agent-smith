@@ -80,3 +80,53 @@ export function shouldExitVerify(input: {
 
   return { shouldExit: false, reason: "" };
 }
+
+export function shouldExitExploreForTask(input: {
+  taskKind: string;
+  filesRead: string[];
+  totalSearches: number;
+  totalReads: number;
+}): { shouldExit: boolean; reason: string } {
+  const { taskKind, filesRead, totalSearches, totalReads } = input;
+
+  if (taskKind === "ui_style_patch") {
+    const stylesheetRead = filesRead.some((path) =>
+      /\.(css|scss|sass|less)$/i.test(path)
+    );
+
+    if (stylesheetRead) {
+      return {
+        shouldExit: true,
+        reason: "Stylesheet inspected. Enough context for style patch.",
+      };
+    }
+
+    if (totalReads >= 2) {
+      return {
+        shouldExit: true,
+        reason: "Two files read for style task. Proceeding to apply.",
+      };
+    }
+
+    if (totalSearches >= 3) {
+      return {
+        shouldExit: true,
+        reason: "Max searches reached for style task exploration.",
+      };
+    }
+
+    return { shouldExit: false, reason: "" };
+  }
+
+  if (taskKind === "file_create") {
+    if (totalSearches >= 2) {
+      return {
+        shouldExit: true,
+        reason: "Enough context for file creation.",
+      };
+    }
+    return { shouldExit: false, reason: "" };
+  }
+
+  return { shouldExit: false, reason: "" };
+}

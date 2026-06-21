@@ -1,4 +1,6 @@
 import type { TaskPacket, TaskKind } from "../context/taskPacket.js";
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { RetrievalLead } from "../context/retrievalLead.js";
 import type { WorkingMemory } from "./workingMemory.js";
 import { createWorkingMemory } from "./workingMemory.js";
@@ -26,6 +28,7 @@ import {
   shouldExitPlanPatch,
   shouldExitApplyPatch,
   shouldExitVerify,
+  shouldExitExploreForTask,
 } from "./phaseTransitions.js";
 import { runFocusedAgentLoop } from "./focusedAgentLoop.js";
 import type { FocusedAgentResult } from "./focusedAgentLoop.js";
@@ -34,14 +37,18 @@ import type { AgentRunMetrics } from "./runMetrics.js";
 import { createEmptyRunEvidence } from "./runEvidence.js";
 import type { RunEvidence } from "./runEvidence.js";
 import { createProviders, resolveModelProvider } from "../providers/providers.js";
+import { suggestBackgroundPatch, extractColorFromPrompt, renderStyleSuggestionAsToolCall } from "./stylePatchSuggestion.js";
 
 const EXPLORE_MAX_STEPS = 6;
+const EXPLORE_MAX_STEPS_STYLE = 3;
 const PLAN_MAX_STEPS = 4;
 const APPLY_MAX_STEPS = 5;
 const VERIFY_MAX_STEPS = 4;
 
 const EXPLORE_MAX_SEARCHES = 3;
+const EXPLORE_MAX_SEARCHES_STYLE = 2;
 const EXPLORE_MAX_READS = 3;
+const EXPLORE_MAX_READS_STYLE = 2;
 
 const VERIFY_MAX_CHECK_ATTEMPTS = 3;
 
@@ -115,6 +122,10 @@ export async function runPatchWorkflow(input: {
   events?.emit("task:phase", "explore");
 
   const exploreModel = resolvePhaseModel("explore");
+  const isStyleTask = input.taskKind === "ui_style_patch";
+  const exploreMaxSteps = isStyleTask ? EXPLORE_MAX_STEPS_STYLE : EXPLORE_MAX_STEPS;
+  const exploreMaxSearches = isStyleTask ? EXPLORE_MAX_SEARCHES_STYLE : EXPLORE_MAX_SEARCHES;
+  const exploreMaxReads = isStyleTask ? EXPLORE_MAX_READS_STYLE : EXPLORE_MAX_READS;
 
   const exploreResult = await runFocusedAgentLoop({
     ...sharedInputBase,
@@ -127,10 +138,10 @@ export async function runPatchWorkflow(input: {
     phaseGoal: `Find relevant files for: ${packet.goal}`,
     phaseExitCriteria: [
       "At least one relevant file inspected",
-      `At most ${EXPLORE_MAX_SEARCHES} searches`,
+      `At most ${exploreMaxSearches} searches (style tasks: read CSS immediately)`,
       "Return an exploration summary with inspected files and likely edit targets",
     ],
-    maxSteps: EXPLORE_MAX_STEPS,
+    maxSteps: exploreMaxSteps,
     skipEditPressure: true,
     skipPatchPhasePolicy: true,
     phaseOnToolCall(toolName) {
@@ -149,11 +160,23 @@ export async function runPatchWorkflow(input: {
     remainingUnknowns: memory.remainingUnknowns,
   });
 
+  // Check task-specific explore exit
+  const taskExploreExit = shouldExitExploreForTask({
+    taskKind: input.taskKind ?? "unknown",
+    filesRead: overallEvidence.filesRead,
+    totalSearches: exploreResult.metrics.searches,
+    totalReads: exploreResult.metrics.reads,
+  });
+
   const exploreTransition = shouldExitExplore({
     evidence: overallEvidence,
-    maxSearches: EXPLORE_MAX_SEARCHES,
-    maxReads: EXPLORE_MAX_READS,
+    maxSearches: exploreMaxSearches,
+    maxReads: exploreMaxReads,
   });
+
+  if (taskExploreExit.shouldExit) {
+    exploration.enoughContext = true;
+  }
 
   if (!exploration.enoughContext && exploreTransition.shouldExit) {
     return buildNoChangeResult({
@@ -177,6 +200,26 @@ export async function runPatchWorkflow(input: {
     }));
     const styleSeeded = mergeWorkingMemory(styleMemory, { filesRead: exploredReads });
 
+    // Build deterministic CSS suggestion from explored stylesheets
+    let styleSuggestion = "";
+    const color = extractColorFromPrompt(packet.rawUserPrompt);
+    const cssFile = exploredReads.find((f: { path: string }) =>
+      /\.css$/i.test(f.path)
+    );
+    if (color && cssFile) {
+      try {
+        const cssContent = await fs.readFile(path.join(root, cssFile.path), "utf8");
+        const suggestion = suggestBackgroundPatch({
+          css: cssContent,
+          desiredColor: color,
+          path: cssFile.path,
+        });
+        if (suggestion) {
+          styleSuggestion = `\n\nSuggested edit for ${cssFile.path}:\n${renderStyleSuggestionAsToolCall(suggestion)}`;
+        }
+      } catch {}
+    }
+
     const applyStyleModel = resolvePhaseModel("apply_style_patch");
     const applyStyleResult = await runFocusedAgentLoop({
       ...sharedInputBase,
@@ -192,7 +235,7 @@ export async function runPatchWorkflow(input: {
       skipEditPressure: true,
       skipPatchPhasePolicy: true,
       phaseOnToolCall(toolName) { events?.emit("task:phase", `style:${toolName}`); },
-      projectRules: [projectRules ?? "", styleApplyContext].filter(Boolean).join("\n\n"),
+      projectRules: [projectRules ?? "", styleApplyContext, styleSuggestion].filter(Boolean).join("\n\n"),
     });
 
     mergeMetricsInto(metrics, applyStyleResult.metrics);

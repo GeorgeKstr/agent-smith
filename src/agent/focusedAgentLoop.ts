@@ -13,6 +13,7 @@ import { compactToolResult } from "./compactToolResult.js";
 import { renderLocalTextToolPrompt } from "./localTextToolPrompt.js";
 import { renderPhaseToolPrompt } from "./phaseToolPrompt.js";
 import type { AgentWorkflowPhase } from "./workflowPhase.js";
+import { toolsForPhase } from "./phaseTools.js";
 import { parseLocalTextAction } from "./localTextToolParser.js";
 import type { ParsedLocalTextAction } from "./localTextToolParser.js";
 import { renderLocalTextToolResult } from "./localTextToolResult.js";
@@ -106,7 +107,7 @@ export async function runFocusedAgentLoop(input: {
 }): Promise<FocusedAgentResult> {
   const { packet, leads, tools, provider, model, mode, runtimeIntent, config, root, db, events, projectRules, taskId } = input;
   const phase = input.phase;
-  const allowedTools = input.allowedToolsOverride ?? (mode === "ask" ? ASK_TOOLS : PATCH_TOOLS);
+  const allowedTools = input.allowedToolsOverride ?? (phase ? toolsForPhase(phase) : (mode === "ask" ? ASK_TOOLS : PATCH_TOOLS));
   const toolDefs = tools.list();
   const budget = budgetForTokenLimit(config.context.maxPromptTokens);
   const deadline = Date.now() + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
