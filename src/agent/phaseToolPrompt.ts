@@ -154,13 +154,18 @@ Rules:
 Your job: make the requested visual/style change.${goalLine}
 Allowed tools: ${tools}${exitLines}
 
-You may NOT search. You may NOT read new files.
-You have already inspected the relevant CSS/HTML files.
+You may NOT search. You may read a file only if a previous edit failed
+and you need to see the current exact text.
+You have already inspected the relevant CSS/HTML files and the current
+CSS content is included in the project rules below.
 
 For CSS/style changes:
-1. Use edit to change existing CSS rules.
+1. Use edit to change existing CSS rules. The "search" field MUST match
+   the exact text from the CSS content provided below.
 2. Use replace_lines to update specific line ranges.
 3. Use append_to_file to add a new CSS rule if no matching selector exists.
+4. If an edit fails with "Search text not found", use read to see the
+   current file content, then retry with the exact text.
 
 Example (edit existing rule):
 <tool_call>
@@ -181,7 +186,7 @@ Applied:
 Rules:
 - Always put tool arguments inside the "args" object.
 - Output exactly one block: <tool_call> or <final>.
-- Do not search. Do not read new files.
+- Do not search. You may read only if an edit failed and you need exact text.
 - If no edit is needed, explain why in <final>.`;
 
     case "verify":

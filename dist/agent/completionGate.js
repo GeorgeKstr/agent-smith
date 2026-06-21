@@ -9,13 +9,54 @@ export function canCompleteRun(input) {
     // Patch mode
     const changed = evidence.filesEdited.length > 0 || evidence.filesCreated.length > 0;
     const checkPassed = evidence.checksRun.some((c) => c.ok);
+    const hasPending = (evidence.pendingFileOperations?.length ?? 0) > 0;
+    if (hasPending) {
+        return {
+            canComplete: false,
+            status: "waiting_for_approval",
+            warnings: [`${evidence.pendingFileOperations?.length ?? 0} file operation(s) are pending user approval.`],
+            reason: "The agent proposed file changes, but they have not been approved/applied yet.",
+        };
+    }
     if (input.allowNoEditCompletion && finalText.trim().length > 0) {
         return { canComplete: true, status: "completed", warnings: ["No edits were required for this task."], reason: "Patch mode allowed to complete without edits." };
+    }
+    if (input.allowInspectedNoEditFinal &&
+        evidence.filesRead.length > 0 &&
+        finalText.trim().length > 80) {
+        return {
+            canComplete: true,
+            status: "completed",
+            warnings: ["No file changes were made after inspection."],
+            reason: "The agent inspected relevant files and explained that no edit was needed."
+        };
+    }
+    if (input.allowUsefulNoChangeAnswer &&
+        isUsefulNoChangeAnswer({ finalText, evidence })) {
+        return {
+            canComplete: true,
+            status: "completed",
+            warnings: ["Answered without making file changes."],
+            reason: "The model inspected files and produced a useful no-change answer.",
+        };
     }
     // Plain non-code file creation doesn't need code checks
     if (!evidence.filesEdited.length && evidence.filesCreated.length > 0 &&
         evidence.filesCreated.every((p) => !/[.](ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|c|cpp|h|hpp|cs|php|rb|swift|kt)$/i.test(p))) {
         return { canComplete: true, status: "completed", warnings: ["No code check was required for plain file creation."], reason: "Plain non-code file was created successfully." };
+    }
+    // Style patches: CSS/HTML changes with no configured checks
+    if (input.taskKind === "ui_style_patch" && changed) {
+        const hasCodeFile = [...evidence.filesEdited, ...evidence.filesCreated]
+            .some((p) => /\.(ts|tsx|js|jsx|py|rs|go|java|c|cpp)$/i.test(p));
+        if (!hasCodeFile) {
+            return {
+                canComplete: true,
+                status: "completed",
+                warnings: evidence.checksRun.length === 0 ? ["No checks were run (CSS-only change)."] : [],
+                reason: "CSS/style file was changed successfully.",
+            };
+        }
     }
     if (changed && checkPassed) {
         return { canComplete: true, status: "completed", warnings: [], reason: "Files were changed and at least one check passed." };
@@ -31,6 +72,10 @@ export function canCompleteRun(input) {
         warnings.push("No checks were run.");
     else if (!checkPassed)
         warnings.push("No checks passed.");
+    if (metrics.progressPolicyRejections > 0)
+        warnings.push(`${metrics.progressPolicyRejections} tool call(s) were blocked by progress policy (search/read loops).`);
+    if (metrics.searches > 2 && metrics.reads === 0)
+        warnings.push("Search-only loop detected: multiple searches with no reads.");
     return {
         canComplete: false,
         status: changed ? "partial" : "failed",
@@ -48,6 +93,12 @@ export function buildNoEvidenceMessage(input) {
     lines.push(`- Model turns: ${input.metrics.modelTurns}`);
     lines.push(`- Tool calls: ${input.metrics.toolCallsRequested} (${input.metrics.toolCallsSucceeded} ok, ${input.metrics.toolCallsFailed} failed)`);
     lines.push(`- Searches: ${input.metrics.searches}, Reads: ${input.metrics.reads}, Edits: ${input.metrics.edits}, Checks: ${input.metrics.checks}`);
+    if (input.metrics.progressPolicyRejections > 0) {
+        lines.push(`- Progress policy rejections: ${input.metrics.progressPolicyRejections}`);
+    }
+    if (input.metrics.tagNormalizations > 0) {
+        lines.push(`- Tag normalizations: ${input.metrics.tagNormalizations}`);
+    }
     lines.push(`- Files read: ${input.evidence.filesRead.length}, Files edited: ${input.evidence.filesEdited.length}`);
     lines.push(`- Checks run: ${input.evidence.checksRun.length}`);
     // Surface recent tool failures
@@ -71,4 +122,15 @@ export function buildNoEvidenceMessage(input) {
             lines.push(`- ${w}`);
     }
     return lines.join("\n");
+}
+function isUsefulNoChangeAnswer(input) {
+    const text = input.finalText.trim();
+    if (text.length < 40)
+        return false;
+    const bad = /^(done|fixed|task completed|completed|ok|finished|ready|success)$/i.test(text);
+    if (bad)
+        return false;
+    if (input.evidence.filesRead.length === 0 && text.length < 120)
+        return false;
+    return true;
 }

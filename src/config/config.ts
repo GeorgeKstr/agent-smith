@@ -179,7 +179,7 @@ export const DEFAULT_CONFIG: SmithConfig = {
     forbiddenPaths: [".env", ".env.local", ".npmrc", "secrets", "id_rsa"],
     confirmShellCommands: true,
     maxPatchFiles: 6,
-    maxPatchLines: 500
+    maxPatchLines: 2000
   },
   lan: {
     port: 3000

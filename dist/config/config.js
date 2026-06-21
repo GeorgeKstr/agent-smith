@@ -84,6 +84,15 @@ const configSchema = z.object({
     }).optional(),
     toolCallingMode: z.enum(["local_text", "native_provider", "auto"]).optional(),
     conversationMode: z.enum(["compact_rebuild", "full_history"]).optional(),
+    localText: z.object({
+        maxConsecutiveSearches: z.number().int().min(1).max(10),
+        maxTotalSearchesPerRun: z.number().int().min(1).max(50),
+        maxSearchesAfterFirstRead: z.number().int().min(0).max(10),
+        requireReasonForSearchAfterRead: z.boolean(),
+        maxReadsBeforeEditPressure: z.number().int().min(1).max(10),
+        maxSearchesBeforeEditPressure: z.number().int().min(1).max(20),
+        allowReadAfterEditPressure: z.boolean()
+    }).optional(),
     organizer: z.object({
         enabled: z.boolean(),
         url: z.string(),
@@ -166,7 +175,7 @@ export const DEFAULT_CONFIG = {
         forbiddenPaths: [".env", ".env.local", ".npmrc", "secrets", "id_rsa"],
         confirmShellCommands: true,
         maxPatchFiles: 6,
-        maxPatchLines: 500
+        maxPatchLines: 2000
     },
     lan: {
         port: 3000
@@ -185,6 +194,26 @@ export const DEFAULT_CONFIG = {
     },
     toolCallingMode: "local_text",
     conversationMode: "compact_rebuild",
+    localText: {
+        maxConsecutiveSearches: 2,
+        maxTotalSearchesPerRun: 4,
+        maxSearchesAfterFirstRead: 1,
+        requireReasonForSearchAfterRead: true,
+        maxReadsBeforeEditPressure: 2,
+        maxSearchesBeforeEditPressure: 3,
+        allowReadAfterEditPressure: true,
+    },
+    approval: {
+        policy: "on_write",
+        confirmDangerous: true,
+        maxAutoApplyFiles: 10,
+    },
+    phaseModels: {},
+    sandbox: {
+        createCheckpoints: true,
+        autoRollback: false,
+        warnDirtyFiles: true,
+    },
     organizer: {
         enabled: true,
         url: "http://127.0.0.1:8787",
@@ -237,6 +266,10 @@ export async function loadConfig(root) {
         compatibility: parsed.compatibility ?? { mode: "auto", toolMode: "auto", preferNativeToolsForLargeModels: true, preferDiffOnlyForLocalModels: true },
         toolCallingMode: parsed.toolCallingMode ?? "local_text",
         conversationMode: parsed.conversationMode ?? "compact_rebuild",
+        localText: parsed.localText ?? { maxConsecutiveSearches: 2, maxTotalSearchesPerRun: 4, maxSearchesAfterFirstRead: 1, requireReasonForSearchAfterRead: true, maxReadsBeforeEditPressure: 2, maxSearchesBeforeEditPressure: 3, allowReadAfterEditPressure: true },
+        approval: parsed.approval ?? { policy: "on_write", confirmDangerous: true, maxAutoApplyFiles: 10 },
+        phaseModels: parsed.phaseModels ?? {},
+        sandbox: parsed.sandbox ?? { createCheckpoints: true, autoRollback: false, warnDirtyFiles: true },
         organizer: parsed.organizer ?? { enabled: true, url: "http://127.0.0.1:8787", heartbeatMs: 5000 },
         providers: parsed.providers ?? {},
         defaultProvider: parsed.defaultProvider ?? "ollama",

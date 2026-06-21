@@ -9,6 +9,7 @@ import { profileForPhase } from "./permissionProfile.js";
 import { canCompleteRun } from "./completionGate.js";
 import { createEmptyRunMetrics } from "./runMetrics.js";
 import { createEmptyRunEvidence } from "./runEvidence.js";
+import { isWriteTool } from "./toolPermissions.js";
 
 // ═══════════════════════════════════════════════════════════════════
 // 1. TaskKind Detection
@@ -105,8 +106,8 @@ test("apply_style_patch has NO search", () => {
   notContains(toolsForPhase("apply_style_patch"), "search", "should NOT have search");
 });
 
-test("apply_style_patch has NO read", () => {
-  notContains(toolsForPhase("apply_style_patch"), "read", "should NOT have read");
+test("apply_style_patch has read for retry after failed edit", () => {
+  contains(toolsForPhase("apply_style_patch"), "read", "should have read for retry");
 });
 
 test("apply_style_patch has NO propose_edit", () => {
@@ -170,6 +171,78 @@ test("no file changes in style task -> fails", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// 4b. Phase-Aware Completion Gate (non-write phases can exit via <final>)
+// ═══════════════════════════════════════════════════════════════════
+console.log("\n=== Phase-Aware Completion Gate ===\n");
+
+test("explore phase <final> without edits -> completed (allowNoEditCompletion)", () => {
+  const evidence = createEmptyRunEvidence();
+  evidence.filesRead.push("public/style.css");
+
+  const gate = canCompleteRun({
+    mode: "patch",
+    finalText: "Inspected public/style.css. Contains body background rule.",
+    metrics: createEmptyRunMetrics(),
+    evidence,
+    allowNoEditCompletion: true,
+  });
+
+  eq(gate.canComplete, true, "explore phase should complete via <final>");
+  eq(gate.status, "completed", "completed status");
+});
+
+test("explore phase empty <final> -> still needs text", () => {
+  const evidence = createEmptyRunEvidence();
+  evidence.filesRead.push("public/style.css");
+
+  const gate = canCompleteRun({
+    mode: "patch",
+    finalText: "   ",
+    metrics: createEmptyRunMetrics(),
+    evidence,
+    allowNoEditCompletion: true,
+  });
+
+  eq(gate.canComplete, false, "empty final should not complete");
+});
+
+test("apply_style_patch phase <final> without edits -> fails (write phase)", () => {
+  const evidence = createEmptyRunEvidence();
+  evidence.filesRead.push("public/style.css");
+
+  const gate = canCompleteRun({
+    mode: "patch",
+    finalText: "I inspected the CSS but didn't edit.",
+    metrics: createEmptyRunMetrics(),
+    evidence,
+    allowNoEditCompletion: false,
+    taskKind: "ui_style_patch",
+  });
+
+  eq(gate.canComplete, false, "write phase must have edits to complete");
+});
+
+test("explore phase has NO write tools", () => {
+  const tools = toolsForPhase("explore");
+  for (const t of tools) {
+    assert(!isWriteTool(t), `${t} should not be a write tool in explore`);
+  }
+});
+
+test("plan_patch phase has NO write tools", () => {
+  const tools = toolsForPhase("plan_patch");
+  for (const t of tools) {
+    assert(!isWriteTool(t), `${t} should not be a write tool in plan_patch`);
+  }
+});
+
+test("apply_style_patch phase HAS write tools", () => {
+  const tools = toolsForPhase("apply_style_patch");
+  const hasWrite = tools.some((t) => isWriteTool(t));
+  assert(hasWrite, "apply_style_patch should have write tools");
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // 5. Trajectory: Background Red Task
 // ═══════════════════════════════════════════════════════════════════
 console.log("\n=== Background Red Trajectory ===\n");
@@ -197,9 +270,9 @@ test("apply_style_patch phase has NO search", () => {
   notContains(tools, "search", "no search in style apply");
 });
 
-test("apply_style_patch has only edit tools + final", () => {
+test("apply_style_patch has edit tools + read + final", () => {
   const tools = toolsForPhase("apply_style_patch");
-  eq(tools.length, 5, "5 tools: edit, replace_lines, append_to_file, ask_user, final");
+  eq(tools.length, 6, "6 tools: edit, replace_lines, append_to_file, read, ask_user, final");
 });
 
 // ═══════════════════════════════════════════════════════════════════

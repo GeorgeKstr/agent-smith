@@ -21,6 +21,7 @@ var S={
   ing:{format:'auto',text:'',implModel:'',revModel:'',maxIter:3,autoapr:false,autoapl:false,preview:null},
   currentFile:null,fileContent:null,fileEditing:false,treeFilter:'',fileSummary:null,fileMimeType:null,fileIsImage:false,
   dashData:null,
+  pendingOps:[],approvalFilter:{q:'',status:'pending'},
   typing:false,confirmCb:null
 };
 
@@ -100,9 +101,11 @@ function renderShell(){
   var tb=$e('topbar');if(!tb)return;
   var sc=(S.status&&S.status.agents)||{},tc=(S.status&&S.status.tasks)||{};
   var on=sc.online||0,run=tc.running||0,rev=tc.needs_review||0,fail=tc.failed||0;
+  var pend=S.status&&typeof S.status.pendingApprovals==='number'?S.status.pendingApprovals:S.pendingOps.filter(function(o){return o.status==='pending';}).length;
   tb.innerHTML='<span class=tb-logo>Agent Smith</span><span class=tb-dot>\\u2022</span>'+
     (hasSidebar?'<span class="tb-stat on">'+on+'/'+S.agents.length+' agents</span>':'')+
     (run?'<span class="tb-stat run">'+run+' running</span>':'')+
+    (pend?'<span class="tb-stat rev">'+pend+' approvals</span>':'')+
     (rev?'<span class="tb-stat rev">'+rev+' review</span>':'')+
     (fail?'<span class="tb-stat err">'+fail+' failed</span>':'')+
     '<span class=tb-fill></span>'+
@@ -111,15 +114,18 @@ function renderShell(){
 }
 function renderBottomNav(){
   var el=$e('bottom-nav');if(!el||window.innerWidth>=768){if(el)el.innerHTML='';return;}
-  if(!S.agentId&&!hasSidebar){el.innerHTML='';return;} /* LAN: show when rendering */
+  if(!S.agentId&&!hasSidebar){el.innerHTML='';return;}
   if(!S.agentId&&hasSidebar){el.innerHTML='';return;}
   var tasks=S.tasks.filter(function(t){return t.assignedAgentId===S.agentId;});
   var rc=tasks.filter(function(t){return t.status==='needs_review';}).length;
+  var pendCount=S.pendingOps.filter(function(o){return o.status==='pending';}).length;
+  if(!pendCount&&S.status&&typeof S.status.pendingApprovals==='number')pendCount=S.status.pendingApprovals;
   el.innerHTML=
     '<button class="bn-btn'+(S.tab==='chat'?' active':'')+'" onclick="setTab(\\'chat\\')"><span class=bn-icon>&#9993;</span>Chat</button>'+
     '<button class="bn-btn'+(S.tab==='tasks'?' active':'')+'" onclick="setTab(\\'tasks\\')"><span class=bn-icon>&#9783;</span>Tasks'+(rc?'<span class=bn-badge>'+rc+'</span>':'')+'</button>'+
     '<button class="bn-btn'+(S.tab==='files'?' active':'')+'" onclick="setTab(\\'files\\')"><span class=bn-icon>&#9642;</span>Files</button>'+
-    '<button class="bn-btn'+(S.tab==='overview'?' active':'')+'" onclick="setTab(\\'overview\\')"><span class=bn-icon>&#9654;</span>Overview</button>';
+    '<button class="bn-btn'+(S.tab==='approvals'?' active':'')+'" onclick="setTab(\\'approvals\\')"><span class=bn-icon>&#9672;</span>OK'+(pendCount?'<span class=bn-badge>'+pendCount+'</span>':'')+'</button>'+
+    '<button class="bn-btn'+(S.tab==='overview'?' active':'')+'" onclick="setTab(\\'overview\\')"><span class=bn-icon>&#9654;</span>More</button>';
 }
 
 function render(){
@@ -160,11 +166,14 @@ function renderMainOnly(){
   var a=S.agents.find(function(x){return x.id===S.agentId;});
   var tasks=S.tasks.filter(function(t){return t.assignedAgentId===S.agentId;});
   var rc=tasks.filter(function(t){return t.status==='needs_review';}).length;
+  var pendCount=S.pendingOps.filter(function(o){return o.status==='pending';}).length;
+  if(!pendCount&&S.status&&typeof S.status.pendingApprovals==='number')pendCount=S.status.pendingApprovals;
 
   var h='<div class=tab-bar>'+
     '<button class="tb2'+(S.tab==='chat'?' active':'')+'" onclick="setTab(\\'chat\\')">Chat</button>'+
     '<button class="tb2'+(S.tab==='tasks'?' active':'')+'" onclick="setTab(\\'tasks\\')">Tasks ('+tasks.length+')</button>'+
     '<button class="tb2'+(S.tab==='files'?' active':'')+'" onclick="setTab(\\'files\\')">Files</button>'+
+    (pendCount?'<button class="tb2'+(S.tab==='approvals'?' active':'')+'" onclick="setTab(\\'approvals\\')">Approvals ('+pendCount+')</button>':'<button class="tb2'+(S.tab==='approvals'?' active':'')+'" onclick="setTab(\\'approvals\\')">Approvals</button>')+
     '<button class="tb2'+(S.tab==='overview'?' active':'')+'" onclick="setTab(\\'overview\\')">Overview</button>'+
     (a?'<div class=tab-agent><span class="dot '+dotC(a.status)+'"></span><span class=tab-agent-nm>'+esc(a.name||short(a.id))+'</span></div>':'')+
     '</div><div class=tab-content id=tab-content></div>';
@@ -174,11 +183,12 @@ function renderMainOnly(){
   if(S.tab==='chat')renderChat(tc,a);
   else if(S.tab==='tasks')renderTasks(tc,a);
   else if(S.tab==='files')renderFiles(tc,a);
+  else if(S.tab==='approvals')renderApprovals(tc,a);
   else if(S.tab==='overview')renderOverview(tc,a);
 }
 
 /* ── Tabs ── */
-function setTab(t){S.tab=t;if(t==='chat'){if(!S.chat.sessions.length)loadSessions();if(!S.chat.allModels.length)loadModels();}if(t==='files')loadFileTree();if(t==='overview'&&!S.dashData)loadDashboard();render();}
+function setTab(t){S.tab=t;if(t==='chat'){if(!S.chat.sessions.length)loadSessions();if(!S.chat.allModels.length)loadModels();}if(t==='files')loadFileTree();if(t==='approvals')loadApprovals();if(t==='overview'&&!S.dashData)loadDashboard();render();}
 function selectAgent(id){
   S.agentId=id;S.tab='chat';
   if(hasSidebar&&id){agentBase='/api/agents/'+id;window.__setAgentApiBase(agentBase);}
@@ -218,7 +228,7 @@ function renderTasks(el,a){
   var h='<div class=tab-scroll><div class=action-bar style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" onclick=doDispatchNext()>Dispatch Next</button><button class="btn btn-sm" onclick=toggleIngest()>Ingest Flow</button><button class="btn btn-sm" onclick=toggleNew()>+ New Task</button></div>';
   if(S.ingestOpen)h+=renderIngest();
   if(S.newOpen)h+=renderNew();
-  h+='<div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap"><input class=inp style="flex:1;min-width:100px;min-height:36px" id=fq placeholder="Search" value="'+esc(S.filter.q||'')+'" oninput="S.filter.q=this.value;renderTasksOnly()"><select class=sel onchange="S.filter.status=this.value;renderTasksOnly()" style="min-height:36px"><option value="">All</option>'+['queued','assigned','running','reviewing','iterating','needs_review','auto_approved','completed','failed','skipped'].map(function(s){return'<option value="'+s+'"'+(S.filter.status===s?' selected':'')+'>'+s.replace(/_/g,' ')+'</option>';}).join('')+'</select></div>';
+  h+='<div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap"><input class=inp style="flex:1;min-width:100px;min-height:36px" id=fq placeholder="Search" value="'+esc(S.filter.q||'')+'" oninput="S.filter.q=this.value;renderTasksOnly()"><select class=sel onchange="S.filter.status=this.value;renderTasksOnly()" style="min-height:36px"><option value="">All</option>'+['queued','assigned','running','reviewing','iterating','waiting_for_approval','waiting_for_user','needs_review','auto_approved','partial','completed','blocked','failed','skipped','cancelled'].map(function(s){return'<option value="'+s+'"'+(S.filter.status===s?' selected':'')+'>'+s.replace(/_/g,' ')+'</option>';}).join('')+'</select></div>';
   if(!tasks.length)h+='<div class=empty style="padding:20px">'+(all.length?'No tasks match filters':'No tasks assigned yet')+'</div>';
   else{var g={},ord=['running','reviewing','iterating','needs_review','auto_approved','assigned','queued','completed','failed','skipped','cancelled'];tasks.forEach(function(t){g[t.status]=g[t.status]||[];g[t.status].push(t);});ord.forEach(function(grp){var arr=g[grp];if(!arr||!arr.length)return;h+='<div class=task-group><div class=group-hdr>'+grp.replace(/_/g,' ')+'<span class=group-ct>'+arr.length+'</span></div>';arr.forEach(function(t){h+=taskCard(t);});h+='</div>';});}
   h+='</div>';el.innerHTML=h;
@@ -272,6 +282,51 @@ function updateFilePreview(){
 }
 function toggleEdit(){S.fileEditing=!S.fileEditing;if(S.fileEditing){var ta=$e('fpp-ta');if(ta)S.fileContent=ta.value||S.fileContent;}updateFilePreview();}
 
+/* ── Approvals ── */
+async function loadApprovals(){
+  try{var r=await api('/approvals');S.pendingOps=r.operations||[];}catch(e){S.pendingOps=[];}
+  if(S.tab==='approvals')renderApprovalsOnly();
+  else{renderShell();renderBottomNav();}
+}
+function renderApprovals(el,a){
+  var ops=S.pendingOps;var fq=S.approvalFilter.q;var fs=S.approvalFilter.status;
+  if(fq){var q=fq.toLowerCase();ops=ops.filter(function(o){return(o.path||'').toLowerCase().indexOf(q)!==-1||(o.reason||'').toLowerCase().indexOf(q)!==-1;});}
+  if(fs){ops=ops.filter(function(o){return o.status===fs;});}
+  var groups={};['pending','approved','rejected','applied','failed'].forEach(function(s){groups[s]=ops.filter(function(o){return o.status===s;});});
+  var total=ops.length;var pend=groups.pending.length;
+  var h='<div class=tab-scroll><div class=action-bar style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">'+
+    '<button class="btn btn-success btn-sm" onclick="doApproveAll()" '+(pend?'':'disabled')+'>Approve All ('+pend+')</button>'+
+    '<button class="btn btn-danger btn-sm" onclick="doRejectAll()" '+(pend?'':'disabled')+'>Reject All ('+pend+')</button>'+
+    '<button class="btn btn-sm" onclick="loadApprovals()">Refresh</button></div>'+
+    '<div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap"><input class=inp style="flex:1;min-width:100px;min-height:36px" id=afq placeholder="Search approvals..." value="'+esc(S.approvalFilter.q||'')+'" oninput="S.approvalFilter.q=this.value;renderApprovalsOnly()"><select class=sel onchange="S.approvalFilter.status=this.value;renderApprovalsOnly()" style="min-height:36px"><option value="">All Statuses</option>'+['pending','approved','rejected','applied','failed'].map(function(s){return'<option value="'+s+'"'+(S.approvalFilter.status===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div>';
+  if(!total)h+='<div class=empty style="padding:20px;text-align:center;color:var(--tx3)">No pending file operations</div>';
+  else['pending','approved','rejected','applied','failed'].forEach(function(st){
+    var arr=groups[st];if(!arr||!arr.length)return;
+    h+='<div class=task-group><div class=group-hdr>'+st+'<span class=group-ct>'+arr.length+'</span></div>';
+    arr.forEach(function(op){
+      var riskCss=op.risk==='destructive'?'stag-failed':'stag-assigned';
+      h+='<div class="approval-card'+(op.status==='pending'?' approval-pending':'')+'"><div class=approval-meta><span class="stag '+riskCss+'">'+esc(op.risk)+'</span><span class=stag style="background:var(--s3);color:var(--tx2)">'+esc(op.kind)+'</span><span class="stag stag-'+op.status+'">'+esc(op.status)+'</span></div>'+
+        '<div class=approval-path>'+esc(op.path)+(op.newPath?' → '+esc(op.newPath):'')+'</div>'+
+        (op.reason?'<div class=approval-reason>'+esc(op.reason)+'</div>':'')+
+        (op.createdAt?'<div class=approval-time>'+new Date(op.createdAt).toLocaleString()+'</div>':'')+
+        (op.diff?'<div class=approval-diff><pre>'+esc(op.diff.slice(0,2000))+'</pre></div>':'')+
+        (op.status==='pending'?'<div class=approval-actions><button class="btn btn-sm btn-success" onclick="doApprove(\\''+op.id+'\\')">Approve</button><button class="btn btn-sm btn-danger" onclick="doReject(\\''+op.id+'\\')">Reject</button><button class="btn btn-sm" onclick="doViewDiff(\\''+op.id+'\\')">View Diff</button></div>':'')+
+        (op.status==='approved'?'<div class=approval-actions><button class="btn btn-sm btn-primary" onclick="doApply(\\''+op.id+'\\')">Apply</button></div>':'')+
+        (op.error?'<div class=approval-error>'+esc(op.error)+'</div>':'')+
+        '<div class=approval-id>'+esc(op.id)+'</div></div>';
+    });
+    h+='</div>';
+  });
+  h+='</div>';el.innerHTML=h;
+}
+async function doApprove(id){try{await api('/approvals/'+id+'/approve',{method:'POST'});toast('Approved','');loadApprovals();}catch(e){toast(e.message,true);}}
+async function doReject(id){try{await api('/approvals/'+id+'/reject',{method:'POST'});toast('Rejected','');loadApprovals();}catch(e){toast(e.message,true);}}
+async function doApply(id){try{await api('/approvals/'+id+'/apply',{method:'POST'});toast('Applied','');loadApprovals();}catch(e){toast(e.message,true);}}
+async function doApproveAll(){ask('Approve all pending operations?',async function(){try{await api('/approvals/approve-all',{method:'POST'});toast('All approved','');loadApprovals();}catch(e){toast(e.message,true);}});}
+async function doRejectAll(){ask('Reject all pending operations?',async function(){try{await api('/approvals/reject-all',{method:'POST'});toast('All rejected','');loadApprovals();}catch(e){toast(e.message,true);}});}
+function doViewDiff(id){var op=S.pendingOps.find(function(o){return o.id===id;});if(op&&op.diff){$e('modal-root').innerHTML='<div class=modal onclick="if(event.target===this)noConfirm()"><div class=modal-box style=max-width:600px><div class=modal-msg style=font-family:var(--mono);font-size:11px;max-height:60vh;overflow:auto;white-space:pre>'+esc(op.diff||'')+'</div><div class=modal-btns><button class=btn onclick=noConfirm()>Close</button></div></div></div>';}}
+function renderApprovalsOnly(){var tc=$e('tab-content'),a=S.agents.find(function(x){return x.id===S.agentId;});if(!tc||S.tab!=='approvals')return;renderApprovals(tc,a);}
+
 /* ── Overview ── */
 function renderOverview(el,a){
   if(!S.dashData){el.innerHTML='<div class=tab-scroll><div class=empty style="padding:40px">Loading...</div></div>';return;}
@@ -296,8 +351,10 @@ window.addEventListener('DOMContentLoaded',function(){
   window.addEventListener('resize',function(){renderBottomNav();});
   if(!hasSidebar&&!S.agentId)S.agentId='_'; /* LAN: always have an agent context */
   loadModels();
+  loadApprovals();
   refresh(false);
   setInterval(function(){if(!S.typing&&!S.chat.sending)refresh(true);},3000);
+  setInterval(function(){if(!S.typing)loadApprovals();},10000);
 });
 
 /* ── Exports ── */
@@ -311,6 +368,9 @@ window.pickSession=pickSession;window.newSession=newSession;window.sendMsg=sendM
 window.deleteSession=deleteSession;window.renameSession=renameSession;
 window.openFile=openFile;window.filterTree=filterTree;window.toggleEdit=toggleEdit;
 window.ask=ask;window.yesConfirm=yesConfirm;window.noConfirm=noConfirm;
+window.doApprove=doApprove;window.doReject=doReject;window.doApply=doApply;
+window.doApproveAll=doApproveAll;window.doRejectAll=doRejectAll;window.doViewDiff=doViewDiff;
+window.loadApprovals=loadApprovals;window.renderApprovalsOnly=renderApprovalsOnly;
 window.render=render;window.refresh=refresh;window.renderTasksOnly=renderTasksOnly;
 window.renderMainOnly=renderMainOnly;
 })();

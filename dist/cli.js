@@ -28,15 +28,18 @@ import { listCheckpoints, getCheckpoint, deleteCheckpoint } from "./checkpoints/
 import { createChangeSet, listChangeSets, getChangeSet, listChangedFiles, listChangedHunks, getAcceptedHunkRefs, updateChangeSetStatus, updateChangedFileStatus, updateChangedHunkStatus, updateChangedHunksForFile, deleteChangeSet } from "./changes/changeSetStore.js";
 import { buildAcceptedHunksDiff } from "./changes/hunkDiffBuilder.js";
 import { applyAcceptedChangeSet, validateAcceptedHunksDiff, applyAcceptedHunksChangeSet } from "./changes/changeSetApply.js";
+import { getApprovalStore } from "./agent/approval/approvalStore.js";
+import { applyApprovedOperation } from "./agent/approval/applyOperation.js";
 import { App } from "./tui/App.js";
 async function bootstrap(rootOverride) {
-    const root = rootOverride ?? await detectProjectRoot(process.cwd());
+    const root = rootOverride ?? cwdOverride ?? await detectProjectRoot(process.cwd());
     await ensureConfig(root);
     const config = await loadConfig(root);
     const db = openDatabase(root);
     const events = createEventBus();
     return { root, config, db, events };
 }
+let cwdOverride;
 function getConfigValue(obj, keyPath) {
     const parts = keyPath.split(".");
     let current = obj;
@@ -99,7 +102,22 @@ export function createCli() {
     program
         .name("smith")
         .description("Matrix-themed local-first terminal coding agent")
-        .version("0.1.0");
+        .version("0.1.0")
+        .option("-C, --cwd <path>", "run as if smith was started in <path>")
+        .hook("preAction", async (thisCommand) => {
+        const opts = thisCommand.opts();
+        if (opts.cwd) {
+            const resolved = path.resolve(opts.cwd);
+            try {
+                await fs.access(resolved);
+            }
+            catch {
+                console.error(`--cwd: directory does not exist: ${resolved}`);
+                process.exit(1);
+            }
+            cwdOverride = resolved;
+        }
+    });
     program
         .command("index")
         .description("Run a full scan/index bootstrap (files, symbols, graph, tags)")
@@ -166,6 +184,7 @@ export function createCli() {
         .option("--apply", "immediately apply the patch")
         .option("--review", "store as proposed change set (default)")
         .option("--dry-run", "validate without storing or applying")
+        .option("--model <model>", "override the patcher model (e.g., opencode-zen:glm-5.2)")
         .action(async (taskParts, opts) => {
         const task = taskParts.join(" ");
         const { root, config, db, events } = await bootstrap();
@@ -173,7 +192,7 @@ export function createCli() {
         const runtime = createSmithRuntime({ db, root, config, events, indexer });
         const dry = opts.dryRun;
         const apl = opts.apply && !dry;
-        const outcome = await runtime.dispatch({ kind: "patch", prompt: task, apply: apl, dryRun: dry });
+        const outcome = await runtime.dispatch({ kind: "patch", prompt: task, apply: apl, dryRun: dry, model: opts.model });
         console.log(`\n— PATCH —`);
         console.log(outcome.message);
         if (outcome.answer) {
@@ -1269,6 +1288,157 @@ export function createCli() {
                 console.log(`files: ${result.files.join(", ")}`);
         }
         db.close();
+    });
+    // ═══════════════════════════════════════════════════════════════════
+    // Approvals
+    // ═══════════════════════════════════════════════════════════════════
+    const approvalsCmd = program
+        .command("approvals")
+        .description("Manage pending file operation approvals");
+    approvalsCmd
+        .command("list")
+        .description("List pending file operations")
+        .option("--json", "output JSON")
+        .action(async (opts) => {
+        const { root } = await bootstrap();
+        const store = getApprovalStore(root);
+        const operations = await store.listPending();
+        if (opts.json) {
+            console.log(JSON.stringify({ operations }, null, 2));
+        }
+        else {
+            if (operations.length === 0) {
+                console.log("No pending file operations.");
+            }
+            else {
+                for (const op of operations) {
+                    console.log(`[${op.id}] ${op.kind} ${op.path}${op.newPath ? " → " + op.newPath : ""}`);
+                    console.log(`  Risk: ${op.risk}`);
+                    console.log(`  Status: ${op.status}`);
+                    console.log(`  Reason: ${op.reason}`);
+                    if (op.diff)
+                        console.log(`  Diff: ${op.diff.slice(0, 300)}${op.diff.length > 300 ? "..." : ""}`);
+                    console.log("");
+                }
+            }
+        }
+    });
+    approvalsCmd
+        .command("show")
+        .description("Show a pending operation with full diff")
+        .argument("<id>")
+        .option("--json", "output JSON")
+        .action(async (id, opts) => {
+        const { root } = await bootstrap();
+        const store = getApprovalStore(root);
+        const op = await store.get(id);
+        if (!op) {
+            console.log(`Operation not found: ${id}`);
+            return;
+        }
+        if (opts.json) {
+            console.log(JSON.stringify({ operation: op }, null, 2));
+        }
+        else {
+            console.log(`ID: ${op.id}`);
+            console.log(`Kind: ${op.kind}`);
+            console.log(`Risk: ${op.risk}`);
+            console.log(`Path: ${op.path}${op.newPath ? " → " + op.newPath : ""}`);
+            console.log(`Status: ${op.status}`);
+            console.log(`Reason: ${op.reason}`);
+            console.log(`Created: ${op.createdAt}`);
+            if (op.taskId)
+                console.log(`Task: ${op.taskId}`);
+            if (op.diff)
+                console.log(`\nDiff:\n${op.diff}`);
+            if (op.error)
+                console.log(`\nError: ${op.error}`);
+        }
+    });
+    approvalsCmd
+        .command("approve")
+        .description("Approve a pending file operation")
+        .argument("<id>")
+        .option("--json", "output JSON")
+        .action(async (id, opts) => {
+        const { root } = await bootstrap();
+        const store = getApprovalStore(root);
+        const op = await store.approve(id);
+        if (opts.json) {
+            console.log(JSON.stringify({ ok: true, operation: op }, null, 2));
+        }
+        else {
+            console.log(`✓ Approved: ${id} (${op.kind} ${op.path})`);
+        }
+    });
+    approvalsCmd
+        .command("reject")
+        .description("Reject a pending file operation")
+        .argument("<id>")
+        .option("--json", "output JSON")
+        .action(async (id, opts) => {
+        const { root } = await bootstrap();
+        const store = getApprovalStore(root);
+        const op = await store.reject(id);
+        if (opts.json) {
+            console.log(JSON.stringify({ ok: true, operation: op }, null, 2));
+        }
+        else {
+            console.log(`✗ Rejected: ${id} (${op.kind} ${op.path})`);
+        }
+    });
+    approvalsCmd
+        .command("apply")
+        .description("Apply an approved file operation")
+        .argument("<id>")
+        .option("--json", "output JSON")
+        .action(async (id, opts) => {
+        const { root } = await bootstrap();
+        const store = getApprovalStore(root);
+        const op = await store.get(id);
+        if (!op) {
+            console.log(`Operation not found: ${id}`);
+            return;
+        }
+        const result = await applyApprovedOperation({ operation: op, root, store });
+        if (opts.json) {
+            console.log(JSON.stringify({ ok: result.ok, result }, null, 2));
+        }
+        else {
+            console.log(result.ok ? "✓" : "✗", result.summary);
+            if (result.path)
+                console.log(`File: ${result.path}`);
+        }
+    });
+    approvalsCmd
+        .command("approve-all")
+        .description("Approve all pending file operations")
+        .option("--json", "output JSON")
+        .action(async (opts) => {
+        const { root } = await bootstrap();
+        const store = getApprovalStore(root);
+        const count = await store.approveAll();
+        if (opts.json) {
+            console.log(JSON.stringify({ ok: true, count }, null, 2));
+        }
+        else {
+            console.log(`✓ Approved: ${count} operation(s)`);
+        }
+    });
+    approvalsCmd
+        .command("reject-all")
+        .description("Reject all pending file operations")
+        .option("--json", "output JSON")
+        .action(async (opts) => {
+        const { root } = await bootstrap();
+        const store = getApprovalStore(root);
+        const count = await store.rejectAll();
+        if (opts.json) {
+            console.log(JSON.stringify({ ok: true, count }, null, 2));
+        }
+        else {
+            console.log(`✗ Rejected: ${count} operation(s)`);
+        }
     });
     program
         .command("inspect")

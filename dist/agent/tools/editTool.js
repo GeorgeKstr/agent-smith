@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { buildUnifiedDiffFromEdit } from "../editDiff.js";
 import { checkPatchSafety } from "../safety.js";
+import { tryQueueFileOperation } from "../approval/queueOperation.js";
 const editTool = {
     name: "edit",
     description: "Apply a controlled search/replace edit to one file.",
@@ -74,6 +75,21 @@ const editTool = {
         const safety = checkPatchSafety({ root: ctx.root, config: ctx.config, files: [rel], changedLines });
         if (!safety.ok) {
             return { ok: false, summary: `Safety check failed: ${safety.violations.join("; ")}` };
+        }
+        // Check if approval queuing is required
+        const queueResult = await tryQueueFileOperation({
+            config: ctx.config,
+            root: ctx.root,
+            taskId: ctx.taskId,
+            kind: "edit_file",
+            path: relPath,
+            beforeText: search,
+            afterText: replace,
+            diff,
+            reason: reason || "edit requested",
+        });
+        if (queueResult.queued) {
+            return queueResult.result;
         }
         try {
             await fs.writeFile(fullPath, after, "utf8");

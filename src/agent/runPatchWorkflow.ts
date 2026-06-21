@@ -194,31 +194,58 @@ export async function runPatchWorkflow(input: {
 
     const styleApplyContext = renderExplorationForApply({ exploration, plan: emptyPatchPlan(packet.goal) });
 
+    // Build deterministic CSS suggestion from explored stylesheets.
+    // Also include the raw CSS content so the model can construct accurate
+    // edit calls even when no color is extracted from the prompt.
+    let styleSuggestion = "";
+    let cssContentBlock = "";
+    const color = extractColorFromPrompt(packet.rawUserPrompt);
+
+    // Find the CSS file from exploration, or fall back to a search.
+    const exploredPaths = exploration.inspectedFiles.map((f) => f.path);
+    let cssFilePath = exploredPaths.find((p) => /\.(css|scss|sass|less)$/i.test(p));
+    if (!cssFilePath) {
+      const allLeads = leads.map((l) => l.path);
+      cssFilePath = allLeads.find((p) => /\.(css|scss|sass|less)$/i.test(p));
+    }
+
+    let cssContent = "";
+    if (cssFilePath) {
+      try {
+        cssContent = await fs.readFile(path.join(root, cssFilePath), "utf8");
+        const trimmedCss = cssContent.length > 4000 ? cssContent.slice(0, 4000) + "\n/* ... truncated */" : cssContent;
+        cssContentBlock = `## CURRENT CSS CONTENT (${cssFilePath})\n\`\`\`css\n${trimmedCss}\n\`\`\`\n\nUse the exact text above for the "search" field in your edit call.`;
+
+        if (color) {
+          const suggestion = suggestBackgroundPatch({
+            css: cssContent,
+            desiredColor: color,
+            path: cssFilePath,
+          });
+          if (suggestion) {
+            styleSuggestion = `\n\nSuggested edit for ${cssFilePath}:\n${renderStyleSuggestionAsToolCall(suggestion)}`;
+          }
+        } else {
+          styleSuggestion = `\n\nNo specific color was detected in the user prompt. If the user did not specify a color, use ask_user to ask what color/value they want before editing.`;
+        }
+      } catch {}
+    }
+
+    // Seed memory with explored reads PLUS the CSS file (even if explore
+    // didn't read it) so the edit tool's read-before-edit check passes.
     const styleMemory = createWorkingMemory({ ...packet });
     const exploredReads = exploration.inspectedFiles.map((f) => ({
       path: f.path, ranges: f.ranges, summary: f.reason,
     }));
-    const styleSeeded = mergeWorkingMemory(styleMemory, { filesRead: exploredReads });
-
-    // Build deterministic CSS suggestion from explored stylesheets
-    let styleSuggestion = "";
-    const color = extractColorFromPrompt(packet.rawUserPrompt);
-    const cssFile = exploredReads.find((f: { path: string }) =>
-      /\.css$/i.test(f.path)
-    );
-    if (color && cssFile) {
-      try {
-        const cssContent = await fs.readFile(path.join(root, cssFile.path), "utf8");
-        const suggestion = suggestBackgroundPatch({
-          css: cssContent,
-          desiredColor: color,
-          path: cssFile.path,
-        });
-        if (suggestion) {
-          styleSuggestion = `\n\nSuggested edit for ${cssFile.path}:\n${renderStyleSuggestionAsToolCall(suggestion)}`;
-        }
-      } catch {}
+    if (cssFilePath && !exploredReads.some((f) => f.path === cssFilePath)) {
+      const lineCount = cssContent ? cssContent.split("\n").length : 0;
+      exploredReads.push({
+        path: cssFilePath,
+        ranges: lineCount > 0 ? [`1-${lineCount}`] : ["full"],
+        summary: "CSS file for style task (pre-loaded by workflow)",
+      });
     }
+    const styleSeeded = mergeWorkingMemory(styleMemory, { filesRead: exploredReads });
 
     const applyStyleModel = resolvePhaseModel("apply_style_patch");
     const applyStyleResult = await runFocusedAgentLoop({
@@ -231,11 +258,11 @@ export async function runPatchWorkflow(input: {
       allowedToolsOverride: toolsForPhase("apply_style_patch"),
       phaseGoal: "Apply the visual/style change.",
       phaseExitCriteria: ["Edit applied or explained why no edit is needed"],
-      maxSteps: 4,
+      maxSteps: 5,
       skipEditPressure: true,
       skipPatchPhasePolicy: true,
       phaseOnToolCall(toolName) { events?.emit("task:phase", `style:${toolName}`); },
-      projectRules: [projectRules ?? "", styleApplyContext, styleSuggestion].filter(Boolean).join("\n\n"),
+      projectRules: [projectRules ?? "", styleApplyContext, cssContentBlock, styleSuggestion].filter(Boolean).join("\n\n"),
     });
 
     mergeMetricsInto(metrics, applyStyleResult.metrics);

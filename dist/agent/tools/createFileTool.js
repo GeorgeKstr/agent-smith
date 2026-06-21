@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { tryQueueFileOperation } from "../approval/queueOperation.js";
 const createFileTool = {
     name: "create_file",
     description: "Create a new file inside the project root. Fails if the file already exists.",
@@ -43,6 +44,19 @@ const createFileTool = {
                     summary: `"${relPath}" already exists. Use edit to modify it.`,
                     nextActions: ["Use edit with exact search/replace to modify the existing file."],
                 };
+            }
+            // Check if approval queuing is required
+            const queueResult = await tryQueueFileOperation({
+                config: ctx.config,
+                root: ctx.root,
+                taskId: ctx.taskId,
+                kind: "create_file",
+                path: relPath,
+                afterText: content,
+                reason: reason || "User requested file creation",
+            });
+            if (queueResult.queued) {
+                return queueResult.result;
             }
             await fs.mkdir(path.dirname(absPath), { recursive: true });
             await fs.writeFile(absPath, content, "utf8");

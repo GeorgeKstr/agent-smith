@@ -14,5 +14,16 @@ export function createEmptyRunMetrics() {
         invalidOutputs: 0,
         tokensEstimatedIn: 0,
         tokensEstimatedOut: 0,
+        progressPolicyRejections: 0,
+        tagNormalizations: 0,
+        patchPhasePolicyRejections: 0,
+        totalSearches: 0,
+        searchesAfterFirstRead: 0,
+        broadSearchRejections: 0,
+        postReadSearchRejections: 0,
+        editPressureRejections: 0,
+        proposeEditCalls: 0,
+        proposeEditAccepted: 0,
+        proposeEditRejected: 0,
     };
 }

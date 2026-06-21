@@ -18,7 +18,7 @@ export function toolsForPhase(phase: AgentWorkflowPhase): string[] {
       return ["edit", "replace_lines", "create_file", "ask_user", "final"];
 
     case "apply_style_patch":
-      return ["edit", "replace_lines", "append_to_file", "ask_user", "final"];
+      return ["edit", "replace_lines", "append_to_file", "read", "ask_user", "final"];
 
     case "verify":
       return ["check", "read", "edit", "replace_lines", "final"];

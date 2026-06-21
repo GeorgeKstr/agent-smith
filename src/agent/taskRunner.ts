@@ -157,7 +157,12 @@ export async function runPatch(
   task: string,
   options: { apply: boolean; review?: boolean; modelOverride?: string; taskId?: string; signal?: AbortSignal } = { apply: true }
 ): Promise<PatchOutcome> {
-  const { db, root, config, events } = deps;
+  const { db, root, events } = deps;
+  // When --apply is requested, bypass the approval queue so edits are
+  // written directly to disk instead of being queued for manual approval.
+  const config = options.apply
+    ? { ...deps.config, approval: { ...deps.config.approval, policy: "never" as const } }
+    : deps.config;
   const checks: CheckResult[] = [];
 
   const { explicitMode, cleanedPrompt } = parseExplicitMode(task);

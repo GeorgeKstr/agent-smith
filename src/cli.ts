@@ -34,13 +34,15 @@ import { applyApprovedOperation } from "./agent/approval/applyOperation.js";
 import { App } from "./tui/App.js";
 
 async function bootstrap(rootOverride?: string) {
-  const root = rootOverride ?? await detectProjectRoot(process.cwd());
+  const root = rootOverride ?? cwdOverride ?? await detectProjectRoot(process.cwd());
   await ensureConfig(root);
   const config = await loadConfig(root);
   const db = openDatabase(root);
   const events = createEventBus();
   return { root, config, db, events };
 }
+
+let cwdOverride: string | undefined;
 
 function getConfigValue(obj: Record<string, unknown>, keyPath: string): unknown {
   const parts = keyPath.split(".");
@@ -97,7 +99,21 @@ export function createCli() {
   program
     .name("smith")
     .description("Matrix-themed local-first terminal coding agent")
-    .version("0.1.0");
+    .version("0.1.0")
+    .option("-C, --cwd <path>", "run as if smith was started in <path>")
+    .hook("preAction", async (thisCommand) => {
+      const opts = thisCommand.opts() as { cwd?: string };
+      if (opts.cwd) {
+        const resolved = path.resolve(opts.cwd);
+        try {
+          await fs.access(resolved);
+        } catch {
+          console.error(`--cwd: directory does not exist: ${resolved}`);
+          process.exit(1);
+        }
+        cwdOverride = resolved;
+      }
+    });
 
   program
     .command("index")
@@ -173,7 +189,8 @@ export function createCli() {
     .option("--apply", "immediately apply the patch")
     .option("--review", "store as proposed change set (default)")
     .option("--dry-run", "validate without storing or applying")
-    .action(async (taskParts: string[], opts: { apply: boolean; review: boolean; dryRun: boolean }) => {
+    .option("--model <model>", "override the patcher model (e.g., opencode-zen:glm-5.2)")
+    .action(async (taskParts: string[], opts: { apply: boolean; review: boolean; dryRun: boolean; model?: string }) => {
       const task = taskParts.join(" ");
       const { root, config, db, events } = await bootstrap();
       const indexer = createIndexer({ root, config, db, events });
@@ -181,7 +198,7 @@ export function createCli() {
 
       const dry = opts.dryRun;
       const apl = opts.apply && !dry;
-      const outcome = await runtime.dispatch({ kind: "patch", prompt: task, apply: apl, dryRun: dry });
+      const outcome = await runtime.dispatch({ kind: "patch", prompt: task, apply: apl, dryRun: dry, model: opts.model });
 
       console.log(`\n— PATCH —`);
       console.log(outcome.message);

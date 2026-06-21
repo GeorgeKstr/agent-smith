@@ -119,7 +119,104 @@ button{font-family:var(--font);cursor:pointer}
 .stag-reviewing,.stag-iterating{background:var(--yd);color:var(--yellow)}
 .stag-needs-review{background:var(--yd);color:var(--yellow);font-weight:700}
 .stag-auto-approved{background:#0a2222;color:var(--cyan)}
-.stag-failed{background:var(--rd);color:var(--red)}
+.stag-waiting-for-approval{
+  background:var(--accent-dim);
+  color:var(--accent);
+  font-weight:700;
+}
+.stag-waiting-for-user{
+  background:var(--accent-dim);
+  color:var(--accent);
+}
+.stag-blocked{
+  background:var(--rd);
+  color:var(--red);
+  font-weight:700;
+}
+.stag-partial{
+  background:var(--yd);
+  color:var(--yellow);
+}
+
+/* ── Approvals tab ── */
+.approval-card{
+  background:var(--s1);
+  border:1px solid var(--bd);
+  border-radius:var(--r2);
+  padding:12px;
+  margin-bottom:8px;
+  transition:border-color .15s;
+}
+.approval-card:hover{
+  border-color:var(--tx2);
+}
+.approval-pending{
+  border-left:3px solid var(--accent);
+}
+.approval-meta{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  margin-bottom:6px;
+  align-items:center;
+}
+.approval-path{
+  font-family:var(--mono);
+  font-size:13px;
+  color:var(--bright);
+  word-break:break-all;
+  margin-bottom:4px;
+}
+.approval-reason{
+  font-size:11px;
+  color:var(--tx2);
+  margin-bottom:4px;
+  line-height:1.4;
+}
+.approval-time{
+  font-size:10px;
+  color:var(--tx3);
+  margin-bottom:4px;
+}
+.approval-id{
+  font-size:9px;
+  color:var(--tx3);
+  font-family:var(--mono);
+  margin-top:6px;
+}
+.approval-diff{
+  max-height:240px;
+  overflow:auto;
+  background:#050809;
+  border:1px solid var(--bd);
+  border-radius:8px;
+  padding:8px;
+  margin:6px 0;
+  font-family:var(--mono);
+  font-size:10px;
+  line-height:1.35;
+  white-space:pre;
+  overflow-x:auto;
+}
+.approval-diff pre{
+  margin:0;
+  white-space:pre;
+}
+.approval-error{
+  background:var(--rd);
+  border:1px solid var(--red);
+  border-radius:var(--r);
+  padding:6px 10px;
+  font-size:11px;
+  color:var(--red);
+  margin-top:6px;
+}
+.approval-actions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  margin-top:8px;
+}
 
 /* Badges */
 .badge{display:inline-flex;align-items:center;background:var(--s3);color:var(--tx2);padding:1px 6px;border-radius:4px;font-size:10px;gap:2px;font-family:var(--mono)}
@@ -315,12 +412,21 @@ button{font-family:var(--font);cursor:pointer}
   .bn-icon{font-size:18px}
   .bn-badge{display:inline-block;background:var(--yellow);color:#000;font-size:8px;font-weight:700;padding:0 4px;border-radius:8px;margin-left:2px}
   #layout{flex-direction:column}
-  #main-panel{flex:1;min-height:0}
+  #main-panel{flex:1;min-height:0;padding-bottom:0}
   .tab-back{display:inline-flex}
   .tab-agent{display:none}
+  .tab-bar{overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .tab-bar::-webkit-scrollbar{display:none}
   .files-layout{flex-direction:column}
   .file-tree-pane{width:100%;max-height:30vh;flex-shrink:0;border-right:none;border-bottom:1px solid var(--bd)}
   #toast{bottom:calc(var(--nh) + 10px + env(safe-area-inset-bottom,0px))}
+  .approval-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .approval-actions .btn{width:100%;min-height:42px}
+  .approval-card{border-radius:12px;padding:12px}
+  .approval-diff{max-height:180px}
+  .btn{min-height:42px}
+  .tc-actions .btn{min-height:30px}
+  pre,code,.diff,.msg-bub pre{max-width:100%;overflow-x:auto;white-space:pre}
 }
 @media(max-width:480px){
   .ip-grid,.nt-grid,.pol-grid{grid-template-columns:1fr}

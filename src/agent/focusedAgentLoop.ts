@@ -23,7 +23,7 @@ import { createEmptyRunEvidence } from "./runEvidence.js";
 import type { RunEvidence } from "./runEvidence.js";
 import { canCompleteRun, buildNoEvidenceMessage } from "./completionGate.js";
 import { isNoEditTask } from "./noEditTask.js";
-import { isWriteTool } from "./toolPermissions.js";
+import { isWriteTool, WRITE_TOOLS } from "./toolPermissions.js";
 import type { RuntimeIntent } from "./runtimeIntent.js";
 import { createEmptyLocalToolProgress, updateLocalToolProgress } from "./localToolProgress.js";
 import type { LocalToolProgress } from "./localToolProgress.js";
@@ -129,6 +129,11 @@ export async function runFocusedAgentLoop(input: {
   const evidence = createEmptyRunEvidence();
   let progress: LocalToolProgress = createEmptyLocalToolProgress();
   const allowNoEdit = isNoEditTask({ mode, taskGoal: packet.goal, successCriteria: packet.successCriteria, nonGoals: packet.nonGoals });
+  const phaseHasWriteTools = allowedTools.some((t) => WRITE_TOOLS.includes(t));
+  const phaseHasRead = allowedTools.includes("read");
+  const allowPhaseNoEdit = phase != null && !phaseHasWriteTools;
+  const phaseNoEditNeedsRead = allowPhaseNoEdit && phaseHasRead;
+  const phaseNoEditNeedsText = allowPhaseNoEdit && !phaseHasRead;
 
   events?.emit("task:phase", "tooling");
 
@@ -189,7 +194,7 @@ export async function runFocusedAgentLoop(input: {
       finalText = action.content;
       if (mode === "ask") break;
 
-      const gate = canCompleteRun({ mode, finalText, metrics, evidence, allowNoEditCompletion: allowNoEdit, allowInspectedNoEditFinal: allowNoEdit });
+      const gate = canCompleteRun({ mode, finalText, metrics, evidence, allowNoEditCompletion: allowNoEdit || phaseNoEditNeedsText, allowInspectedNoEditFinal: allowNoEdit || phaseNoEditNeedsRead });
       if (gate.canComplete) break;
 
       finalText = buildNoEvidenceMessage({ mode, metrics, evidence, modelOutput: action.content, gateResult: gate });
@@ -201,7 +206,7 @@ export async function runFocusedAgentLoop(input: {
       metrics.finalCalls++;
       finalText = action.content;
 
-      const gate = canCompleteRun({ mode, finalText, metrics, evidence, allowNoEditCompletion: allowNoEdit, allowInspectedNoEditFinal: allowNoEdit });
+      const gate = canCompleteRun({ mode, finalText, metrics, evidence, allowNoEditCompletion: allowNoEdit || phaseNoEditNeedsText, allowInspectedNoEditFinal: allowNoEdit || phaseNoEditNeedsRead });
       if (gate.canComplete) break;
 
       finalText = buildNoEvidenceMessage({ mode, metrics, evidence, modelOutput: action.content, gateResult: gate });
@@ -476,8 +481,8 @@ export async function runFocusedAgentLoop(input: {
   const allowUsefulNoChange = mode === "patch" && runtimeIntent !== "patch";
   const gate = canCompleteRun({
     mode, finalText, metrics, evidence,
-    allowNoEditCompletion: allowNoEdit,
-    allowInspectedNoEditFinal: allowNoEdit,
+    allowNoEditCompletion: allowNoEdit || phaseNoEditNeedsText,
+    allowInspectedNoEditFinal: allowNoEdit || phaseNoEditNeedsRead,
     allowUsefulNoChangeAnswer: allowUsefulNoChange,
     runtimeIntent,
   });

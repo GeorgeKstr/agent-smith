@@ -48,6 +48,7 @@ export const WRITE_TOOLS = [
   "create_file",
   "edit",
   "replace_lines",
+  "append_to_file",
   "delete_file",
   "move_file",
   "rename_file",

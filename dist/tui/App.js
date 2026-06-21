@@ -598,7 +598,9 @@ export function App({ root, config, db, events, indexer }) {
             case "/mode": {
                 const target = parts[1];
                 if (!target) {
-                    appendOutput(`current mode: ${mode}`);
+                    const next = mode === "build" ? "discuss" : "build";
+                    setMode(next);
+                    appendOutput(`✓ Toggled to ${next} mode`);
                     return true;
                 }
                 if (target === "build" || target === "patch") {
@@ -639,7 +641,7 @@ export function App({ root, config, db, events, indexer }) {
                     "  /help        Show this help message",
                     "  /exit        Exit the application",
                     "",
-                    "  Keys:  Enter submit · Esc clear · ↑/↓ scroll · Ctrl+↑/↓ prompt history · PgUp/PgDn fast scroll · Ctrl+C quit",
+                    "  Keys:  Enter submit · Esc clear · ↑/↓ prompt history · Ctrl+↑/↓ scroll · PgUp/PgDn fast scroll · Ctrl+C quit",
                     "",
                 ]);
                 return true;
@@ -1493,9 +1495,11 @@ export function App({ root, config, db, events, indexer }) {
                 }
                 if (outcome.applied && outcome.diff)
                     undoDiff = outcome.diff;
+                const intentLine = outcome.runtimeIntent ? `⌘ intent: ${outcome.runtimeIntent}` : undefined;
                 const statusLines = [outcome.message, ...outcome.checks.map((c) => `[${c.name}] ${c.ok ? "PASS" : "FAIL"} (exit ${c.exitCode})`)];
                 appendOutput([
                     promptLine,
+                    ...(intentLine ? [intentLine] : []),
                     ...(outcome.answer ? toChatLines("AI: ", outcome.answer) : []),
                     ...statusLines.filter(Boolean)
                 ]);
@@ -1643,25 +1647,11 @@ export function App({ root, config, db, events, indexer }) {
         if (busy)
             return;
         if (key.ctrl && key.upArrow) {
-            if (promptHistory.length === 0)
-                return;
-            const next = promptHistoryIndex === null ? promptHistory.length - 1 : Math.max(0, promptHistoryIndex - 1);
-            setPromptHistoryIndex(next);
-            setInput(promptHistory[next] ?? "");
+            setScrollOffset((v) => v + 2);
             return;
         }
         if (key.ctrl && key.downArrow) {
-            if (promptHistory.length === 0 || promptHistoryIndex === null)
-                return;
-            const next = promptHistoryIndex + 1;
-            if (next >= promptHistory.length) {
-                setPromptHistoryIndex(null);
-                setInput("");
-            }
-            else {
-                setPromptHistoryIndex(next);
-                setInput(promptHistory[next] ?? "");
-            }
+            setScrollOffset((v) => Math.max(0, v - 2));
             return;
         }
         if (autocomplete && key.upArrow) {
@@ -1673,11 +1663,27 @@ export function App({ root, config, db, events, indexer }) {
             return;
         }
         if (key.upArrow) {
-            setScrollOffset((v) => v + 2);
+            if (promptHistory.length === 0)
+                return;
+            const next = promptHistoryIndex === null ? promptHistory.length - 1 : Math.max(0, promptHistoryIndex - 1);
+            setPromptHistoryIndex(next);
+            setInput(promptHistory[next] ?? "");
             return;
         }
         if (key.downArrow) {
-            setScrollOffset((v) => Math.max(0, v - 2));
+            if (promptHistory.length === 0)
+                return;
+            if (promptHistoryIndex === null)
+                return;
+            const next = promptHistoryIndex + 1;
+            if (next >= promptHistory.length) {
+                setPromptHistoryIndex(null);
+                setInput("");
+            }
+            else {
+                setPromptHistoryIndex(next);
+                setInput(promptHistory[next] ?? "");
+            }
             return;
         }
         if (key.pageUp) {

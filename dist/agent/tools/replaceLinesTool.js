@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { buildUnifiedDiffFromEdit } from "../editDiff.js";
 import { checkPatchSafety } from "../safety.js";
+import { tryQueueFileOperation } from "../approval/queueOperation.js";
 const MAX_CHANGED_LINES = 80;
 const replaceLinesTool = {
     name: "replace_lines",
@@ -78,10 +79,26 @@ const replaceLinesTool = {
         ].join("\n");
         // Build unified diff and run safety checks
         const diff = buildUnifiedDiffFromEdit({ path: rel, before, after });
-        const changedLines = Math.abs(before.slice.length - newLines.length);
-        const safety = checkPatchSafety({ root: ctx.root, config: ctx.config, files: [rel], changedLines });
+        const changedLinesDelta = Math.abs(beforeSlice.length - newLines.length);
+        const safety = checkPatchSafety({ root: ctx.root, config: ctx.config, files: [rel], changedLines: changedLinesDelta });
         if (!safety.ok) {
             return { ok: false, summary: `Safety check failed: ${safety.violations.join("; ")}` };
+        }
+        // Check if approval queuing is required
+        const oldStr = beforeSlice.join("\n");
+        const queueResult = await tryQueueFileOperation({
+            config: ctx.config,
+            root: ctx.root,
+            taskId: ctx.taskId,
+            kind: "replace_lines",
+            path: relPath,
+            beforeText: oldStr,
+            afterText: newContent,
+            diff,
+            reason: reason || "line replacement requested",
+        });
+        if (queueResult.queued) {
+            return queueResult.result;
         }
         try {
             await fs.writeFile(fullPath, after, "utf8");
@@ -92,12 +109,12 @@ const replaceLinesTool = {
                 summary: `Failed to write ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
             };
         }
-        const oldStr = beforeSlice.join("\n");
+        const oldContent = beforeSlice.join("\n");
         const newStr = newLines.join("\n");
         return {
             ok: true,
             summary: `Replaced lines ${startLine}-${endLine} in ${relPath}: ${reason} (${beforeSlice.length} → ${newLines.length} lines)`,
-            content: `--- a/${relPath}\n+++ b/${relPath}\n@@ -${startLine},${beforeSlice.length} +${startLine},${newLines.length} @@\n${oldStr.split("\n").map((l) => `-${l}`).join("\n")}\n${newStr.split("\n").map((l) => `+${l}`).join("\n")}`,
+            content: `--- a/${relPath}\n+++ b/${relPath}\n@@ -${startLine},${beforeSlice.length} +${startLine},${newLines.length} @@\n${oldContent.split("\n").map((l) => `-${l}`).join("\n")}\n${newStr.split("\n").map((l) => `+${l}`).join("\n")}`,
             metadata: {
                 path: relPath,
                 startLine,
