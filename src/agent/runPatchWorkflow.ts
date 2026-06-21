@@ -1,4 +1,4 @@
-import type { TaskPacket } from "../context/taskPacket.js";
+import type { TaskPacket, TaskKind } from "../context/taskPacket.js";
 import type { RetrievalLead } from "../context/retrievalLead.js";
 import type { WorkingMemory } from "./workingMemory.js";
 import { createWorkingMemory } from "./workingMemory.js";
@@ -79,6 +79,7 @@ export async function runPatchWorkflow(input: {
   phaseModels?: Partial<Record<AgentWorkflowPhase, string>>;
   installedModels?: string[];
   skills?: string;
+  taskKind?: TaskKind;
 }): Promise<PatchWorkflowResult> {
   const {
     packet, leads, tools, provider, model, runtimeIntent, config, root, db,
@@ -160,6 +161,97 @@ export async function runPatchWorkflow(input: {
       finalText: `No relevant files found.\n${exploreTransition.reason}\nInspected: ${exploration.inspectedFiles.map(f => f.path).join(", ") || "none"}`,
       changedFiles, checksRun, metrics: exploreResult.metrics, evidence: overallEvidence,
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Shortcut for UI/style tasks: skip plan, go straight to apply_style
+  // ═══════════════════════════════════════════════════════════════════
+  if (input.taskKind === "ui_style_patch") {
+    events?.emit("task:phase", "apply_style_patch");
+
+    const styleApplyContext = renderExplorationForApply({ exploration, plan: emptyPatchPlan(packet.goal) });
+
+    const styleMemory = createWorkingMemory({ ...packet });
+    const exploredReads = exploration.inspectedFiles.map((f) => ({
+      path: f.path, ranges: f.ranges, summary: f.reason,
+    }));
+    const styleSeeded = mergeWorkingMemory(styleMemory, { filesRead: exploredReads });
+
+    const applyStyleModel = resolvePhaseModel("apply_style_patch");
+    const applyStyleResult = await runFocusedAgentLoop({
+      ...sharedInputBase,
+      provider: applyStyleModel.provider,
+      model: applyStyleModel.model,
+      leads: [],
+      memory: styleSeeded,
+      phase: "apply_style_patch",
+      allowedToolsOverride: toolsForPhase("apply_style_patch"),
+      phaseGoal: "Apply the visual/style change.",
+      phaseExitCriteria: ["Edit applied or explained why no edit is needed"],
+      maxSteps: 4,
+      skipEditPressure: true,
+      skipPatchPhasePolicy: true,
+      phaseOnToolCall(toolName) { events?.emit("task:phase", `style:${toolName}`); },
+      projectRules: [projectRules ?? "", styleApplyContext].filter(Boolean).join("\n\n"),
+    });
+
+    mergeMetricsInto(metrics, applyStyleResult.metrics);
+    mergeEvidenceInto(overallEvidence, applyStyleResult.evidence);
+    memory = applyStyleResult.memory;
+
+    const styleAppResult = buildApplicationResult({
+      filesEdited: overallEvidence.filesEdited,
+      filesCreated: overallEvidence.filesCreated,
+      toolResults: overallEvidence.toolResults,
+    });
+
+    for (const f of styleAppResult.filesEdited) changedFiles.push(f);
+    for (const f of styleAppResult.filesCreated) changedFiles.push(f);
+
+    if (styleAppResult.changed) {
+      // Verify
+      events?.emit("task:phase", "verify");
+      const verifyModel = resolvePhaseModel("verify");
+      const verifyMemory = createWorkingMemory({ ...packet, goal: "Run checks if configured." });
+      const verifyResult = await runFocusedAgentLoop({
+        ...sharedInputBase,
+        provider: verifyModel.provider, model: verifyModel.model,
+        leads: [], memory: verifyMemory,
+        phase: "verify",
+        allowedToolsOverride: toolsForPhase("verify"),
+        phaseGoal: "Run checks on changed files.",
+        phaseExitCriteria: ["At most 2 check attempts"],
+        maxSteps: 3,
+        skipEditPressure: true, skipPatchPhasePolicy: true,
+        phaseOnToolCall(toolName) { events?.emit("task:phase", `verify:${toolName}`); },
+      });
+      mergeMetricsInto(metrics, verifyResult.metrics);
+      mergeEvidenceInto(overallEvidence, verifyResult.evidence);
+      for (const c of overallEvidence.checksRun) checksRun.push(c.name || "check");
+    }
+
+    events?.emit("task:phase", "finalize");
+    const uniqueChanged = [...new Set(changedFiles)];
+    const uniqueChecks = [...new Set(checksRun)];
+    const finalText = [
+      `Changed files: ${uniqueChanged.length > 0 ? uniqueChanged.join(", ") : "none"}`,
+      `Checks run: ${uniqueChecks.length > 0 ? uniqueChecks.join(", ") : "none (CSS-only change)"}`,
+      styleAppResult.failedEdits.length > 0
+        ? `Failed edits: ${styleAppResult.failedEdits.map((e) => e.path).join(", ")}`
+        : "",
+    ].filter(Boolean).join("\n");
+
+    return {
+      ok: styleAppResult.changed,
+      status: styleAppResult.changed ? "completed" as const : "failed" as const,
+      finalText,
+      changedFiles: uniqueChanged, checksRun: uniqueChecks,
+      metrics, evidence: overallEvidence, memory,
+      workflowPhase: "finalize",
+      exploration,
+      patchPlan: emptyPatchPlan(packet.goal),
+      applicationResult: styleAppResult,
+    };
   }
 
   events?.emit("task:phase", "plan_patch");

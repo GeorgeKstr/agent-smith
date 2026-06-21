@@ -3,6 +3,7 @@ import type { SmithConfig, TaskClassification, ScoredFile, RetrievalReason } fro
 import type { SmithDatabase } from "../db/db.js";
 import { heuristicTags } from "../index/tags.js";
 import { expandGraph } from "../index/graph.js";
+import { isUiStylePatchPrompt } from "./taskPacket.js";
 
 const FILE_EXT_PATTERN = /\b([\w./-]+\.[a-z]{2,6})\b/gi;
 const SYMBOL_PATTERN = /\b([A-Z][a-zA-Z0-9]{2,}(?:\.[A-Z][a-zA-Z0-9]{2,})*)\b/g;
@@ -314,7 +315,30 @@ export async function retrieve(args: {
     }
   }
 
-  // 6. task memory: files from past successful similar tasks.
+  // 6. UI/style task CSS boost.
+  if (isUiStylePatchPrompt(args.task)) {
+    for (const f of files) {
+      const p = f.path.toLowerCase();
+      if (p.endsWith(".css") || p.endsWith(".scss") || p.endsWith(".less")) {
+        addReason(f.id, 12, "css-target", {
+          signal: "file_hint", weight: 12,
+          detail: "CSS file for style task"
+        });
+      } else if (/style|theme|global|app/i.test(p) && (p.endsWith(".css") || p.endsWith(".scss"))) {
+        addReason(f.id, 15, "named-style", {
+          signal: "file_hint", weight: 15,
+          detail: "Named stylesheet for style task"
+        });
+      } else if (p.endsWith(".html") && /index|main/i.test(p)) {
+        addReason(f.id, 5, "html-context", {
+          signal: "file_hint", weight: 5,
+          detail: "HTML file for style task context"
+        });
+      }
+    }
+  }
+
+  // 7. task memory: files from past successful similar tasks.
   for (const fileId of memoryFileBoost(db, classification.keywords)) {
     addReason(fileId, 2, "memory", {
       signal: "memory", weight: 2,

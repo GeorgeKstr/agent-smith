@@ -123,17 +123,6 @@ const readTool: AgentTool = {
 
     const truncatedNote = truncated ? ` [truncated: showing lines ${startLine}-${endLine}]` : "";
 
-    const nextActions: string[] = [];
-    if (truncated) {
-      nextActions.push(`Read remaining lines with startLine: ${endLine + 1}`);
-    }
-    nextActions.push(
-      "If this file contains the requested change, call propose_edit, edit, or replace_lines.",
-      "Use exact old text from the content above. The 'search' field in edit must match exactly.",
-      "If unsure of exact text, use propose_edit to describe the change first.",
-      "Do not search again unless this file explicitly references another file you need to inspect."
-    );
-
     const editGuidance = `\n\nEdit guidance:
 If this file needs changes, your next action should be:
 
@@ -147,10 +136,38 @@ For uncertain exact text, use propose_edit first:
 {"tool":"propose_edit","args":{"path":"${rel}","target":"function or block name","intent":"what behavior to implement","proposedChange":"plain-English description of the change","reason":"why this change is needed"}}
 </tool_call>`;
 
+    const isCssFile = rel.endsWith(".css") || rel.endsWith(".scss") || rel.endsWith(".less");
+    const styleGuidance = isCssFile ? `\n\nStyle file guidance:
+This is a stylesheet. For visual/style changes (color, background, font, etc.):
+- Use edit to change an existing CSS rule if it exists.
+- Use append_to_file to add a new CSS rule if no matching selector is found.
+- After reading a stylesheet, you should edit it — do NOT search for more files.
+
+Example:
+<tool_call>
+{"tool":"edit","args":{"path":"${rel}","search":"body {","replace":"body {\\n  background: red;","reason":"Make background red"}}
+</tool_call>
+
+Or append a new rule:
+<tool_call>
+{"tool":"append_to_file","args":{"path":"${rel}","content":"\\nbody {\\n  background: red;\\n}","reason":"Add body background rule"}}
+</tool_call>` : "";
+
+    const nextActions: string[] = [];
+    if (truncated) {
+      nextActions.push(`Read remaining lines with startLine: ${endLine + 1}`);
+    }
+    nextActions.push(
+      "If this file contains the requested change, call propose_edit, edit, or replace_lines.",
+      "Use exact old text from the content above. The 'search' field in edit must match exactly.",
+      "If unsure of exact text, use propose_edit to describe the change first.",
+      "Do not search again unless this file explicitly references another file you need to inspect."
+    );
+
     return {
       ok: true,
       summary: `Read ${rel}:${startLine}-${endLine} (${selected.length}/${totalLines} lines)${truncatedNote}`,
-      content: numbered + editGuidance,
+      content: numbered + editGuidance + styleGuidance,
       truncated,
       metadata: {
         path: rel,

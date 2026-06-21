@@ -13,6 +13,7 @@ import { reindexAffected } from "../index/reindexer.js";
 import { createTask, recordEdit, recordTestRun, finishTask } from "./memory.js";
 import { buildHeuristicTaskPacket } from "../context/taskPacket.js";
 import type { TaskPacket } from "../context/taskPacket.js";
+import { classifyTaskKind } from "../context/taskPacket.js";
 import { retrieveLeads } from "../context/retrievalLead.js";
 import type { RetrievalLead } from "../context/retrievalLead.js";
 import { packFocusedBriefing } from "../context/focusedBriefing.js";
@@ -28,6 +29,7 @@ import { finishTool } from "./tools/finishTool.js";
 import { askUserTool } from "./tools/askUserTool.js";
 import { createFileTool } from "./tools/createFileTool.js";
 import { proposeEditTool } from "./tools/proposeEditTool.js";
+import { appendToFileTool } from "./tools/appendToFileTool.js";
 import { runFocusedAgentLoop } from "./focusedAgentLoop.js";
 import { runPatchWorkflow } from "./runPatchWorkflow.js";
 import { loadProjectRules } from "../context/projectRules.js";
@@ -240,6 +242,7 @@ export async function runPatch(
 
   events.emit("task:phase", "briefing");
   const tools = buildToolRegistry("patch");
+  const taskKind = classifyTaskKind(cleanedPrompt);
   const workflowResult = await runPatchWorkflow({
     packet,
     leads,
@@ -256,6 +259,7 @@ export async function runPatch(
     fileCards: cardBriefs,
     phaseModels: config.phaseModels as Partial<Record<string, string>> | undefined,
     installedModels: installed,
+    taskKind,
   });
 
   for (const file of workflowResult.changedFiles) {
@@ -424,7 +428,7 @@ function buildToolRegistry(mode: "ask" | "patch"): ToolRegistry {
   const registry = new ToolRegistry();
   registry.registerAll([searchTool, readTool, askUserTool, finishTool]);
   if (mode === "patch") {
-    registry.registerAll([proposeEditTool, createFileTool, editTool, replaceLinesTool, checkTool]);
+    registry.registerAll([proposeEditTool, createFileTool, appendToFileTool, editTool, replaceLinesTool, checkTool]);
   }
   return registry;
 }

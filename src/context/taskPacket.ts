@@ -15,6 +15,15 @@ export type TaskPacket = {
   confidence: "low" | "medium" | "high";
 };
 
+export type TaskKind =
+  | "chat"
+  | "ask"
+  | "code_patch"
+  | "ui_style_patch"
+  | "file_create"
+  | "refactor"
+  | "unknown";
+
 const FILE_PATH_PATTERN = /\b([\w./-]+\.[a-z]{2,6})\b/gi;
 
 const KEYWORD_AREA_MAP: Array<[RegExp, string]> = [
@@ -92,4 +101,51 @@ export function buildHeuristicTaskPacket(userPrompt: string): TaskPacket {
     rawUserPrompt: trimmed,
     confidence: hasDetail ? "medium" : "low",
   };
+}
+
+export function classifyTaskKind(userPrompt: string): TaskKind {
+  const text = userPrompt.trim().toLowerCase();
+
+  if (!text || /^(hi|hey|hello|ok|thanks|help)\b/i.test(text)) return "chat";
+  if (isUiStylePatchPrompt(text)) return "ui_style_patch";
+  if (isFileCreatePrompt(text)) return "file_create";
+  if (isRefactorPrompt(text)) return "refactor";
+  if (isCodePatchPrompt(text)) return "code_patch";
+  if (isAskPrompt(text)) return "ask";
+
+  return "unknown";
+}
+
+export function isUiStylePatchPrompt(text: string): boolean {
+  const changeWords = ["make", "change", "set", "turn", "update", "adjust", "style", "fix"];
+  const styleWords = [
+    "background", "color", "red", "blue", "green", "white", "black",
+    "theme", "css", "style", "font", "spacing", "margin", "padding",
+    "border", "rounded", "layout", "width", "height", "mobile",
+    "responsive", "website", "page", "chat website", "chat app",
+    "dark mode", "light mode", "sidebar", "topbar", "button",
+  ];
+
+  const hasChange = changeWords.some((w) => text.includes(w));
+  const hasStyle = styleWords.some((w) => text.includes(w));
+
+  return hasChange && hasStyle;
+}
+
+function isFileCreatePrompt(text: string): boolean {
+  return /\b(create|make|generate|new|add)\b.*\b(file|\.txt|\.md|\.json|\.css|\.html)\b/i.test(text) &&
+    !isUiStylePatchPrompt(text);
+}
+
+function isRefactorPrompt(text: string): boolean {
+  return /\b(refactor|rewrite|rename|move|extract|split|merge|clean\s*up|reorganize)\b/i.test(text);
+}
+
+function isCodePatchPrompt(text: string): boolean {
+  return /\b(create|make|add|fix|change|edit|implement|write|delete|remove|rename|move|refactor|update|modify|replace|generate|build|improve)\b/i.test(text);
+}
+
+function isAskPrompt(text: string): boolean {
+  return /\b(explain|why|what|how|where|when|show|review|analyze|diagnos|summarize|tell me|find|search|look|list)\b/i.test(text) ||
+    text.endsWith("?");
 }

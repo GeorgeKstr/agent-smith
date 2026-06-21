@@ -149,6 +149,41 @@ Rules:
 - Output exactly one block: <tool_call> or <final>.
 - Do not search. Do not read unrelated files.`;
 
+    case "apply_style_patch":
+      return `You are in APPLY STYLE phase.
+Your job: make the requested visual/style change.${goalLine}
+Allowed tools: ${tools}${exitLines}
+
+You may NOT search. You may NOT read new files.
+You have already inspected the relevant CSS/HTML files.
+
+For CSS/style changes:
+1. Use edit to change existing CSS rules.
+2. Use replace_lines to update specific line ranges.
+3. Use append_to_file to add a new CSS rule if no matching selector exists.
+
+Example (edit existing rule):
+<tool_call>
+{"tool":"edit","args":{"path":"public/style.css","search":"body {\\n  background: white;","replace":"body {\\n  background: red;","reason":"Make background red"}}
+</tool_call>
+
+Example (append new rule):
+<tool_call>
+{"tool":"append_to_file","args":{"path":"public/style.css","content":"\\nbody {\\n  background: red;\\n}","reason":"Add body background rule"}}
+</tool_call>
+
+Final:
+<final>
+Applied:
+- public/style.css: changed body background to red
+</final>
+
+Rules:
+- Always put tool arguments inside the "args" object.
+- Output exactly one block: <tool_call> or <final>.
+- Do not search. Do not read new files.
+- If no edit is needed, explain why in <final>.`;
+
     case "verify":
       return `You are in VERIFY phase.
 Your job: run checks on the changed files and repair if needed.${goalLine}

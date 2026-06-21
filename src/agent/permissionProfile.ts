@@ -24,13 +24,14 @@ export type ApprovalPolicy =
 
 export function profileForPhase(phase: AgentWorkflowPhase): PermissionProfile {
   switch (phase) {
-    case "chat":       return "none";
-    case "ask":        return "readonly";
-    case "explore":    return "readonly";
-    case "plan_patch": return "plan";
-    case "apply_patch": return "apply";
-    case "verify":     return "verify";
-    case "finalize":   return "none";
+    case "chat":              return "none";
+    case "ask":               return "readonly";
+    case "explore":           return "readonly";
+    case "plan_patch":        return "plan";
+    case "apply_patch":       return "apply";
+    case "apply_style_patch": return "apply";
+    case "verify":            return "verify";
+    case "finalize":          return "none";
   }
 }
 
