@@ -171,7 +171,7 @@ export type SmithConfig = {
     allowReadAfterEditPressure: boolean;
   };
   approval: {
-    policy: "never" | "on_write" | "on_dangerous" | "always";
+    policy: "never" | "on_write" | "on_destructive" | "always";
     confirmDangerous: boolean;
     maxAutoApplyFiles: number;
   };

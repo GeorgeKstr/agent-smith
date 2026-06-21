@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises"
 import type { SmithDatabase } from "../db/db.js"
 import type { SmithConfig, ContextPacket, PromptIntent } from "../types/index.js"
 import type { Indexer } from "../index/indexer.js"
-import { runAsk } from "../agent/taskRunner.js"
+import { runAsk, runPatch } from "../agent/taskRunner.js"
 import { summarizeFile } from "../agent/summarizer.js"
 import { listProviderModels, resolveProviderModelName } from "../providers/providers.js"
 import { html } from "../web/html.js"
@@ -12,6 +12,9 @@ import { styles } from "../web/styles.js"
 import { clientJs } from "../web/client.js"
 import { sendChatMessage, getSessionWithMessages } from "../chat/chatRuntime.js"
 import { createChatSession, listChatSessions, getChatSession, deleteChatSession, updateChatSessionTitle, listChatMessages, getOpenQuestions, answerUserQuestion } from "../chat/chatStore.js"
+import { getApprovalStore } from "../agent/approval/approvalStore.js"
+import { applyApprovedOperation } from "../agent/approval/applyOperation.js"
+import { renderAgentResult } from "../agent/renderAgentResult.js"
 
 export type ChatEntry = {
   role: "user" | "assistant" | "system" | "patch"
@@ -36,6 +39,9 @@ export type LanServerState = {
   modelOverride: string | null
   uptime: number
   chatLog: ChatEntry[]
+  contextUsage?: { promptTokens: number; budget: number; phase: string }
+  pendingApprovals?: number
+  lastAgentResult?: Record<string, unknown>
 }
 
 function parseOutputToChat(lines: string[]): ChatEntry[] {
@@ -208,6 +214,32 @@ export function startLanServer(args: {
   }
   events.on("task:stream", onStream)
 
+  const onContextUsage = (usage: { promptTokens: number; budget: number; phase: string }) => {
+    lanState.contextUsage = usage
+    broadcast({ type: "context:usage", usage })
+  }
+  events.on("context:usage", onContextUsage)
+
+  const onApprovalCreated = (data: Record<string, unknown>) => {
+    broadcast({ type: "approval:created", data })
+    const store = getApprovalStore(root)
+    void store.listPending().then((ops) => {
+      lanState.pendingApprovals = ops.filter((o) => o.status === "pending").length
+      emitState()
+    }).catch(() => {})
+  }
+  events.on("approval:created", onApprovalCreated)
+
+  const onApprovalUpdated = (data: Record<string, unknown>) => {
+    broadcast({ type: "approval:updated", data })
+    const store = getApprovalStore(root)
+    void store.listPending().then((ops) => {
+      lanState.pendingApprovals = ops.filter((o) => o.status === "pending").length
+      emitState()
+    }).catch(() => {})
+  }
+  events.on("approval:updated", onApprovalUpdated)
+
   function dashboardData() {
     const totalFiles = (db.prepare("SELECT COUNT(*) AS c FROM files").get() as { c: number }).c
     const totalSymbols = (db.prepare("SELECT COUNT(*) AS c FROM symbols").get() as { c: number }).c
@@ -261,8 +293,16 @@ export function startLanServer(args: {
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return }
 
     if (pathname === "/api/state" && req.method === "GET") {
-      res.writeHead(200, { "Content-Type": "application/json" })
-      res.end(JSON.stringify({ ...lanState, uptime: lanState.uptime }))
+      void (async () => {
+        const state: Record<string, unknown> = { ...lanState, uptime: lanState.uptime }
+        try {
+          const store = getApprovalStore(root)
+          const ops = await store.listPending()
+          state.pendingApprovals = ops.filter((o) => o.status === "pending").length
+        } catch {}
+        res.writeHead(200, { "Content-Type": "application/json" })
+        res.end(JSON.stringify(state))
+      })()
       return
     }
 
@@ -405,7 +445,7 @@ export function startLanServer(args: {
       req.on("data", (chunk) => { body += chunk })
       req.on("end", async () => {
         try {
-          const { text, model } = JSON.parse(body)
+          const { text, model, actionKind } = JSON.parse(body)
           if (!text) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: "missing text" })); return }
 
           // Handle slash commands client-side can also send to /api/command,
@@ -440,8 +480,39 @@ export function startLanServer(args: {
           }
           emitState()
 
+          const kind = typeof actionKind === "string" ? actionKind : "ask"
+
           try {
-            await runAsk({ db, root, config, events, indexer }, text, { signal: currentAbort.signal, modelOverride: selectedModel })
+            if (kind === "patch" || kind === "build") {
+              const outcome = await runPatch(
+                { db, root, config, events, indexer },
+                text,
+                { apply: true, review: true, signal: currentAbort.signal, modelOverride: selectedModel }
+              )
+              const rendered = renderAgentResult({
+                status: outcome.ok ? "completed" : "failed",
+                finalText: outcome.answer ?? outcome.message,
+                evidence: {
+                  filesRead: [], filesEdited: outcome.files, filesCreated: [],
+                  checksRun: outcome.checks.map((c: { name?: string; ok?: boolean }) => ({ name: c.name ?? "", ok: c.ok ?? false })),
+                  toolResults: [], pendingFileOperations: [], approvedFileOperations: [],
+                  rejectedFileOperations: [], appliedFileOperations: [],
+                },
+                changedFiles: outcome.files,
+                checksRun: outcome.checks.map((c: { name?: string; ok?: boolean }) => c.name ?? ""),
+              })
+              lanState.lastAgentResult = { status: outcome.ok ? "completed" : "failed", text: rendered }
+              onAnswer(rendered)
+            } else {
+              const result = await runAsk(
+                { db, root, config, events, indexer },
+                text,
+                { signal: currentAbort.signal, modelOverride: selectedModel }
+              )
+              const rendered = result.ok ? result.answer : `Error: ${result.message ?? "Unknown error"}`
+              lanState.lastAgentResult = { status: result.ok ? "completed" : "failed", text: rendered }
+              onAnswer(rendered)
+            }
           } finally {
             currentAbort = null
             currentTaskSource = null
@@ -690,6 +761,99 @@ export function startLanServer(args: {
       return
     }
 
+    // Approval API
+    if (pathname === "/api/approvals" && req.method === "GET") {
+      void (async () => {
+        try {
+          const store = getApprovalStore(root)
+          const operations = await store.listPending()
+          res.writeHead(200, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ ok: true, operations }))
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ ok: false, error: String(err) }))
+        }
+      })()
+      return
+    }
+
+    // POST /api/approvals/approve-all or /reject-all
+    if ((pathname === "/api/approvals/approve-all" || pathname === "/api/approvals/reject-all") && req.method === "POST") {
+      void (async () => {
+        try {
+          const store = getApprovalStore(root)
+          const isApprove = pathname === "/api/approvals/approve-all"
+          let count = 0
+          if (isApprove) count = await store.approveAll()
+          else count = await store.rejectAll()
+          broadcast({ type: "approval:all-updated", data: { approved: isApprove ? count : 0, rejected: isApprove ? 0 : count } })
+          res.writeHead(200, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ ok: true, count }))
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ ok: false, error: String(err) }))
+        }
+      })()
+      return
+    }
+
+    // /api/approvals/:id or /api/approvals/:id/action
+    {
+      const m = pathname.match(/^\/api\/approvals\/([^/]+)(?:\/(approve|reject|apply))?$/)
+      if (m && req.method === "GET") {
+        void (async () => {
+          const id = decodeURIComponent(m[1])
+          const store = getApprovalStore(root)
+          const operation = await store.get(id)
+          if (!operation) {
+            res.writeHead(404, { "Content-Type": "application/json" })
+            res.end(JSON.stringify({ ok: false, error: "approval not found" }))
+            return
+          }
+          res.writeHead(200, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ ok: true, operation }))
+        })()
+        return
+      }
+      if (m && req.method === "POST" && m[2]) {
+        const id = decodeURIComponent(m[1])
+        const action = m[2]
+        const store = getApprovalStore(root)
+
+        void (async () => {
+          try {
+            if (action === "approve") {
+              const operation = await store.approve(id)
+              broadcast({ type: "approval:updated", data: { id, status: "approved" } })
+              res.writeHead(200, { "Content-Type": "application/json" })
+              res.end(JSON.stringify({ ok: true, operation }))
+            } else if (action === "reject") {
+              const operation = await store.reject(id)
+              broadcast({ type: "approval:updated", data: { id, status: "rejected" } })
+              res.writeHead(200, { "Content-Type": "application/json" })
+              res.end(JSON.stringify({ ok: true, operation }))
+            } else if (action === "apply") {
+              const op = await store.get(id)
+              if (!op) {
+                res.writeHead(404, { "Content-Type": "application/json" })
+                res.end(JSON.stringify({ ok: false, error: "not found" }))
+                return
+              }
+              const result = await applyApprovedOperation({ operation: op, root, store })
+              broadcast({ type: "approval:updated", data: { id, status: result.ok ? "applied" : "failed" } })
+              emitState()
+              res.writeHead(200, { "Content-Type": "application/json" })
+              res.end(JSON.stringify({ ok: result.ok, result }))
+            }
+          } catch (err) {
+            res.writeHead(500, { "Content-Type": "application/json" })
+            res.end(JSON.stringify({ ok: false, error: String(err) }))
+          }
+        })()
+        return
+      }
+    }
+
     // Default: serve the SPA shell
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
     res.end(
@@ -714,6 +878,9 @@ export function startLanServer(args: {
     events.off("task:answer", onAnswer)
     events.off("task:patch", onPatch)
     events.off("task:stream", onStream)
+    events.off("context:usage", onContextUsage)
+    events.off("approval:created", onApprovalCreated)
+    events.off("approval:updated", onApprovalUpdated)
     events.off("ui:mode:set", onUiModeSet)
     events.off("ui:model:set", onUiModelSet)
     for (const client of sseClients) {

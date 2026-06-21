@@ -3,7 +3,7 @@ import type { RunEvidence } from "./runEvidence.js";
 
 export type CompletionGateResult = {
   canComplete: boolean;
-  status: "completed" | "partial" | "failed";
+  status: "completed" | "partial" | "failed" | "waiting_for_approval";
   warnings: string[];
   reason: string;
 };
@@ -15,6 +15,8 @@ export function canCompleteRun(input: {
   evidence: RunEvidence;
   allowNoEditCompletion?: boolean;
   allowInspectedNoEditFinal?: boolean;
+  allowUsefulNoChangeAnswer?: boolean;
+  runtimeIntent?: string;
 }): CompletionGateResult {
   const { mode, finalText, metrics, evidence } = input;
 
@@ -28,6 +30,16 @@ export function canCompleteRun(input: {
   // Patch mode
   const changed = evidence.filesEdited.length > 0 || evidence.filesCreated.length > 0;
   const checkPassed = evidence.checksRun.some((c) => c.ok);
+  const hasPending = (evidence.pendingFileOperations?.length ?? 0) > 0;
+
+  if (hasPending) {
+    return {
+      canComplete: false,
+      status: "waiting_for_approval",
+      warnings: [`${evidence.pendingFileOperations?.length ?? 0} file operation(s) are pending user approval.`],
+      reason: "The agent proposed file changes, but they have not been approved/applied yet.",
+    };
+  }
 
   if (input.allowNoEditCompletion && finalText.trim().length > 0) {
     return { canComplete: true, status: "completed", warnings: ["No edits were required for this task."], reason: "Patch mode allowed to complete without edits." };
@@ -43,6 +55,18 @@ export function canCompleteRun(input: {
       status: "completed",
       warnings: ["No file changes were made after inspection."],
       reason: "The agent inspected relevant files and explained that no edit was needed."
+    };
+  }
+
+  if (
+    input.allowUsefulNoChangeAnswer &&
+    isUsefulNoChangeAnswer({ finalText, evidence })
+  ) {
+    return {
+      canComplete: true,
+      status: "completed",
+      warnings: ["Answered without making file changes."],
+      reason: "The model inspected files and produced a useful no-change answer.",
     };
   }
 
@@ -121,4 +145,20 @@ export function buildNoEvidenceMessage(input: {
   }
 
   return lines.join("\n");
+}
+
+function isUsefulNoChangeAnswer(input: {
+  finalText: string;
+  evidence: RunEvidence;
+}): boolean {
+  const text = input.finalText.trim();
+
+  if (text.length < 40) return false;
+
+  const bad = /^(done|fixed|task completed|completed|ok|finished|ready|success)$/i.test(text);
+  if (bad) return false;
+
+  if (input.evidence.filesRead.length === 0 && text.length < 120) return false;
+
+  return true;
 }

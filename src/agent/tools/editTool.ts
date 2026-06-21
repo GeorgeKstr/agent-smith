@@ -3,6 +3,7 @@ import path from "node:path";
 import type { AgentTool } from "./toolRegistry.js";
 import { buildUnifiedDiffFromEdit } from "../editDiff.js";
 import { checkPatchSafety } from "../safety.js";
+import { tryQueueFileOperation } from "../approval/queueOperation.js";
 
 const editTool: AgentTool = {
   name: "edit",
@@ -84,6 +85,23 @@ const editTool: AgentTool = {
     const safety = checkPatchSafety({ root: ctx.root, config: ctx.config, files: [rel], changedLines });
     if (!safety.ok) {
       return { ok: false, summary: `Safety check failed: ${safety.violations.join("; ")}` };
+    }
+
+    // Check if approval queuing is required
+    const queueResult = await tryQueueFileOperation({
+      config: ctx.config,
+      root: ctx.root,
+      taskId: ctx.taskId,
+      kind: "edit_file",
+      path: relPath,
+      beforeText: search,
+      afterText: replace,
+      diff,
+      reason: reason || "edit requested",
+    });
+
+    if (queueResult.queued) {
+      return queueResult.result;
     }
 
     try {

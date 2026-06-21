@@ -41,10 +41,12 @@ export type AgentStopReason =
   | "max_steps"
   | "invalid_output"
   | "no_verified_completion"
+  | "no_change_answer"
   | "no_progress"
   | "search_after_read_loop"
   | "inspection_without_change"
   | "waiting_for_user"
+  | "waiting_for_approval"
   | "provider_error"
   | "blocked_by_policy"
   | "blocked_by_permission"
@@ -55,6 +57,7 @@ export type FocusedAgentStatus =
   | "partial"
   | "failed"
   | "waiting_for_user"
+  | "waiting_for_approval"
   | "blocked";
 
 export type FocusedAgentResult = {
@@ -69,6 +72,7 @@ export type FocusedAgentResult = {
   memory: WorkingMemory;
   rawMessages?: unknown[];
   questionId?: string;
+  pendingOperations?: string[];
 };
 
 const ASK_TOOLS = ["search", "read", "ask_user"];
@@ -405,6 +409,28 @@ export async function runFocusedAgentLoop(input: {
       checksRun.push(toolName);
     }
 
+    // Track pending approval operations from tool metadata
+    const meta = toolResult.metadata as Record<string, unknown> | undefined;
+    if (meta?.pendingOperationId && meta?.queued) {
+      evidence.pendingFileOperations.push(String(meta.pendingOperationId));
+    }
+
+    // If a tool result indicates waiting_for_approval, exit the loop
+    if (meta?.queued && evidence.pendingFileOperations.length > 0 && toolResult.ok) {
+      const pendingIds = evidence.pendingFileOperations.join(", ");
+      events?.emit("task:phase", "waiting_for_approval");
+      return {
+        ok: true,
+        status: "waiting_for_approval",
+        finalText: `File changes queued for approval.\n\n${toolResult.summary}\n\nPending operations: ${pendingIds}`,
+        changedFiles: [...new Set(changedFiles)],
+        checksRun: [...new Set(checksRun)],
+        metrics, evidence, stopReason: "waiting_for_approval",
+        memory,
+        pendingOperations: [...evidence.pendingFileOperations],
+      };
+    }
+
     memory = await compactToolResult({ memory, toolName, toolArgs: args, rawResult: toolResult });
 
     progress = updateLocalToolProgress({ progress, toolName, args, ok: toolResult.ok });
@@ -446,8 +472,36 @@ export async function runFocusedAgentLoop(input: {
   // Determine final status
   metrics.totalSearches = progress.totalSearches;
   metrics.searchesAfterFirstRead = progress.searchesAfterFirstRead;
-  const gate = canCompleteRun({ mode, finalText, metrics, evidence, allowNoEditCompletion: allowNoEdit, allowInspectedNoEditFinal: allowNoEdit });
-  const stopReason: AgentStopReason = gate.canComplete ? "final_block" : "no_verified_completion";
+  const allowUsefulNoChange = mode === "patch" && runtimeIntent !== "patch";
+  const gate = canCompleteRun({
+    mode, finalText, metrics, evidence,
+    allowNoEditCompletion: allowNoEdit,
+    allowInspectedNoEditFinal: allowNoEdit,
+    allowUsefulNoChangeAnswer: allowUsefulNoChange,
+    runtimeIntent,
+  });
+
+  if (gate.status === "waiting_for_approval") {
+    return {
+      ok: true,
+      status: "waiting_for_approval",
+      finalText: finalText || "File changes queued for approval.",
+      changedFiles: [...new Set(changedFiles)],
+      checksRun: [...new Set(checksRun)],
+      metrics, evidence,
+      stopReason: "waiting_for_approval",
+      memory,
+      pendingOperations: [...evidence.pendingFileOperations],
+    };
+  }
+
+  const changed = evidence.filesEdited.length > 0 || evidence.filesCreated.length > 0;
+  const inspected = evidence.filesRead.length > 0;
+  const hasPending = evidence.pendingFileOperations.length > 0;
+  const defaultStop = gate.canComplete ? "final_block" : "no_verified_completion";
+  const stopReason: AgentStopReason = (!gate.canComplete && !changed && inspected && finalText.trim().length > 0)
+    ? "no_change_answer"
+    : defaultStop;
 
   return {
     ok: gate.status !== "failed",

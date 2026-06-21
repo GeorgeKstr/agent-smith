@@ -48,6 +48,10 @@ export function classifyRuntimeIntent(input: {
     return { intent: "ask", confidence: "high", reason: "question asking how/why/what, not requesting edits" };
   }
 
+  if (isReadOnlyStatusQuestion(text)) {
+    return { intent: "ask", confidence: "high", reason: "read-only status/history question" };
+  }
+
   if (isPatchRequest(text)) {
     const confidence: IntentConfidence = isVaguePatchRequest(text) ? "low" : "high";
     return {
@@ -107,6 +111,13 @@ function isAskOnlyUsage(text: string): boolean {
 
 function isFeatureSpecification(text: string): boolean {
   return /\b(should\s+(work|behave|act|do|function|operate|return|show|display|toggle|cycle|switch|handle|support|allow|accept|respond)|needs to|is supposed to|must\s+(be|have))\b/i.test(text);
+}
+
+function isReadOnlyStatusQuestion(text: string): boolean {
+  return (
+    /\b(what|which|where|show|tell me|list)\b/i.test(text) &&
+    /\b(last|created|changed|modified|edited|file|files|contains|content|diff|status|made|did you)\b/i.test(text)
+  );
 }
 
 function isVaguePatchRequest(text: string): boolean {
