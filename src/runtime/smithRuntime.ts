@@ -39,7 +39,8 @@ export function createSmithRuntime(deps: SmithRuntimeDeps) {
     switch (action.kind) {
       case "ask": {
         const result = await runAsk({ db, root, config, events, indexer }, action.prompt ?? "", {
-          modelOverride: action.model
+          modelOverride: action.model,
+          signal: action.signal,
         });
         return {
           taskId: makeTaskId(),
@@ -58,7 +59,8 @@ export function createSmithRuntime(deps: SmithRuntimeDeps) {
           apply,
           review,
           modelOverride: action.model,
-          taskId: action.taskId
+          taskId: action.taskId,
+          signal: action.signal,
         });
         return {
           taskId: makeTaskId(),

@@ -402,6 +402,7 @@ export type RuntimeAction = {
   apply?: boolean;
   dryRun?: boolean;
   json?: boolean;
+  signal?: AbortSignal;
 };
 
 export type RuntimeTaskStatus = "queued" | "planning" | "retrieving" | "packing" | "generating" | "validating" | "applying" | "checking" | "reindexing" | "completed" | "failed" | "cancelled";

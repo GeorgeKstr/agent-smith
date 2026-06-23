@@ -45,6 +45,7 @@ export function checkEditPressurePolicy(input: {
     "ask_user",
     "finish",
     "check",
+    "bash",
   ];
 
   if (input.allowReadAfterEditPressure) {

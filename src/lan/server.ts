@@ -701,10 +701,14 @@ export function startLanServer(args: {
         req.on("end", async () => {
           try {
             const b = JSON.parse(bdy) as Record<string, unknown> | null;
-            const result = await sendChatMessage({ root, config, db, events, indexer, sessionId: m[1], prompt: (b?.prompt as string) || "", actionKind: typeof b?.actionKind === "string" ? b.actionKind : undefined, model: typeof b?.model === "string" ? b.model : undefined });
+            currentAbort = new AbortController();
+            emitStatus({ busy: true, phase: "sending" });
+            const result = await sendChatMessage({ root, config, db, events, indexer, sessionId: m[1], prompt: (b?.prompt as string) || "", actionKind: typeof b?.actionKind === "string" ? b.actionKind : undefined, model: typeof b?.model === "string" ? b.model : undefined, signal: currentAbort.signal });
+            currentAbort = null;
+            emitStatus({ busy: false, phase: "idle" });
             res.writeHead(200, { "Content-Type": "application/json" })
             res.end(JSON.stringify({ ok: result.ok, session: result.session, userMessage: result.userMessage, assistantMessage: result.assistantMessage, result: result.result }))
-          } catch (e) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: false, error: String(e) })) }
+          } catch (e) { currentAbort = null; emitStatus({ busy: false, phase: "idle" }); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ ok: false, error: String(e) })) }
         })
         return
       }

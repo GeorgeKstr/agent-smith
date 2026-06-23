@@ -11,9 +11,6 @@ import { budgetForTokenLimit } from "../context/contextBudget.js";
 import { estimateTokens } from "../context/tokenEstimate.js";
 import { compactToolResult } from "./compactToolResult.js";
 import { renderLocalTextToolPrompt } from "./localTextToolPrompt.js";
-import { renderPhaseToolPrompt } from "./phaseToolPrompt.js";
-import type { AgentWorkflowPhase } from "./workflowPhase.js";
-import { toolsForPhase } from "./phaseTools.js";
 import { parseLocalTextActions } from "./localTextToolParser.js";
 import type { ParsedLocalTextAction } from "./localTextToolParser.js";
 import { renderLocalTextToolResult } from "./localTextToolResult.js";
@@ -23,13 +20,11 @@ import { createEmptyRunEvidence } from "./runEvidence.js";
 import type { RunEvidence } from "./runEvidence.js";
 import { canCompleteRun, buildNoEvidenceMessage } from "./completionGate.js";
 import { isNoEditTask } from "./noEditTask.js";
-import { isWriteTool, WRITE_TOOLS } from "./toolPermissions.js";
+import { isWriteTool } from "./toolPermissions.js";
 import type { RuntimeIntent } from "./runtimeIntent.js";
 import { createEmptyLocalToolProgress, updateLocalToolProgress } from "./localToolProgress.js";
 import type { LocalToolProgress } from "./localToolProgress.js";
 import { checkLocalToolProgressPolicy } from "./localToolProgressPolicy.js";
-import { getPatchPhase } from "./patchPhase.js";
-import { checkPatchPhasePolicy } from "./patchPhasePolicy.js";
 import { checkEditPressurePolicy } from "./editPressurePolicy.js";
 
 const MAX_STEPS = 24;
@@ -78,7 +73,7 @@ export type FocusedAgentResult = {
 };
 
 const ASK_TOOLS = ["search", "read", "ask_user"];
-const PATCH_TOOLS = ["search", "read", "propose_edit", "create_file", "edit", "replace_lines", "check", "ask_user"];
+const PATCH_TOOLS = ["search", "read", "propose_edit", "create_file", "edit", "replace_lines", "check", "bash", "ask_user"];
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -109,29 +104,18 @@ export async function runFocusedAgentLoop(input: {
   fileCards?: Array<{ path: string; purpose: string; exports: string[] }>;
   taskId?: string;
   timeoutMs?: number;
-  phase?: AgentWorkflowPhase;
-  allowedToolsOverride?: string[];
-  phaseGoal?: string;
-  phaseExitCriteria?: string[];
   maxSteps?: number;
-  skipEditPressure?: boolean;
-  skipPatchPhasePolicy?: boolean;
-  phaseOnToolCall?: (toolName: string, args: Record<string, unknown>) => void;
+  signal?: AbortSignal;
 }): Promise<FocusedAgentResult> {
-  const { packet, leads, tools, provider, model, mode, runtimeIntent, config, root, db, events, projectRules, taskId } = input;
-  const phase = input.phase;
-  const allowedTools = input.allowedToolsOverride ?? (phase ? toolsForPhase(phase) : (mode === "ask" ? ASK_TOOLS : PATCH_TOOLS));
+  const { packet, leads, tools, provider, model, mode, runtimeIntent, config, root, db, events, projectRules, taskId, signal: userSignal } = input;
+  const allowedTools = mode === "ask" ? ASK_TOOLS : PATCH_TOOLS;
   const toolDefs = tools.list();
   const budget = budgetForTokenLimit(config.context.maxPromptTokens);
   const deadline = Date.now() + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const maxSteps = input.maxSteps ?? MAX_STEPS;
-  const skipEditPressure = input.skipEditPressure ?? false;
-  const skipPatchPhasePolicy = input.skipPatchPhasePolicy ?? false;
 
   let memory = input.memory ?? createWorkingMemory(packet);
-  const toolPrompt = phase
-    ? renderPhaseToolPrompt({ phase, allowedTools, phaseGoal: input.phaseGoal, phaseExitCriteria: input.phaseExitCriteria })
-    : renderLocalTextToolPrompt({ mode, allowedTools, runtimeIntent });
+  const toolPrompt = renderLocalTextToolPrompt({ mode, allowedTools, runtimeIntent });
   const fullSystem = `${toolPrompt}`;
   const changedFiles: string[] = [];
   const checksRun: string[] = [];
@@ -141,19 +125,15 @@ export async function runFocusedAgentLoop(input: {
   const metrics = createEmptyRunMetrics();
   const evidence = createEmptyRunEvidence();
   let progress: LocalToolProgress = createEmptyLocalToolProgress();
-  const allowNoEdit = isNoEditTask({ mode, taskGoal: packet.goal, successCriteria: packet.successCriteria, nonGoals: packet.nonGoals });
-  const phaseHasWriteTools = allowedTools.some((t) => WRITE_TOOLS.includes(t));
-  const phaseHasRead = allowedTools.includes("read");
-  const allowPhaseNoEdit = phase != null && !phaseHasWriteTools;
-  const phaseNoEditNeedsRead = allowPhaseNoEdit && phaseHasRead;
-  const phaseNoEditNeedsText = allowPhaseNoEdit && !phaseHasRead;
-
-  const allowNoEditCompletion = allowNoEdit || phaseNoEditNeedsText;
-  const allowInspectedNoEditFinal = allowNoEdit || phaseNoEditNeedsRead;
+  const allowNoEditCompletion = isNoEditTask({ mode, taskGoal: packet.goal, successCriteria: packet.successCriteria, nonGoals: packet.nonGoals });
+  const allowInspectedNoEditFinal = allowNoEditCompletion;
 
   events?.emit("task:phase", "tooling");
 
   for (let step = 0; step < maxSteps; step++) {
+    if (userSignal?.aborted) {
+      return buildFinal(memory, "Cancelled by user.", "blocked_by_policy", changedFiles, checksRun, metrics, evidence);
+    }
     if (Date.now() > deadline) {
       return buildFinal(memory, finalText, "max_steps", changedFiles, checksRun, metrics, evidence);
     }
@@ -179,14 +159,19 @@ export async function runFocusedAgentLoop(input: {
     events?.emit("context:usage", {
       promptTokens: promptTokens + systemTokens,
       budget: config.context.maxPromptTokens,
-      phase: phase ?? mode,
+      phase: mode,
     });
+
+    const timeoutSignal = AbortSignal.timeout(remaining);
+    const combinedSignal = userSignal
+      ? AbortSignal.any ? AbortSignal.any([timeoutSignal, userSignal]) : timeoutSignal
+      : timeoutSignal;
 
     const genOpts = {
       system: fullSystem,
       maxTokens: maxOut,
       temperature: 0 as const,
-      signal: AbortSignal.timeout(remaining),
+      signal: combinedSignal,
     };
 
     let response = await provider.generate(model, prompt, genOpts);
@@ -251,19 +236,8 @@ export async function runFocusedAgentLoop(input: {
       if (action.kind === "final") {
         metrics.finalCalls++;
         finalText = action.content;
-        // In a phased workflow, <final> ends this phase's loop. The workflow
-        // decides downstream (via phase exit criteria) whether to proceed.
-        // The strict patch-mode completion gate only applies to the top-level
-        // (non-phase) loop, so non-write phases like explore can exit via <final>
-        // instead of burning all their steps after emitting a phase summary.
-        if (phase) {
-          actedThisTurn = true;
-          turnEnded = true;
-          break;
-        }
         const gate = canCompleteRun({ mode, finalText, metrics, evidence, allowNoEditCompletion, allowInspectedNoEditFinal });
         if (gate.canComplete) { actedThisTurn = true; turnEnded = true; break; }
-        // Not verifiable yet — nudge and keep going (there may be more actions this turn).
         latestToolResultText = renderLocalTextToolResult({
           tool: "protocol", ok: false,
           summary: buildNoEvidenceMessage({ mode, metrics, evidence, modelOutput: action.content, gateResult: gate }),
@@ -300,6 +274,7 @@ export async function runFocusedAgentLoop(input: {
         case "create_file": break;
         case "propose_edit": metrics.proposeEditCalls++; break;
         case "check": metrics.checks++; break;
+        case "bash": metrics.bashCalls++; break;
         case "ask_user": metrics.askUserCalls++; break;
       }
 
@@ -367,41 +342,9 @@ export async function runFocusedAgentLoop(input: {
         continue;
       }
 
-      if (mode === "patch" && !skipPatchPhasePolicy) {
-        const patchPhase = getPatchPhase({ evidence });
-        const phaseDecision = checkPatchPhasePolicy({
-          phase: patchPhase,
-          toolName,
-          args,
-          progress,
-          maxTotalSearchesPerRun: config.localText?.maxTotalSearchesPerRun ?? 4,
-          maxSearchesAfterFirstRead: config.localText?.maxSearchesAfterFirstRead ?? 1,
-          requireReasonForSearchAfterRead: config.localText?.requireReasonForSearchAfterRead ?? true,
-        });
 
-        if (!phaseDecision.allowed) {
-          metrics.toolCallsFailed++;
-          metrics.progressPolicyRejections++;
-          metrics.patchPhasePolicyRejections++;
-          evidence.toolResults.push({ tool: toolName, ok: false, summary: phaseDecision.summary });
-          latestToolResultText = renderLocalTextToolResult({
-            tool: toolName, ok: false,
-            summary: phaseDecision.summary,
-            nextActions: phaseDecision.nextActions,
-          });
 
-          const query = typeof args.query === "string" ? args.query.trim() : "";
-          if (query && query.length <= 3) {
-            metrics.broadSearchRejections++;
-          } else if (progress.firstReadHappened && progress.searchesAfterFirstRead >= 1) {
-            metrics.postReadSearchRejections++;
-          }
-
-          continue;
-        }
-      }
-
-      if (runtimeIntent === "patch" && !skipEditPressure) {
+      if (runtimeIntent === "patch") {
         const editPressure = checkEditPressurePolicy({
           runtimeIntent,
           toolName,
@@ -426,7 +369,6 @@ export async function runFocusedAgentLoop(input: {
       }
 
       events?.emit("task:phase", `tool:${toolName}`);
-      input.phaseOnToolCall?.(toolName, args);
 
       let toolResult: ToolResult;
       try {
@@ -500,18 +442,6 @@ export async function runFocusedAgentLoop(input: {
 
       if (toolName === "ask_user" && toolResult.ok) {
         const am = toolResult.metadata as Record<string, unknown> | undefined;
-        // In phased workflow mode (explore/plan/apply/verify), treat ask_user
-        // as a soft nudge — tell the model to proceed without asking, rather
-        // than blocking the entire workflow. Only the top-level (non-phase)
-        // loop returns waiting_for_user for genuine interactive TUI sessions.
-        if (phase) {
-          latestToolResultText = renderLocalTextToolResult({
-            tool: "ask_user", ok: true,
-            summary: "In this phase, proceed without asking. Make your best decision and continue.",
-            nextActions: ["Use the available tools to proceed. Do not use ask_user in this phase."],
-          });
-          continue;
-        }
         events?.emit("task:phase", "waiting_for_user");
         return {
           ok: true, status: "waiting_for_user",

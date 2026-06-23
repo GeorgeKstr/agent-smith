@@ -16,6 +16,7 @@ type SendChatArgs = {
   actionKind?: string;
   model?: string;
   metadata?: unknown;
+  signal?: AbortSignal;
 };
 
 type SendChatResult = {
@@ -69,8 +70,9 @@ export async function sendChatMessage(args: SendChatArgs): Promise<SendChatResul
       kind: kind as "ask" | "patch" | "retrieve" | "context" | "index" | "check",
       prompt,
       model,
-      apply: false,
-      dryRun: false
+      apply: true,
+      dryRun: false,
+      signal: args.signal,
     });
   } catch (err) {
     updateChatMessage(db, assistantMsg.id, { content: `Error: ${err instanceof Error ? err.message : String(err)}`, status: "failed" });

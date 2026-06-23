@@ -85,6 +85,15 @@ export async function compactToolResult(input: {
       });
     }
 
+    case "bash": {
+      const command = typeof (toolArgs as any).command === "string" ? (toolArgs as any).command : "unknown";
+      const exitCode = (rawResult.metadata as any)?.exitCode ?? -1;
+      return mergeWorkingMemory(memory, {
+        bashResults: [{ command, exitCode, ok: rawResult.ok }],
+        confirmedFacts: [`Ran: ${command} (exit ${exitCode})`],
+      });
+    }
+
     case "check": {
       return mergeWorkingMemory(memory, {
         checkResults: [rawResult.summary],

@@ -13,6 +13,7 @@ export type WorkingMemory = {
   editPlan: string[];
   editsApplied: string[];
   checkResults: string[];
+  bashResults: Array<{ command: string; exitCode: number; ok: boolean }>;
   remainingUnknowns: string[];
   warnings: string[];
 };
@@ -27,6 +28,7 @@ export function createWorkingMemory(packet: TaskPacket): WorkingMemory {
     editPlan: [],
     editsApplied: [],
     checkResults: [],
+    bashResults: [],
     remainingUnknowns: packet.keywords.map((k) => `Unknown: how does ${k} relate?`).slice(0, 4),
     warnings: [],
   };
@@ -82,6 +84,13 @@ export function renderWorkingMemory(memory: WorkingMemory): string {
     }
   }
 
+  if (memory.bashResults.length > 0) {
+    lines.push("Recent shell commands:");
+    for (const r of memory.bashResults.slice(-4)) {
+      lines.push(`- ${r.ok ? "OK" : `EXIT ${r.exitCode}`} ${r.command}`);
+    }
+  }
+
   if (memory.remainingUnknowns.length > 0) {
     lines.push("Remaining unknowns:");
     for (const u of memory.remainingUnknowns.slice(0, 4)) {
@@ -115,6 +124,7 @@ export function mergeWorkingMemory(
     editPlan: dedupe([...oldMemory.editPlan, ...(update.editPlan ?? [])]),
     editsApplied: dedupe([...oldMemory.editsApplied, ...(update.editsApplied ?? [])]),
     checkResults: dedupe([...oldMemory.checkResults, ...(update.checkResults ?? [])]),
+    bashResults: [...oldMemory.bashResults, ...(update.bashResults ?? [])],
     remainingUnknowns: dedupe([
       ...oldMemory.remainingUnknowns,
       ...(update.remainingUnknowns ?? []),

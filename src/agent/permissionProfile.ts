@@ -92,6 +92,7 @@ const TOOL_RISK_MAP: Record<string, ToolRisk> = {
   replace_lines:   "write",
   create_file:     "write",
   check:           "command",
+  bash:            "command",
   delete_file:     "destructive",
   move_file:       "destructive",
   rename_file:     "destructive",

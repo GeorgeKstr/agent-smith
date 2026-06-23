@@ -35,6 +35,7 @@ export function toolsForRuntimeIntent(intent: RuntimeIntent): string[] {
         "edit",
         "replace_lines",
         "check",
+        "bash",
         "ask_user",
         "finish"
       ];

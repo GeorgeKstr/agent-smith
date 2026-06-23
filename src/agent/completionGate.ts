@@ -17,7 +17,6 @@ export function canCompleteRun(input: {
   allowInspectedNoEditFinal?: boolean;
   allowUsefulNoChangeAnswer?: boolean;
   runtimeIntent?: string;
-  taskKind?: string;
 }): CompletionGateResult {
   const { mode, finalText, metrics, evidence } = input;
 
@@ -75,20 +74,6 @@ export function canCompleteRun(input: {
   if (!evidence.filesEdited.length && evidence.filesCreated.length > 0 &&
       evidence.filesCreated.every((p) => !/[.](ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|c|cpp|h|hpp|cs|php|rb|swift|kt)$/i.test(p))) {
     return { canComplete: true, status: "completed", warnings: ["No code check was required for plain file creation."], reason: "Plain non-code file was created successfully." };
-  }
-
-  // Style patches: CSS/HTML changes with no configured checks
-  if (input.taskKind === "ui_style_patch" && changed) {
-    const hasCodeFile = [...evidence.filesEdited, ...evidence.filesCreated]
-      .some((p) => /\.(ts|tsx|js|jsx|py|rs|go|java|c|cpp)$/i.test(p));
-    if (!hasCodeFile) {
-      return {
-        canComplete: true,
-        status: "completed",
-        warnings: evidence.checksRun.length === 0 ? ["No checks were run (CSS-only change)."] : [],
-        reason: "CSS/style file was changed successfully.",
-      };
-    }
   }
 
   if (changed && checkPassed) {

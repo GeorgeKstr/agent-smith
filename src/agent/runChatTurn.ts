@@ -26,6 +26,7 @@ export async function runChatTurn(input: {
   provider: Provider;
   model: string;
   config: SmithConfig;
+  signal?: AbortSignal;
 }): Promise<FocusedAgentResult> {
   const text = input.prompt.trim();
   const emptyMemory = createWorkingMemory(makeEmptyPacket(text));
@@ -55,7 +56,9 @@ export async function runChatTurn(input: {
         role: "user",
         content: input.prompt
       }
-    ]
+    ],
+    undefined,
+    input.signal ? { signal: input.signal } : undefined
   );
 
   if (!response.ok) {

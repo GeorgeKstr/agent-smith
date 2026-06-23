@@ -355,6 +355,7 @@ button{font-family:var(--font);cursor:pointer}
 .msg-role.patch{color:var(--cyan)}
 .msg-role.system{color:var(--tx3)}
 .msg-model{background:var(--s3);padding:1px 5px;border-radius:3px;font-family:var(--mono);font-size:9px;color:var(--tx2)}
+.msg-phase{background:var(--s2);padding:1px 5px;border-radius:3px;font-family:var(--mono);font-size:9px;color:var(--tx3)}
 .msg-time{color:var(--tx3)}
 .msg-bub{padding:10px 13px;border-radius:12px;font-size:12px;line-height:1.6;word-break:break-word}
 .msg.user .msg-bub{background:var(--accent-dim);border:1px solid var(--bd-hi);border-radius:12px 12px 3px 12px;color:var(--tx)}

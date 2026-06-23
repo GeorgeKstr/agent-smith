@@ -13,7 +13,6 @@ import { reindexAffected } from "../index/reindexer.js";
 import { createTask, recordEdit, recordTestRun, finishTask } from "./memory.js";
 import { buildHeuristicTaskPacket } from "../context/taskPacket.js";
 import type { TaskPacket } from "../context/taskPacket.js";
-import { classifyTaskKind } from "../context/taskPacket.js";
 import { retrieveLeads } from "../context/retrievalLead.js";
 import type { RetrievalLead } from "../context/retrievalLead.js";
 import { packFocusedBriefing } from "../context/focusedBriefing.js";
@@ -30,6 +29,7 @@ import { askUserTool } from "./tools/askUserTool.js";
 import { createFileTool } from "./tools/createFileTool.js";
 import { proposeEditTool } from "./tools/proposeEditTool.js";
 import { appendToFileTool } from "./tools/appendToFileTool.js";
+import { bashTool } from "./tools/bashTool.js";
 import { runFocusedAgentLoop } from "./focusedAgentLoop.js";
 import { runPatchWorkflow } from "./runPatchWorkflow.js";
 import { loadProjectRules } from "../context/projectRules.js";
@@ -85,6 +85,7 @@ export async function runAsk(
         provider: resolved.provider,
         model: resolved.model,
         config,
+        signal: options.signal,
       });
       return {
         ok: chatResult.ok,
@@ -136,6 +137,7 @@ export async function runAsk(
     events,
     projectRules,
     fileCards: cardBriefs,
+    signal: options.signal,
   });
 
   events.emit("task:answer", result.finalText);
@@ -205,6 +207,7 @@ export async function runPatch(
       provider: resolved.provider,
       model: resolved.model,
       config,
+      signal: options.signal,
     });
     return {
       ok: chatResult.ok,
@@ -247,7 +250,6 @@ export async function runPatch(
 
   events.emit("task:phase", "briefing");
   const tools = buildToolRegistry("patch");
-  const taskKind = classifyTaskKind(cleanedPrompt);
   const workflowResult = await runPatchWorkflow({
     packet,
     leads,
@@ -262,9 +264,7 @@ export async function runPatch(
     events,
     projectRules: [projectRules, skillsText].filter(Boolean).join("\n\n"),
     fileCards: cardBriefs,
-    phaseModels: config.phaseModels as Partial<Record<string, string>> | undefined,
-    installedModels: installed,
-    taskKind,
+    signal: options.signal,
   });
 
   for (const file of workflowResult.changedFiles) {
@@ -285,8 +285,8 @@ export async function runPatch(
   const e = workflowResult.evidence;
   const applied = workflowResult.changedFiles.length > 0;
   const statusMsg = workflowResult.status === "completed"
-    ? `Agent completed. Changed: ${workflowResult.changedFiles.length} (edited: ${e.filesEdited.length}, created: ${e.filesCreated.length}). Checks: ${workflowResult.checksRun.length}. Turns: ${m.modelTurns}, Tools: ${m.toolCallsRequested}. Phase: ${workflowResult.workflowPhase}.`
-    : `Agent ${workflowResult.status}. Reason: ${workflowResult.finalText.slice(0, 120)}. Phase: ${workflowResult.workflowPhase}.`;
+    ? `Agent completed. Changed: ${workflowResult.changedFiles.length} (edited: ${e.filesEdited.length}, created: ${e.filesCreated.length}). Checks: ${workflowResult.checksRun.length}. Turns: ${m.modelTurns}, Tools: ${m.toolCallsRequested}.`
+    : `Agent ${workflowResult.status}. Reason: ${workflowResult.finalText.slice(0, 120)}.`;
 
   return {
     ok: workflowResult.ok,
@@ -296,7 +296,6 @@ export async function runPatch(
     files: workflowResult.changedFiles,
     checks,
     message: statusMsg,
-    changeSetId: workflowResult.applicationResult?.failedEdits.length ? undefined : undefined,
     runtimeIntent: "patch",
   };
 }
@@ -433,7 +432,7 @@ function buildToolRegistry(mode: "ask" | "patch"): ToolRegistry {
   const registry = new ToolRegistry();
   registry.registerAll([searchTool, readTool, askUserTool, finishTool]);
   if (mode === "patch") {
-    registry.registerAll([proposeEditTool, createFileTool, appendToFileTool, editTool, replaceLinesTool, checkTool]);
+    registry.registerAll([proposeEditTool, createFileTool, appendToFileTool, editTool, replaceLinesTool, checkTool, bashTool]);
   }
   return registry;
 }

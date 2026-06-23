@@ -8,6 +8,7 @@ export type AgentRunMetrics = {
   edits: number;
   replaceLineEdits: number;
   checks: number;
+  bashCalls: number;
   askUserCalls: number;
   finalCalls: number;
   invalidOutputs: number;
@@ -15,7 +16,6 @@ export type AgentRunMetrics = {
   tokensEstimatedOut: number;
   progressPolicyRejections: number;
   tagNormalizations: number;
-  patchPhasePolicyRejections: number;
   totalSearches: number;
   searchesAfterFirstRead: number;
   broadSearchRejections: number;
@@ -38,6 +38,7 @@ export function createEmptyRunMetrics(): AgentRunMetrics {
     edits: 0,
     replaceLineEdits: 0,
     checks: 0,
+    bashCalls: 0,
     askUserCalls: 0,
     finalCalls: 0,
     invalidOutputs: 0,
@@ -45,7 +46,6 @@ export function createEmptyRunMetrics(): AgentRunMetrics {
     tokensEstimatedOut: 0,
     progressPolicyRejections: 0,
     tagNormalizations: 0,
-    patchPhasePolicyRejections: 0,
     totalSearches: 0,
     searchesAfterFirstRead: 0,
     broadSearchRejections: 0,
