@@ -70,46 +70,144 @@ export function buildHeuristicTaskPacket(userPrompt) {
         confidence: hasDetail ? "medium" : "low",
     };
 }
+const FILE_LIKE_EXT = /\b\w+\.(js|ts|tsx|jsx|py|rb|go|rs|java|kt|swift|php|html|css|scss|less|json|md|yaml|yml|toml|xml|sql|sh|bash|zsh|ps1|bat|env|gitignore|dockerfile|txt|cfg|ini|conf|log|out|err)\b/i;
+const TECH_WORDS = /\b(node|python|flask|django|react|vue|angular|svelte|express|next|nuxt|golang|go|rust|ruby|rails|php|laravel|java|spring|kotlin|swift|dotnet|deno|bun|bash|sh|shell|zsh|makefile|docker|nginx|redis|postgres|mongo|sqlite|graphql)\b/i;
+const FILE_CREATE_NOUNS = /\b(file|files|project|app|application|service|server|api|tool|script|module|package|site|website|page|daemon|worker|bot|crawler|scraper|gateway|middleware|cli|calculator|game|editor|player|viewer|manager|runner|loader|parser|generator|handler|controller|store|dashboard)\b/i;
+function scoreFileCreate(text) {
+    let s = 0;
+    const hasCreateVerb = /\b(create|make|generate|new|write|build|set\s*up|scaffold|init|spin\s*up|stand\s*up)\b/i.test(text);
+    if (hasCreateVerb && FILE_CREATE_NOUNS.test(text))
+        s += 4;
+    if (hasCreateVerb && /\b(using|with|for)\b/i.test(text))
+        s += 2;
+    if (FILE_LIKE_EXT.test(text))
+        s += 3;
+    if (hasCreateVerb && FILE_LIKE_EXT.test(text))
+        s += 2;
+    if (hasCreateVerb && TECH_WORDS.test(text))
+        s += 2;
+    if (/\b(from\s*scratch|new\s*director|empty\s*project|greenfield|blank)\b/i.test(text))
+        s += 2;
+    if ((text.match(/\b\w+\.\w{1,6}\b/g) || []).length >= 2)
+        s += 2;
+    if (/\b(framework|library|template|boilerplate)\b/i.test(text) && hasCreateVerb)
+        s += 1;
+    if (/\bring\b|microservice|monolith|backend|frontend\b/i.test(text) && !hasCreateVerb)
+        s -= 1;
+    if (/\b(edit|change|modify|update|fix|refactor|delete|remove|rename|move)\b/i.test(text))
+        s -= 2;
+    if (/\b(background|color|theme|css|margin|padding|font|border|rounded|shadow)\b/i.test(text))
+        s -= 3;
+    return Math.max(0, Math.min(10, s));
+}
+function scoreUiStyle(text) {
+    let s = 0;
+    const hasChangeVerb = /\b(make|change|set|turn|update|adjust|style|fix|modify|switch|tweak|polish)\b/i.test(text);
+    if (hasChangeVerb && /\b(background|color|colou?r|theme|css)\b/i.test(text))
+        s += 4;
+    if (hasChangeVerb && /\b(button|sidebar|navbar|modal|dialog|header|footer|card|form|input|dropdown|menu|icon|topbar|toolbar|panel|section|tabs|accordion)\b/i.test(text))
+        s += 3;
+    if (hasChangeVerb && /\b(width|height|margin|padding|font|border|rounded|shadow|spacing|gap|align|justify)\b/i.test(text))
+        s += 2;
+    if (hasChangeVerb && /\b(layout|spacing|position|alignment|overflow|z-index|opacity|wider|narrower|shorter|taller|bigger|smaller|lighter|darker)\b/i.test(text))
+        s += 2;
+    if (hasChangeVerb && /\b(page|screen|view|font|text|size|icon)\b/i.test(text))
+        s += 1;
+    if (/px|rem|em|vh|vw|%\b/i.test(text) && hasChangeVerb)
+        s += 1;
+    if (/\b(dark mode|light mode|responsive|mobile)\b/i.test(text))
+        s += 2;
+    if (hasChangeVerb && /\b(dark|light|red|blue|green|white|black|gray|grey|purple|orange|yellow|pink)\b/i.test(text))
+        s += 1;
+    if (/\b(background|color|theme|css|style)\b.*\b(red|blue|green|white|black|dark|light|gray|grey|purple|orange|yellow|pink)\b/i.test(text))
+        s += 2;
+    if (FILE_LIKE_EXT.test(text))
+        s -= 2;
+    if (/\b(create|generate|new|write|build)\b.*\b(file|server|api|script|module|package|database)\b/i.test(text))
+        s -= 3;
+    return Math.max(0, Math.min(10, s));
+}
+function scoreAsk(text) {
+    let s = 0;
+    if (/[?]\s*$/.test(text.trim()))
+        s += 4;
+    if (/\b(why|what|how|where|when|which|who|whom|whose)\b/i.test(text))
+        s += 3;
+    if (/\b(is|are|was|were|do|does|did|has|have|had)\b\s+\w+\s+\w+/i.test(text) && /\b(how|what|where|why|when)\b/i.test(text))
+        s += 2;
+    if (/\b(explain|describe|tell me|show me|review|analyze|diagnos|summarize|define|clarify|elaborate|walk me through|outline)\b/i.test(text))
+        s += 4;
+    if (/\b(find|search|locate|look\s*(for|up)|list|give me)\b/i.test(text))
+        s += 2;
+    if (/\b(meaning|purpose|reason|difference|comparison|example|benefit|drawback)\b/i.test(text))
+        s += 1;
+    if (/\b(create|make|build|generate|write|implement|fix|change|edit|delete|remove)\b/i.test(text))
+        s -= 3;
+    if (FILE_LIKE_EXT.test(text) && /\b(edit|change|modify|update|fix|create|make|write)\b/i.test(text))
+        s -= 2;
+    return Math.max(0, Math.min(10, s));
+}
+function scoreRefactor(text) {
+    let s = 0;
+    if (/\b(refactor|rewrite|restructure|reorganize|redesign|rework|clean\s*up|overhaul)\b/i.test(text))
+        s += 4;
+    if (/\b(rename|move|extract|split|merge|consolidate|inline|decompose|modularize|segregate|decouple|untangle)\b/i.test(text))
+        s += 4;
+    if (/\b(improve|simplify|reduce\s+duplication|eliminate|unwrap)\b/i.test(text))
+        s += 2;
+    if (FILE_LIKE_EXT.test(text))
+        s += 1;
+    if (/\b(create|make|generate|new|write|build)\b/i.test(text) && s < 3)
+        s -= 2;
+    return Math.max(0, Math.min(10, s));
+}
+function scoreCodePatch(text) {
+    let s = 1;
+    if (/\b(fix|bug|error|crash|broken|issue|problem|fault|regression|defect)\b/i.test(text))
+        s += 4;
+    if (/\b(add|implement|update|change|modify|edit|patch|insert|append)\b/i.test(text))
+        s += 2;
+    if (/\b(function|class|method|variable|import|export|const|let|var|type|interface|callback|promise|async|await)\b/i.test(text))
+        s += 1;
+    if (/\b(faster|slower|performance|optimize|efficient|bottleneck|latency|memory\s*leak|perf)\b/i.test(text))
+        s += 2;
+    if (/\b(review|analyze|explain|describe|tell me|show me|why|what|how)\b/i.test(text))
+        s -= 3;
+    // Penalize strongly when other categories dominate
+    if (scoreFileCreate(text) >= 5)
+        s = Math.max(0, s - 3);
+    if (scoreUiStyle(text) >= 4)
+        s = Math.max(0, s - 3);
+    if (scoreAsk(text) >= 3)
+        s = Math.max(0, s - 2);
+    if (scoreRefactor(text) >= 4)
+        s = Math.max(0, s - 3);
+    return Math.max(0, Math.min(10, s));
+}
 export function classifyTaskKind(userPrompt) {
     const text = userPrompt.trim().toLowerCase();
     if (!text || /^(hi|hey|hello|ok|thanks|help)\b/i.test(text))
         return "chat";
-    if (isFileCreatePrompt(text))
+    const scores = {
+        file_create: scoreFileCreate(text),
+        ui_style: scoreUiStyle(text),
+        ask: scoreAsk(text),
+        refactor: scoreRefactor(text),
+        code_patch: scoreCodePatch(text),
+    };
+    if (scores.file_create >= 5)
         return "file_create";
-    if (isUiStylePatchPrompt(text))
-        return "ui_style_patch";
-    if (isRefactorPrompt(text))
-        return "refactor";
-    if (isCodePatchPrompt(text))
-        return "code_patch";
-    if (isAskPrompt(text))
+    if (scores.ask >= 4)
         return "ask";
+    if (scores.refactor >= 4)
+        return "refactor";
+    if (scores.ui_style >= 4)
+        return "ui_style_patch";
+    if (scores.code_patch >= 2)
+        return "code_patch";
     return "unknown";
 }
+/** Exported for retriever – returns true when style signals are dominant enough to alter retrieval strategy. */
 export function isUiStylePatchPrompt(text) {
-    const changeWords = ["make", "change", "set", "turn", "update", "adjust", "style", "fix"];
-    const styleWords = [
-        "background", "color", "red", "blue", "green", "white", "black",
-        "theme", "css", "style", "font", "spacing", "margin", "padding",
-        "border", "rounded", "layout", "width", "height", "mobile",
-        "responsive", "website", "page", "chat website", "chat app",
-        "dark mode", "light mode", "sidebar", "topbar", "button",
-    ];
-    const hasChange = changeWords.some((w) => new RegExp("\\b" + w + "\\b", "i").test(text));
-    const hasStyle = styleWords.some((w) => new RegExp("\\b" + w + "\\b", "i").test(text));
-    return hasChange && hasStyle;
-}
-function isFileCreatePrompt(text) {
-    return (/\b(create|make|generate|new|add)\b.*\b(file|\.txt|\.md|\.json|\.css|\.html)\b/i.test(text) ||
-        /\b(create|make|generate|new)\b.*\b(using|with)\b.*\b(node|python|react|vue|express|flask|django|go|rust|java|ruby|php|typescript)\b/i.test(text)) && !isUiStylePatchPrompt(text);
-}
-function isRefactorPrompt(text) {
-    return /\b(refactor|rewrite|rename|move|extract|split|merge|clean\s*up|reorganize)\b/i.test(text);
-}
-function isCodePatchPrompt(text) {
-    return /\b(create|make|add|fix|change|edit|implement|write|delete|remove|rename|move|refactor|update|modify|replace|generate|build|improve)\b/i.test(text);
-}
-function isAskPrompt(text) {
-    return /\b(explain|why|what|how|where|when|show|review|analyze|diagnos|summarize|tell me|find|search|look|list)\b/i.test(text) ||
-        text.endsWith("?");
+    return scoreUiStyle(text) >= 4;
 }
