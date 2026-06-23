@@ -100,8 +100,8 @@ export function isUiStylePatchPrompt(text) {
     return hasChange && hasStyle;
 }
 function isFileCreatePrompt(text) {
-    return /\b(create|make|generate|new|add)\b.*\b(file|\.txt|\.md|\.json|\.css|\.html)\b/i.test(text) &&
-        !isUiStylePatchPrompt(text);
+    return (/\b(create|make|generate|new|add)\b.*\b(file|\.txt|\.md|\.json|\.css|\.html)\b/i.test(text) ||
+        /\b(create|make|generate|new)\b.*\b(using|with)\b.*\b(node|python|react|vue|express|flask|django|go|rust|java|ruby|php|typescript)\b/i.test(text)) && !isUiStylePatchPrompt(text);
 }
 function isRefactorPrompt(text) {
     return /\b(refactor|rewrite|rename|move|extract|split|merge|clean\s*up|reorganize)\b/i.test(text);
