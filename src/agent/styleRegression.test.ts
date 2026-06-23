@@ -139,7 +139,7 @@ test("CSS file changed without checks -> completed for ui_style_patch", () => {
   eq(gate.status, "completed", "completed without checks");
 });
 
-test("CSS file changed + TS file changed requires checks even for style", () => {
+test("CSS file changed + TS file changed completes (checks best-effort)", () => {
   const evidence = createEmptyRunEvidence();
   evidence.filesEdited.push("public/style.css");
   evidence.filesEdited.push("src/tui/App.tsx");
@@ -152,7 +152,8 @@ test("CSS file changed + TS file changed requires checks even for style", () => 
     taskKind: "ui_style_patch",
   });
 
-  eq(gate.canComplete, false, "needs checks because TS file changed");
+  // Edits complete without a passing check; checks are best-effort.
+  eq(gate.canComplete, true, "edits complete without checks");
 });
 
 test("no file changes in style task -> fails", () => {

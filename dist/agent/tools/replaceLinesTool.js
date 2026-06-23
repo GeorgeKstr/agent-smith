@@ -47,7 +47,15 @@ const replaceLinesTool = {
         if (rel.startsWith("..") || path.isAbsolute(rel)) {
             return { ok: false, summary: `Path outside project root: ${relPath}` };
         }
-        // Read-before-edit enforcement
+        // Read-before-edit enforcement (skip for non-existent files — those need create_file)
+        const fileExists = await fs.access(fullPath).then(() => true).catch(() => false);
+        if (!fileExists) {
+            return {
+                ok: false,
+                summary: `File does not exist: ${relPath}. Use create_file to create it.`,
+                nextActions: [`create_file path="${relPath}" content="..."`],
+            };
+        }
         const wasRead = ctx.memory?.filesRead?.some((f) => f.path === rel || rel.endsWith("/" + f.path) || f.path.endsWith("/" + rel));
         if (!wasRead) {
             return {

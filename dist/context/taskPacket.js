@@ -74,10 +74,10 @@ export function classifyTaskKind(userPrompt) {
     const text = userPrompt.trim().toLowerCase();
     if (!text || /^(hi|hey|hello|ok|thanks|help)\b/i.test(text))
         return "chat";
-    if (isUiStylePatchPrompt(text))
-        return "ui_style_patch";
     if (isFileCreatePrompt(text))
         return "file_create";
+    if (isUiStylePatchPrompt(text))
+        return "ui_style_patch";
     if (isRefactorPrompt(text))
         return "refactor";
     if (isCodePatchPrompt(text))
@@ -95,8 +95,8 @@ export function isUiStylePatchPrompt(text) {
         "responsive", "website", "page", "chat website", "chat app",
         "dark mode", "light mode", "sidebar", "topbar", "button",
     ];
-    const hasChange = changeWords.some((w) => text.includes(w));
-    const hasStyle = styleWords.some((w) => text.includes(w));
+    const hasChange = changeWords.some((w) => new RegExp("\\b" + w + "\\b", "i").test(text));
+    const hasStyle = styleWords.some((w) => new RegExp("\\b" + w + "\\b", "i").test(text));
     return hasChange && hasStyle;
 }
 function isFileCreatePrompt(text) {

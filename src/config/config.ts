@@ -96,6 +96,17 @@ const configSchema = z.object({
     maxSearchesBeforeEditPressure: z.number().int().min(1).max(20),
     allowReadAfterEditPressure: z.boolean()
   }).optional(),
+  approval: z.object({
+    policy: z.enum(["never", "on_write", "on_destructive", "always"]),
+    confirmDangerous: z.boolean(),
+    maxAutoApplyFiles: z.number()
+  }).optional(),
+  phaseModels: z.record(z.string(), z.string()).optional(),
+  sandbox: z.object({
+    createCheckpoints: z.boolean(),
+    autoRollback: z.boolean(),
+    warnDirtyFiles: z.boolean()
+  }).optional(),
   organizer: z.object({
     enabled: z.boolean(),
     url: z.string(),

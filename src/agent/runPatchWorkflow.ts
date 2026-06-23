@@ -42,7 +42,8 @@ import { suggestBackgroundPatch, extractColorFromPrompt, renderStyleSuggestionAs
 const EXPLORE_MAX_STEPS = 6;
 const EXPLORE_MAX_STEPS_STYLE = 3;
 const PLAN_MAX_STEPS = 4;
-const APPLY_MAX_STEPS = 5;
+const APPLY_MAX_STEPS = 12;
+const APPLY_MAX_STEPS_GREENFIELD = 16;
 const VERIFY_MAX_STEPS = 4;
 
 const EXPLORE_MAX_SEARCHES = 3;
@@ -115,6 +116,16 @@ export async function runPatchWorkflow(input: {
     packet, config, root, db, events, projectRules, fileCards, taskId,
     runtimeIntent, tools, mode: "patch" as const,
   };
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Greenfield shortcut: for file_create tasks (no existing files to
+  // explore or plan), skip directly to apply_patch with more steps and
+  // a create-file-oriented prompt. This avoids wasting model turns on
+  // searching/reading files that don't exist yet.
+  // ═══════════════════════════════════════════════════════════════════
+  if (input.taskKind === "file_create") {
+    return runGreenfieldApply(input, sharedInputBase, changedFiles, checksRun, metrics, overallEvidence, memory, providers, leads);
+  }
 
   // ═══════════════════════════════════════════════════════════════════
   // Phase 1: EXPLORE
@@ -529,6 +540,130 @@ export async function runPatchWorkflow(input: {
     workflowPhase: "finalize",
     exploration,
     patchPlan,
+    applicationResult,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Greenfield: skip explore+plan, go straight to apply+verify.
+// Used for file_create tasks where there are no existing files to inspect.
+// ═══════════════════════════════════════════════════════════════════
+async function runGreenfieldApply(
+  input: Parameters<typeof runPatchWorkflow>[0],
+  sharedInputBase: Record<string, unknown>,
+  changedFiles: string[],
+  checksRun: string[],
+  metrics: AgentRunMetrics,
+  overallEvidence: RunEvidence,
+  memory: WorkingMemory,
+  providers: Map<string, Provider>,
+  leads: RetrievalLead[],
+): Promise<PatchWorkflowResult> {
+  const { packet, config, root, db, events, projectRules, taskId } = input;
+  const applyTools = ["create_file", "edit", "replace_lines", "check", "final"];
+
+  function resolvePhaseModel(phase: AgentWorkflowPhase): { provider: Provider; model: string } {
+    const phaseModel = input.phaseModels?.[phase];
+    if (phaseModel) {
+      const resolved = resolveModelProvider(phaseModel, config.defaultProvider, providers);
+      if (resolved) return resolved;
+    }
+    return { provider: input.provider, model: input.model };
+  }
+
+  events?.emit("task:phase", "apply_patch");
+
+  const greenfieldGoal = `Create the new files described in the task. Use create_file for each new file.\n\n${packet.rawUserPrompt || packet.goal}`;
+  const greenfieldExtraRules = [
+    "This is a greenfield task — the files do not exist yet.",
+    "Use create_file to create each file. Do NOT use edit on non-existent files.",
+    "Do NOT use ask_user. You have all the information needed. Make reasonable decisions.",
+    "Create ALL files described in the task, not just the first one.",
+    "Do NOT read files you just created — reading wastes steps. Finish creating all files first.",
+    "After creating all files, run a check, then output <final>.",
+  ].join("\n");
+
+  const applyModel = resolvePhaseModel("apply_patch");
+  const applyResult = await runFocusedAgentLoop({
+    ...(sharedInputBase as any),
+    provider: applyModel.provider,
+    model: applyModel.model,
+    leads,
+    memory,
+    phase: "apply_patch",
+    allowedToolsOverride: applyTools,
+    phaseGoal: greenfieldGoal,
+    phaseExitCriteria: [
+      "All requested files created",
+      "Check run if applicable",
+    ],
+    maxSteps: APPLY_MAX_STEPS_GREENFIELD,
+    skipEditPressure: true,
+    skipPatchPhasePolicy: true,
+    phaseOnToolCall(toolName) {
+      events?.emit("task:phase", `apply:${toolName}`);
+    },
+    projectRules: [projectRules ?? "", greenfieldExtraRules].filter(Boolean).join("\n\n"),
+  });
+
+  mergeMetricsInto(metrics, applyResult.metrics);
+  mergeEvidenceInto(overallEvidence, applyResult.evidence);
+  memory = applyResult.memory;
+
+  const applicationResult = buildApplicationResult({
+    filesEdited: overallEvidence.filesEdited,
+    filesCreated: overallEvidence.filesCreated,
+    toolResults: overallEvidence.toolResults,
+  });
+
+  for (const f of applicationResult.filesEdited) changedFiles.push(f);
+  for (const f of applicationResult.filesCreated) changedFiles.push(f);
+
+  // Verify if files were created
+  if (applicationResult.changed) {
+    events?.emit("task:phase", "verify");
+    const verifyModel = resolvePhaseModel("verify");
+    const verifyMemory = createWorkingMemory({ ...packet, goal: "Run checks on created files." });
+    const verifyResult = await runFocusedAgentLoop({
+      ...(sharedInputBase as any),
+      provider: verifyModel.provider, model: verifyModel.model,
+      leads: [], memory: verifyMemory,
+      phase: "verify",
+      allowedToolsOverride: toolsForPhase("verify"),
+      phaseGoal: "Run checks on created files.",
+      phaseExitCriteria: ["At most 2 check attempts"],
+      maxSteps: VERIFY_MAX_STEPS,
+      skipEditPressure: true, skipPatchPhasePolicy: true,
+      phaseOnToolCall(toolName) { events?.emit("task:phase", `verify:${toolName}`); },
+    });
+    mergeMetricsInto(metrics, verifyResult.metrics);
+    mergeEvidenceInto(overallEvidence, verifyResult.evidence);
+    for (const c of overallEvidence.checksRun) checksRun.push(c.name || "check");
+  }
+
+  events?.emit("task:phase", "finalize");
+  const uniqueChanged = [...new Set(changedFiles)];
+  const uniqueChecks = [...new Set(checksRun)];
+  const finalText = [
+    `Changed files: ${uniqueChanged.length > 0 ? uniqueChanged.join(", ") : "none"}`,
+    `Checks run: ${uniqueChecks.length > 0 ? uniqueChecks.join(", ") : "none"}`,
+    applicationResult.failedEdits.length > 0
+      ? `Failed edits: ${applicationResult.failedEdits.map((e) => e.path).join(", ")}`
+      : "",
+  ].filter(Boolean).join("\n");
+
+  return {
+    ok: applicationResult.changed,
+    status: applicationResult.changed ? "completed" as const : "failed" as const,
+    finalText,
+    changedFiles: uniqueChanged,
+    checksRun: uniqueChecks,
+    metrics,
+    evidence: overallEvidence,
+    memory,
+    workflowPhase: "finalize",
+    exploration: emptyExplorationResult(),
+    patchPlan: emptyPatchPlan(packet.goal),
     applicationResult,
   };
 }

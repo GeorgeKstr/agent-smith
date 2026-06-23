@@ -24,6 +24,7 @@ export type AgentRunMetrics = {
   proposeEditCalls: number;
   proposeEditAccepted: number;
   proposeEditRejected: number;
+  providerRetries: number;
 };
 
 export function createEmptyRunMetrics(): AgentRunMetrics {
@@ -53,5 +54,6 @@ export function createEmptyRunMetrics(): AgentRunMetrics {
     proposeEditCalls: 0,
     proposeEditAccepted: 0,
     proposeEditRejected: 0,
+    providerRetries: 0,
   };
 }

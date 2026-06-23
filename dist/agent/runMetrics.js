@@ -25,5 +25,6 @@ export function createEmptyRunMetrics() {
         proposeEditCalls: 0,
         proposeEditAccepted: 0,
         proposeEditRejected: 0,
+        providerRetries: 0,
     };
 }

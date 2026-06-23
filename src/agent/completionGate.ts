@@ -95,6 +95,21 @@ export function canCompleteRun(input: {
     return { canComplete: true, status: "completed", warnings: [], reason: "Files were changed and at least one check passed." };
   }
 
+  // Edits were made but no check passed. Checks are best-effort: many projects
+  // have none configured, and local models often skip the check tool. Treat a
+  // real file change as a completed run (with a warning) rather than failing.
+  if (changed) {
+    const warnings: string[] = [];
+    if (evidence.checksRun.length === 0) warnings.push("Files were changed but no checks were run.");
+    else warnings.push("Files were changed but no check passed — please verify manually.");
+    return {
+      canComplete: true,
+      status: "completed",
+      warnings,
+      reason: "Files were changed. Checks are best-effort and not required for completion.",
+    };
+  }
+
   const warnings: string[] = [];
   if (metrics.toolCallsRequested === 0) warnings.push("No tools were called.");
   if (!changed) warnings.push("No files were changed.");

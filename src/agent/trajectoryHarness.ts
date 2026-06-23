@@ -154,10 +154,11 @@ export function runParserTests(): void {
     eq(result.kind, "invalid", "kind");
   });
 
-  test("parse multiple blocks -> invalid", () => {
+  test("parse multiple blocks -> first tool_call (multi-call supported)", () => {
     const result = parseLocalTextAction(
       "<tool_call>{\"tool\":\"a\",\"args\":{}}</tool_call><tool_call>{\"tool\":\"b\",\"args\":{}}</tool_call>"
     );
-    eq(result.kind, "invalid", "kind");
+    eq(result.kind, "tool_call", "kind");
+    if (result.kind === "tool_call") eq(result.tool, "a", "first tool");
   });
 }

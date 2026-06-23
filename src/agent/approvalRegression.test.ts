@@ -225,8 +225,9 @@ test("approved and applied operations allow completion", () => {
     evidence,
   });
 
-  // No checks run, so not yet complete
-  eq(gate.canComplete, false, "needs checks");
+  // Checks are best-effort: a real file edit completes even without a check run.
+  eq(gate.canComplete, true, "edits complete without checks");
+  eq(gate.status, "completed", "completed");
 });
 
 // ═══════════════════════════════════════════════════════════════════

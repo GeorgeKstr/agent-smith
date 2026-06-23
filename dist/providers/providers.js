@@ -110,7 +110,29 @@ class OpenAIProvider {
                 return { ok: false, text: "", error: `OpenAI ${response.status}: ${errText}` };
             }
             const data = (await response.json());
-            const text = data.choices?.[0]?.message?.content ?? "";
+            const msg = data.choices?.[0]?.message;
+            const text = msg?.content ?? "";
+            const finishReason = data.choices?.[0]?.finish_reason;
+            // Reasoning models (e.g. deepseek-r1) put chain-of-thought in
+            // reasoning_content and the actual answer in content. If content is
+            // empty but reasoning_content exists, the model exhausted its token
+            // budget on thinking. Retry with 3x max_tokens so it has room for
+            // the actual answer. Do NOT feed raw thinking into the parser.
+            if (!text && msg?.reasoning_content && finishReason === "length") {
+                const retryBody = { ...body, max_tokens: Math.min((options?.maxTokens ?? 2048) * 3, 16384) };
+                const retryRes = await fetch(url, {
+                    method: "POST", headers,
+                    body: JSON.stringify(retryBody),
+                    signal: options?.signal,
+                });
+                if (retryRes.ok) {
+                    const retryData = (await retryRes.json());
+                    const retryText = retryData.choices?.[0]?.message?.content ?? "";
+                    if (retryText) {
+                        return { ok: true, text: retryText, tokenCount: retryData.usage?.total_tokens };
+                    }
+                }
+            }
             return { ok: true, text, tokenCount: data.usage?.total_tokens };
         }
         catch (error) {

@@ -47,7 +47,7 @@ const createFileTool: AgentTool = {
       if (stat) {
         return {
           ok: false,
-          summary: `"${relPath}" already exists. Use edit to modify it.`,
+          summary: `${relPath}: already exists. Use edit to modify it.`,
           nextActions: ["Use edit with exact search/replace to modify the existing file."],
         };
       }

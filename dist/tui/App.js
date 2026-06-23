@@ -54,6 +54,25 @@ function resolveModelLocal(preferred, installed) {
         return sameFamily[0];
     return installed[0];
 }
+const PROVIDER_DEFAULT_BASE_URLS = {
+    ollama: "http://127.0.0.1:11434",
+    openai: "https://api.openai.com/v1",
+    anthropic: "https://api.anthropic.com",
+    "opencode-zen": "https://opencode.ai/zen/v1",
+    "opencode-zen-go": "https://opencode.ai/zen/v1",
+    openrouter: "https://openrouter.ai/api/v1",
+    google: "https://generativelanguage.googleapis.com/v1beta",
+    deepseek: "https://api.deepseek.com/v1",
+};
+function defaultBaseUrlFor(providerId, type) {
+    if (PROVIDER_DEFAULT_BASE_URLS[providerId])
+        return PROVIDER_DEFAULT_BASE_URLS[providerId];
+    if (type === "anthropic")
+        return "https://api.anthropic.com";
+    if (type === "ollama")
+        return "http://127.0.0.1:11434";
+    return "https://api.openai.com/v1";
+}
 async function loadUiState(root) {
     const statePath = path.join(root, UI_STATE_REL_PATH);
     try {
@@ -322,18 +341,32 @@ export function App({ root, config, db, events, indexer }) {
         return resolveProviderModelName(config, q, models);
     }, [config]);
     const finishProviderSetup = useCallback((id, type, model) => {
+        // Persist the chosen model so it survives restarts. Store it fully-qualified
+        // (providerId:model) so model resolution works regardless of the default
+        // provider. Also use it for the current session via modelOverride.
+        if (model) {
+            const qualified = model.includes(":") ? model : `${id}:${model}`;
+            config.models.patcher = qualified;
+            if (!config.models.summarizer || config.models.summarizer === config.models.patcher) {
+                config.models.summarizer = qualified;
+            }
+            setModelOverride(qualified);
+        }
+        if (!config.defaultProvider || config.defaultProvider === "") {
+            config.defaultProvider = id;
+        }
         void saveProviderConfig();
         void refreshModels();
         setupRef.current = null;
         appendOutput("");
         appendOutput(`✓ Provider "${id}" (${type}) configured.`);
         if (model)
-            appendOutput(`  Model: ${model}`);
+            appendOutput(`  Model: ${model} (saved as default patcher)`);
         if (id !== config.defaultProvider)
             appendOutput(`  Tip: /provider default ${id} to make it the default`);
         appendOutput(`  Tip: /model list to verify available models`);
         appendOutput("");
-    }, [saveProviderConfig, refreshModels, config.defaultProvider, appendOutput]);
+    }, [saveProviderConfig, refreshModels, config.defaultProvider, config.models, appendOutput]);
     const fetchAndShowModels = useCallback(async (providerId, providerType, _apiKey) => {
         let models = [];
         try {
@@ -805,7 +838,7 @@ export function App({ root, config, db, events, indexer }) {
                 const { providerType: type } = setupRef.current;
                 config.providers[setupRef.current.providerId] = {
                     type: type,
-                    baseUrl: type === "zen" ? "https://opencode.ai/zen/v1" : "",
+                    baseUrl: defaultBaseUrlFor(setupRef.current.providerId, type),
                     apiKey: text.startsWith("sk-") || text.length > 30 ? text : undefined,
                     apiKeyEnv: (text.startsWith("sk-") || text.length > 30) ? undefined : (text || undefined),
                 };
@@ -906,7 +939,7 @@ export function App({ root, config, db, events, indexer }) {
                     config.providers = {};
                 config.providers[providerId] = {
                     type: type === "zen" ? "openai" : type,
-                    baseUrl: providerId === "opencode-zen" || providerId === "opencode-zen-go" ? "https://opencode.ai/zen/v1" : "",
+                    baseUrl: defaultBaseUrlFor(providerId, type),
                     apiKey: isApiKey ? keyText : undefined,
                     apiKeyEnv: isApiKey ? undefined : (keyText || undefined),
                 };

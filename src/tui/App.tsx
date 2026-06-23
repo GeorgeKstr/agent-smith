@@ -95,6 +95,24 @@ function resolveModelLocal(preferred: string, installed: string[]): string {
   return installed[0]
 }
 
+const PROVIDER_DEFAULT_BASE_URLS: Record<string, string> = {
+  ollama: "http://127.0.0.1:11434",
+  openai: "https://api.openai.com/v1",
+  anthropic: "https://api.anthropic.com",
+  "opencode-zen": "https://opencode.ai/zen/v1",
+  "opencode-zen-go": "https://opencode.ai/zen/v1",
+  openrouter: "https://openrouter.ai/api/v1",
+  google: "https://generativelanguage.googleapis.com/v1beta",
+  deepseek: "https://api.deepseek.com/v1",
+}
+
+function defaultBaseUrlFor(providerId: string, type: string): string {
+  if (PROVIDER_DEFAULT_BASE_URLS[providerId]) return PROVIDER_DEFAULT_BASE_URLS[providerId]
+  if (type === "anthropic") return "https://api.anthropic.com"
+  if (type === "ollama") return "http://127.0.0.1:11434"
+  return "https://api.openai.com/v1"
+}
+
 async function loadUiState(root: string): Promise<PersistedUiState | null> {
   const statePath = path.join(root, UI_STATE_REL_PATH)
   try {
@@ -369,16 +387,30 @@ export function App({ root, config, db, events, indexer }: AppProps) {
   }, [config])
 
   const finishProviderSetup = useCallback((id: string, type: string, model: string) => {
+    // Persist the chosen model so it survives restarts. Store it fully-qualified
+    // (providerId:model) so model resolution works regardless of the default
+    // provider. Also use it for the current session via modelOverride.
+    if (model) {
+      const qualified = model.includes(":") ? model : `${id}:${model}`
+      config.models.patcher = qualified
+      if (!config.models.summarizer || config.models.summarizer === config.models.patcher) {
+        config.models.summarizer = qualified
+      }
+      setModelOverride(qualified)
+    }
+    if (!config.defaultProvider || config.defaultProvider === "") {
+      config.defaultProvider = id
+    }
     void saveProviderConfig()
     void refreshModels()
     setupRef.current = null
     appendOutput("")
     appendOutput(`✓ Provider "${id}" (${type}) configured.`)
-    if (model) appendOutput(`  Model: ${model}`)
+    if (model) appendOutput(`  Model: ${model} (saved as default patcher)`)
     if (id !== config.defaultProvider) appendOutput(`  Tip: /provider default ${id} to make it the default`)
     appendOutput(`  Tip: /model list to verify available models`)
     appendOutput("")
-  }, [saveProviderConfig, refreshModels, config.defaultProvider, appendOutput])
+  }, [saveProviderConfig, refreshModels, config.defaultProvider, config.models, appendOutput])
 
   const fetchAndShowModels = useCallback(async (providerId: string, providerType: string, _apiKey: string) => {
     let models: string[] = []
@@ -864,7 +896,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         const { providerType: type } = setupRef.current
         config.providers[setupRef.current.providerId] = {
           type: type as "openai" | "anthropic" | "ollama",
-          baseUrl: type === "zen" ? "https://opencode.ai/zen/v1" : "",
+          baseUrl: defaultBaseUrlFor(setupRef.current.providerId, type),
           apiKey: text.startsWith("sk-") || text.length > 30 ? text : undefined,
           apiKeyEnv: (text.startsWith("sk-") || text.length > 30) ? undefined : (text || undefined),
         }
@@ -930,7 +962,7 @@ export function App({ root, config, db, events, indexer }: AppProps) {
         if (!config.providers) (config as any).providers = {}
         config.providers[providerId] = {
           type: type === "zen" ? "openai" : type as "openai" | "anthropic" | "ollama",
-          baseUrl: providerId === "opencode-zen" || providerId === "opencode-zen-go" ? "https://opencode.ai/zen/v1" : "",
+          baseUrl: defaultBaseUrlFor(providerId, type),
           apiKey: isApiKey ? keyText : undefined,
           apiKeyEnv: isApiKey ? undefined : (keyText || undefined),
         }

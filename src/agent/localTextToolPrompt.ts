@@ -46,8 +46,9 @@ Your answer here.
 
 Rules:
 - Always put tool arguments inside the "args" object: {"tool":"x","args":{...}}
-- Output exactly one block: <tool_call> or <final>.
-- Do not write prose outside the block.
+- Output exactly one block: <tool_call> blocks per turn, OR a single <final> block.
+- You may emit several tool calls in one turn (they run in order).
+- Avoid prose outside blocks. Markdown code fences around a block are tolerated.
 - If done, output <final>.
 - Never use write tools (create_file, edit, replace_lines).`;
   }
@@ -139,8 +140,9 @@ Your answer here.
 
 Rules:
 - Always put tool arguments inside the "args" object: {"tool":"x","args":{...}}
-- Output exactly one block: <tool_call> or <final>.
-- Do not write prose outside the block.
+- Output exactly one block: <tool_call> - Output one or more tool_call blocks per turn, OR a single <final> block.
+- You may emit several tool calls in one turn (they run in order).
+- Avoid prose outside blocks. Markdown code fences around a block are tolerated.
 - Read relevant lines before editing.
 - Use the smallest useful action.
 - If done, output <final>.
