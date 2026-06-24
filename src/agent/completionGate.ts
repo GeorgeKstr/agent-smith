@@ -119,39 +119,24 @@ export function buildNoEvidenceMessage(input: {
   modelOutput?: string;
   gateResult: CompletionGateResult;
 }): string {
-  const lines = [input.gateResult.reason];
+  const noEdits = input.evidence.filesEdited.length === 0 && input.evidence.filesCreated.length === 0;
+
+  const lines: string[] = [];
+  if (noEdits) {
+    lines.push("You have NOT created or edited any files yet. You MUST use create_file or edit to make changes before using <final>.");
+    lines.push("Example: <tool_call>{\"tool\":\"create_file\",\"args\":{\"path\":\"src/example.ts\",\"content\":\"...\"}}</tool_call>");
+  } else {
+    lines.push(input.gateResult.reason);
+  }
+
   if (input.modelOutput) {
-    const clipped = input.modelOutput.length > 300 ? input.modelOutput.slice(0, 300) + "..." : input.modelOutput;
-    lines.push(`\nModel output: ${clipped}`);
-  }
-  lines.push(`\nEvidence:`);
-  lines.push(`- Model turns: ${input.metrics.modelTurns}`);
-  lines.push(`- Tool calls: ${input.metrics.toolCallsRequested} (${input.metrics.toolCallsSucceeded} ok, ${input.metrics.toolCallsFailed} failed)`);
-  lines.push(`- Searches: ${input.metrics.searches}, Reads: ${input.metrics.reads}, Edits: ${input.metrics.edits}, Checks: ${input.metrics.checks}`);
-  if (input.metrics.progressPolicyRejections > 0) {
-    lines.push(`- Progress policy rejections: ${input.metrics.progressPolicyRejections}`);
-  }
-  if (input.metrics.tagNormalizations > 0) {
-    lines.push(`- Tag normalizations: ${input.metrics.tagNormalizations}`);
-  }
-  lines.push(`- Files read: ${input.evidence.filesRead.length}, Files edited: ${input.evidence.filesEdited.length}`);
-  lines.push(`- Checks run: ${input.evidence.checksRun.length}`);
-
-  // Surface recent tool failures
-  const recentFailures = input.evidence.toolResults
-    .filter((r) => !r.ok)
-    .slice(-4);
-  if (recentFailures.length > 0) {
-    lines.push(`\nRecent tool failures:`);
-    for (const f of recentFailures) {
-      lines.push(`- ${f.tool}: ${f.summary}`);
-    }
+    const clipped = input.modelOutput.length > 200 ? input.modelOutput.slice(0, 200) + "..." : input.modelOutput;
+    lines.push(`\nYour last output (rejected): ${clipped}`);
   }
 
-  // Surface what was read
-  if (input.evidence.filesRead.length > 0) {
+  if (noEdits && input.evidence.filesRead.length > 0) {
     const unique = [...new Set(input.evidence.filesRead)].slice(-4);
-    lines.push(`\nFiles inspected: ${unique.join(", ")}`);
+    lines.push(`\nYou already read: ${unique.join(", ")}. Now edit one of these files or create a new one.`);
   }
 
   if (input.gateResult.warnings.length > 0) {

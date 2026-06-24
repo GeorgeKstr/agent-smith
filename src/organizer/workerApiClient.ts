@@ -38,7 +38,7 @@ export function createWorkerApiClient(args: {
 }): WorkerApiClient {
   const baseUrl = args.baseUrl.replace(/\/+$/, "");
   const token = args.token;
-  const timeoutMs = args.timeoutMs ?? 15000;
+  const timeoutMs = args.timeoutMs ?? 300_000;
 
   async function post(path: string, body?: unknown): Promise<{ ok: boolean; data?: unknown; error?: string }> {
     const controller = new AbortController();

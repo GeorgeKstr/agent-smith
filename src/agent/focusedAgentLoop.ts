@@ -108,6 +108,12 @@ export async function runFocusedAgentLoop(input: {
   signal?: AbortSignal;
 }): Promise<FocusedAgentResult> {
   const { packet, leads, tools, provider, model, mode, runtimeIntent, config, root, db, events, projectRules, taskId, signal: userSignal } = input;
+
+  // Use native function calling for OpenAI/Anthropic providers (cloud models)
+  if (provider.type === "openai" || provider.type === "anthropic") {
+    return runNativeLoop(input);
+  }
+
   const allowedTools = mode === "ask" ? ASK_TOOLS : PATCH_TOOLS;
   const toolDefs = tools.list();
   const budget = budgetForTokenLimit(config.context.maxPromptTokens);
@@ -121,6 +127,7 @@ export async function runFocusedAgentLoop(input: {
   const checksRun: string[] = [];
   let finalText = "";
   let consecutiveInvalid = 0;
+  let consecutiveFinalRejected = 0;
   let latestToolResultText = "";
   const metrics = createEmptyRunMetrics();
   const evidence = createEmptyRunEvidence();
@@ -225,8 +232,8 @@ export async function runFocusedAgentLoop(input: {
 
           latestToolResultText = renderLocalTextToolResult({
             tool: "protocol", ok: false,
-            summary: "Plain answer is not enough in patch mode.",
-            nextActions: ["Use read/edit/create_file/check, then output <final>."],
+            summary: "REJECTED: plain text. Output <tool_call> or <final>.",
+            nextActions: ['Example: <tool_call>{"tool":"bash","args":{"command":"ls"}}</tool_call>'],
           });
         }
         continue;
@@ -236,12 +243,29 @@ export async function runFocusedAgentLoop(input: {
       if (action.kind === "final") {
         metrics.finalCalls++;
         finalText = action.content;
+        if (step === 0 && mode === "patch") {
+          latestToolResultText = renderLocalTextToolResult({
+            tool: "protocol", ok: false,
+            summary: "REJECTED: <final> on first turn. You MUST output <tool_call> first.",
+            nextActions: ['Example: <tool_call>{"tool":"create_file","args":{"path":"src/file.ts","content":"..."}}</tool_call>'],
+          });
+          actedThisTurn = true;
+          continue;
+        }
         const gate = canCompleteRun({ mode, finalText, metrics, evidence, allowNoEditCompletion, allowInspectedNoEditFinal });
         if (gate.canComplete) { actedThisTurn = true; turnEnded = true; break; }
+        consecutiveFinalRejected++;
+        const noEdits = evidence.filesEdited.length === 0 && evidence.filesCreated.length === 0;
+        if (consecutiveFinalRejected >= 3 && noEdits) {
+          finalText = "Task not started: output 3 <final> blocks without creating any files.";
+          return buildFinal(memory, finalText, "no_verified_completion", changedFiles, checksRun, metrics, evidence, "failed");
+        }
         latestToolResultText = renderLocalTextToolResult({
           tool: "protocol", ok: false,
           summary: buildNoEvidenceMessage({ mode, metrics, evidence, modelOutput: action.content, gateResult: gate }),
-          nextActions: gate.warnings.length > 0 ? gate.warnings : ["Make the required edit, run a check, then output <final>."],
+          nextActions: noEdits
+            ? ["Use create_file or edit to make the required change, then output <final>."]
+            : (gate.warnings.length > 0 ? gate.warnings : ["Run a check (npm test, typecheck), then output <final>."]),
         });
         actedThisTurn = true;
         continue;
@@ -587,6 +611,207 @@ function buildFinal(
     changedFiles: [...new Set(files)],
     checksRun: [...new Set(checks)],
     metrics, evidence, stopReason,
+    memory,
+  };
+}
+
+async function runNativeLoop(input: {
+  packet: TaskPacket;
+  memory: WorkingMemory;
+  tools: ToolRegistry;
+  provider: Provider;
+  model: string;
+  mode: "ask" | "patch";
+  runtimeIntent?: RuntimeIntent;
+  config: SmithConfig;
+  root: string;
+  db: SmithDatabase;
+  events?: NodeJS.EventEmitter;
+  taskId?: string;
+  timeoutMs?: number;
+  maxSteps?: number;
+  signal?: AbortSignal;
+}): Promise<FocusedAgentResult> {
+  const { packet, tools, provider, model, mode, runtimeIntent, config, root, db, events, taskId, signal: userSignal } = input;
+  const allowedTools = mode === "ask" ? ASK_TOOLS : PATCH_TOOLS;
+  const toolDefs = tools.list().filter((t) => allowedTools.includes(t.name));
+  const deadline = Date.now() + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const maxSteps = input.maxSteps ?? MAX_STEPS;
+
+  const budget = budgetForTokenLimit(config.context.maxPromptTokens);
+  const maxOut = Math.max(config.ollama.numPredict, budget.outputReserveTokens, 8192);
+
+  let memory = input.memory ?? createWorkingMemory(packet);
+  const changedFiles: string[] = [];
+  const checksRun: string[] = [];
+  const metrics = createEmptyRunMetrics();
+  const evidence = createEmptyRunEvidence();
+  let finalText = "";
+
+  const nativeTools = toolDefs.map((t) => ({
+    type: "function" as const,
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters as Record<string, unknown>,
+    },
+  }));
+
+  const isAskMode = mode === "ask";
+  const systemPrompt = isAskMode
+    ? `You are a review assistant. Evaluate based on the prompt content only. Do NOT search files.\nOutput limit: ${maxOut} tokens. Be concise — fit your JSON decision within this limit.`
+    : `You are a coding agent. Write only what the task requires.\nOutput limit: ${maxOut} tokens per turn — keep file contents under this limit.\nRead before editing. Create new files with create_file. Use bash for shell commands.\nWhen complete, reply without calling a tool.`;
+
+  const taskText = isAskMode
+    ? packet.goal
+    : `Task: ${packet.goal}\n\nSuccess criteria: ${packet.successCriteria.join(" | ")}\nNon-goals: ${packet.nonGoals.join("; ")}`;
+
+  const messages: Array<Record<string, unknown>> = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: taskText },
+  ];
+
+  events?.emit("task:phase", "tooling");
+
+  for (let step = 0; step < maxSteps; step++) {
+    if (userSignal?.aborted) {
+      return buildFinal(memory, "Cancelled by user.", "blocked_by_policy", changedFiles, checksRun, metrics, evidence);
+    }
+    if (Date.now() > deadline) {
+      return buildFinal(memory, finalText, "max_steps", changedFiles, checksRun, metrics, evidence);
+    }
+
+    metrics.modelTurns++;
+    events?.emit("task:phase", "generating");
+
+    const response = await provider.chat(model, messages, nativeTools, {
+      temperature: 0,
+      maxTokens: maxOut,
+      signal: userSignal,
+    });
+
+    if (!response.ok) {
+      finalText = response.error || "Provider call failed";
+      return buildFinal(memory, finalText, "provider_error", changedFiles, checksRun, metrics, evidence);
+    }
+
+    const newMsgs = response.messages;
+    if (newMsgs.length === 0) continue;
+
+    const lastMsg = newMsgs[newMsgs.length - 1];
+    messages.push(...(newMsgs as Array<Record<string, unknown>>));
+
+    const fc = lastMsg.function_call as { name?: string; arguments?: string } | undefined;
+
+    if (fc?.name) {
+      // ── Tool call ──
+      const callId = "call_" + step + "_" + fc.name;
+      let args: Record<string, unknown> = {};
+      try { args = JSON.parse(fc.arguments ?? "{}"); } catch { /* keep empty args */ }
+
+      const toolName = fc.name;
+      metrics.toolCallsRequested++;
+      events?.emit("task:phase", `tool:${toolName}`);
+
+      const toolDef = toolDefs.find((t) => t.name === toolName);
+      if (!toolDef) {
+        metrics.toolCallsFailed++;
+        messages.push({ role: "tool", tool_call_id: callId, content: `Unknown tool: ${toolName}` });
+        continue;
+      }
+
+      if (runtimeIntent && runtimeIntent !== "patch" && isWriteTool(toolName)) {
+        metrics.toolCallsFailed++;
+        messages.push({ role: "tool", tool_call_id: callId, content: `Not allowed in ${runtimeIntent} mode.` });
+        continue;
+      }
+
+      let toolResult: ToolResult;
+      try {
+        toolResult = await toolDef.handler(args, { root, db, config, events, memory, taskId });
+      } catch (err) {
+        toolResult = { ok: false, summary: `Error: ${err instanceof Error ? err.message : String(err)}` };
+      }
+
+      if (toolResult.ok) metrics.toolCallsSucceeded++;
+      else metrics.toolCallsFailed++;
+
+      // Track metrics
+      if (toolName === "read") {
+        metrics.reads++;
+        if (toolResult.ok) {
+          const meta = toolResult.metadata as Record<string, unknown> | undefined;
+          if (meta?.path) evidence.filesRead.push(String(meta.path));
+        }
+      }
+      if (toolName === "search") metrics.searches++;
+      if (toolName === "edit" || toolName === "replace_lines") {
+        metrics.edits++;
+        if (toolResult.ok) {
+          const meta = toolResult.metadata as Record<string, unknown> | undefined;
+          if (meta?.path) {
+            evidence.filesEdited.push(String(meta.path));
+            changedFiles.push(String(meta.path));
+          }
+        }
+      }
+      if (toolName === "create_file" && toolResult.ok) {
+        const meta = toolResult.metadata as Record<string, unknown> | undefined;
+        if (meta?.path) {
+          evidence.filesCreated.push(String(meta.path));
+          changedFiles.push(String(meta.path));
+        }
+      }
+      if (toolName === "check") {
+        evidence.checksRun.push({ name: toolName, ok: toolResult.ok, summary: toolResult.summary });
+        checksRun.push(toolName);
+        metrics.checks++;
+      }
+      if (toolName === "bash") metrics.bashCalls++;
+
+      // Overwrite the last assistant message with proper id for tool_call_id matching
+      messages.pop(); // remove raw function_call response
+      messages.push({
+        role: "assistant",
+        content: null,
+        function_call: { name: toolName, arguments: fc.arguments ?? "{}", id: callId },
+      });
+      messages.push({
+        role: "tool",
+        tool_call_id: callId,
+        content: toolResult.content ?? toolResult.summary,
+      });
+
+      memory = await compactToolResult({ memory, toolName, toolArgs: args, rawResult: toolResult });
+    } else {
+      // ── No tool call → text response ──
+      finalText = (lastMsg.content as string) || "";
+      const noEdits = evidence.filesEdited.length === 0 && evidence.filesCreated.length === 0;
+
+      if (mode === "ask" && finalText.length > 0) break;
+
+      const allowNoEdit = isNoEditTask({ mode, taskGoal: packet.goal, successCriteria: packet.successCriteria, nonGoals: packet.nonGoals });
+      const gate = canCompleteRun({ mode, finalText, metrics, evidence, allowNoEditCompletion: allowNoEdit, allowInspectedNoEditFinal: allowNoEdit });
+      if (gate.canComplete) break;
+
+      messages.push({
+        role: "user",
+        content: noEdits
+          ? 'You have not created or edited any files. Use create_file or edit to make changes, then reply when done.'
+          : 'Continue if more changes are needed, or reply when done.',
+      });
+    }
+  }
+
+  const changed = evidence.filesEdited.length > 0 || evidence.filesCreated.length > 0;
+  return {
+    ok: changed || finalText.length > 0,
+    status: changed ? "completed" : (finalText.length > 0 ? "partial" : "failed"),
+    finalText: finalText || "Task completed without output.",
+    changedFiles: [...new Set(changedFiles)],
+    checksRun: [...new Set(checksRun)],
+    metrics, evidence,
+    stopReason: changed ? "final_block" : (finalText ? "plain_text" : "no_verified_completion"),
     memory,
   };
 }

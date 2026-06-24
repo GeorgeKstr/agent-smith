@@ -254,6 +254,7 @@ export async function startApiServer(args: {
         const body = await readJson(req) as Record<string, unknown> | null;
         const apply = body?.apply === true;
         const dryRun = body?.dryRun === true;
+        const model = typeof body?.model === "string" ? body.model : undefined;
         const task = getWorkItem(db, taskId);
         if (!task) { sendJson(res, 404, { ok: false, error: "Task not found" }); return; }
         let prompt = task.title;
@@ -264,7 +265,7 @@ export async function startApiServer(args: {
           prompt += "\n\nTask plan:\n" + steps.map((s) => `${chars[s.status] ?? "[?]"} ${s.title}`).join("\n");
         }
         updateWorkItemStatus(db, taskId, "in_progress");
-        const result = await runtime.dispatch({ kind: "patch", prompt, taskId, apply, dryRun });
+        const result = await runtime.dispatch({ kind: "patch", prompt, taskId, apply, dryRun, model });
         if (result.ok) {
           const data = result.data as Record<string, unknown> | undefined;
           if (apply) updateWorkItemStatus(db, taskId, "done");

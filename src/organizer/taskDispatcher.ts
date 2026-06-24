@@ -69,8 +69,8 @@ async function dispatchIteration(args: {
   updateOrganizerTaskIteration(db, iteration.id, { workerTaskId: remoteId });
   recordOrganizerTaskEvent(db, { taskId, agentId: agent.id, eventType: "worker_task_created", message: `Created remote task ${remoteId}` });
 
-  // Patch
-  const patchRes = await client.patchTask(remoteId, { apply: false, model: task.implementModel ?? undefined });
+  // Patch — agent always writes to disk; review inspects post-hoc diff
+  const patchRes = await client.patchTask(remoteId, { apply: true, model: task.implementModel ?? undefined });
   const implModel = (patchRes.result?.data as Record<string, unknown> | undefined)?.changeSetId as string | undefined;
   const changeSetId = implModel ?? (
     typeof patchRes.result?.message === "string"
@@ -108,6 +108,13 @@ async function dispatchIteration(args: {
     diffPreview = compactPreview(patchRes.result.diff);
   }
 
+  if (!diffPreview) {
+    console.error("[dispatch] No diffPreview! changeSetId=%s hasDiff=%s resultFiles=%s",
+      changeSetId || "null",
+      patchRes.result?.diff ? "yes" : "no",
+      JSON.stringify(typeof patchRes.result));
+  }
+
   updateOrganizerTaskIteration(db, iteration.id, {
     resultJson: JSON.stringify(patchRes.result),
     workerChangeSetId: changeSetId ?? null,
@@ -125,20 +132,21 @@ async function dispatchIteration(args: {
     recordOrganizerTaskEvent(db, { taskId, agentId: agent.id, eventType: "dispatch_failed", message: `Remote patch failed: ${patchRes.error}` });
   }
 
-  // No review model
-  if (!task.reviewModel) {
-    if (task.autoApprove) {
-      updateOrganizerTask(db, taskId, { status: "auto_approved" });
-      updateOrganizerTaskIteration(db, iteration.id, { status: "approved" });
-      recordOrganizerTaskEvent(db, { taskId, agentId: agent.id, eventType: "auto_approved", message: "Auto-approved (no review model)" });
-      return { ok: true, message: "Auto-approved (no review model)", remoteTaskId: remoteId, remoteChangeSetId: changeSetId };
+  // No review model or auto-approve: skip review, just check if changes were made
+  if (!task.reviewModel || task.autoApprove) {
+    const hasChanges = diffPreview != null || (files && files.length > 0);
+    if (hasChanges) {
+      updateOrganizerTask(db, taskId, { status: "completed", finishedAt: Date.now() });
+      updateOrganizerTaskIteration(db, iteration.id, { status: "completed" });
+      recordOrganizerTaskEvent(db, { taskId, agentId: agent.id, eventType: "auto_approved", message: "Completed" });
+      return { ok: true, message: "Completed.", remoteTaskId: remoteId, remoteChangeSetId: changeSetId };
     }
     updateOrganizerTask(db, taskId, { status: "needs_review" });
-    recordOrganizerTaskEvent(db, { taskId, agentId: agent.id, eventType: "needs_user_review", message: "No review model configured" });
-    return { ok: true, message: "Patch generated. Needs user review (no review model).", remoteTaskId: remoteId, remoteChangeSetId: changeSetId };
+    recordOrganizerTaskEvent(db, { taskId, agentId: agent.id, eventType: "needs_user_review", message: "No changes detected" });
+    return { ok: true, message: "No changes detected.", remoteTaskId: remoteId, remoteChangeSetId: changeSetId };
   }
 
-  // Review phase
+  // Review phase (only when reviewModel is set AND autoApprove is false)
   updateOrganizerTask(db, taskId, { status: "reviewing" });
   updateOrganizerTaskIteration(db, iteration.id, { status: "reviewing" });
   recordOrganizerTaskEvent(db, { taskId, agentId: agent.id, eventType: "review_started", message: `Reviewing with ${task.reviewModel}` });
@@ -190,24 +198,13 @@ async function dispatchIteration(args: {
   if (decision === "approve") {
     updateOrganizerTaskIteration(db, iteration.id, { status: "approved" });
     if (task.autoApprove) {
-      if (task.autoApply && changeSetId) {
-        const applyRes = await client.applyChange?.(changeSetId, { hunks: false });
-        if (applyRes?.ok) {
-          updateOrganizerTask(db, taskId, { status: "completed" });
-          recordOrganizerTaskEvent(db, { taskId, agentId: agent.id, eventType: "auto_approved", message: "Auto-approved and applied by reviewer" });
-          return { ok: true, message: "Auto-approved and applied.", remoteTaskId: remoteId, remoteChangeSetId: changeSetId, decision };
-        }
-        updateOrganizerTask(db, taskId, { status: "needs_review" });
-        recordOrganizerTaskEvent(db, { taskId, agentId: agent.id, eventType: "auto_approved", message: `Auto-approved but apply failed: ${applyRes?.error ?? "unknown"}` });
-        return { ok: true, message: `Auto-approved but apply failed. Needs user review.`, remoteTaskId: remoteId, remoteChangeSetId: changeSetId, decision };
-      }
-      updateOrganizerTask(db, taskId, { status: "auto_approved" });
-      recordOrganizerTaskEvent(db, { taskId, agentId: agent.id, eventType: "auto_approved", message: "Auto-approved by reviewer" });
-    } else {
-      updateOrganizerTask(db, taskId, { status: "needs_review" });
-      recordOrganizerTaskEvent(db, { taskId, agentId: agent.id, eventType: "needs_user_review", message: "Reviewer approved; awaiting user" });
+      updateOrganizerTask(db, taskId, { status: "completed", finishedAt: Date.now() });
+      recordOrganizerTaskEvent(db, { taskId, agentId: agent.id, eventType: "auto_approved", message: "Reviewer approved" });
+      return { ok: true, message: "Reviewer approved.", remoteTaskId: remoteId, remoteChangeSetId: changeSetId, decision };
     }
-    return { ok: true, message: `Reviewer approved. ${task.autoApprove ? (task.autoApply ? "Auto-approved and applied." : "Auto-approved.") : "Awaiting user approval."}`, remoteTaskId: remoteId, remoteChangeSetId: changeSetId, decision };
+    updateOrganizerTask(db, taskId, { status: "needs_review" });
+    recordOrganizerTaskEvent(db, { taskId, agentId: agent.id, eventType: "needs_user_review", message: "Reviewer approved; awaiting user" });
+    return { ok: true, message: `Reviewer approved. Awaiting user approval.`, remoteTaskId: remoteId, remoteChangeSetId: changeSetId, decision };
   }
 
   if (decision === "request_changes") {
@@ -317,55 +314,37 @@ function buildReviewPrompt(
   maxIter?: number
 ): string {
   const lines: string[] = [
-    `Review the following proposed change for task: "${task.title}"`,
-    `Iteration ${iterIndex ?? "?"} of ${maxIter ?? "?"}`,
-    "",
-    `Original task prompt: ${task.prompt}`,
+    `Review the implementation diff below against the task requirements.`,
+    ``,
+    `TASK: ${task.title}`,
+    `REQUIREMENTS: ${task.prompt}`,
   ];
 
   if (prev?.reviewFeedback) {
-    lines.push(`\nPrevious reviewer feedback: ${prev.reviewFeedback}`);
+    lines.push(``, `PREVIOUS FEEDBACK: ${prev.reviewFeedback}`);
+  }
+
+  if (iteration.diffPreview && iteration.diffPreview.trim()) {
+    lines.push(``, `IMPLEMENTATION DIFF:`, `\`\`\`diff`, iteration.diffPreview.slice(0, 16000), `\`\`\``);
+    lines.push(``, `Files changed: ${(files ?? []).join(", ") || "see diff above"}`);
+  } else {
+    lines.push(``, `NO CHANGES were made. The implementation produced no code.`);
   }
 
   if (iteration.implementationSummary) {
-    lines.push(`\nImplementation summary: ${iteration.implementationSummary.slice(0, 2000)}`);
-  }
-
-  if (files) {
-    lines.push(`\nChanged files (${files.length}):`);
-    for (const f of files.slice(0, 20)) lines.push(`  - ${f}`);
-  }
-
-  if (iteration.diffPreview) {
-    lines.push(`\nDiff preview:\n\`\`\`diff\n${iteration.diffPreview.slice(0, 3000)}\n\`\`\``);
-  }
-
-  if (iteration.checkResultsJson) {
-    try {
-      const checks = JSON.parse(iteration.checkResultsJson) as Array<{ name: string; ok: boolean }>;
-      if (checks.length > 0) {
-        lines.push(`\nCheck results:`);
-        for (const c of checks) lines.push(`  ${c.ok ? "✓" : "✗"} ${c.name}`);
-      }
-    } catch { /* skip */ }
+    lines.push(``, `SUMMARY: ${iteration.implementationSummary.slice(0, 500)}`);
   }
 
   lines.push(
-    "",
-    `Respond with JSON only:`,
-    `{"decision":"approve"|"request_changes"|"reject","feedback":"...","nextPrompt":"...","riskLevel":"low"|"medium"|"high","missingChecks":["typecheck","test"],"notes":"..."}`,
-    `- approve: the change satisfies the task and appears safe`,
-    `- request_changes: close but needs specific improvements in another iteration`,
-    `- reject: wrong, unsafe, too broad, or should not continue`,
-    `- riskLevel: your assessment of the change's risk`,
-    `- missingChecks: any checks that should have run but are missing`,
-    `- notes: optional short notes for the human reviewer`,
-    `- do not produce code`
+    ``,
+    `Output limit: 2048 tokens. Keep your JSON response within this budget.`,
+    `Reply with EXACTLY this JSON format:`,
+    `{"decision":"approve"|"request_changes"|"reject","feedback":"why","nextPrompt":"what to fix","riskLevel":"low"|"medium"|"high"}`
   );
   return lines.join("\n");
 }
 
-function compactPreview(diff: string, maxLines: number = 200): string {
+function compactPreview(diff: string, maxLines: number = 500): string {
   if (!diff) return "";
   const lines = diff.split("\n");
   const out: string[] = [];

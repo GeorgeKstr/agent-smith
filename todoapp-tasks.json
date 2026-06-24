@@ -1,0 +1,49 @@
+{
+  "tasks": [
+    {
+      "title": "01 - Init project and install deps",
+      "prompt": "Run: npm init -y, then npm install express better-sqlite3 bcryptjs jsonwebtoken cors dotenv, then npm install -D typescript tsx nodemon @types/express @types/better-sqlite3 @types/bcryptjs @types/jsonwebtoken @types/cors.",
+      "bucketName": "Setup"
+    },
+    {
+      "title": "02 - Create tsconfig and .env",
+      "prompt": "Create tsconfig.json targeting ES2020/commonjs with outDir dist and rootDir src. Create .env with PORT=3000 and JWT_SECRET=todoapp-secret-key. Create src/ and public/ directories.",
+      "bucketName": "Setup"
+    },
+    {
+      "title": "03 - Create src/index.ts",
+      "prompt": "Create src/index.ts that starts an Express server on PORT from env (default 3000). Log startup message.",
+      "bucketName": "Setup"
+    },
+    {
+      "title": "04 - Create database schema",
+      "prompt": "Create src/database.ts. Export getDb() that returns a better-sqlite3 singleton. Create data/ dir on first call. Migrate: users(id,username,email,password,created_at), todos(id,user_id,title,description,completed,created_at,updated_at), collaborators(id,todo_id,user_id,permission,created_at). Use WAL and foreign_keys=ON.",
+      "bucketName": "Database"
+    },
+    {
+      "title": "05 - Create auth routes",
+      "prompt": "Create src/auth.ts with Express Router. POST /api/auth/signup: validate username/email/password, hash with bcrypt (12 rounds), insert user, return JWT (7d) + user. POST /api/auth/login: find user by username, compare password, return JWT + user. Export createAuthMiddleware() that verifies JWT and attaches req.user.",
+      "bucketName": "Auth"
+    },
+    {
+      "title": "06 - Create todo CRUD routes",
+      "prompt": "Create src/todos.ts with Express Router (auth required). GET /api/todos: list user's todos with collaborators. POST /api/todos: create todo. GET /api/todos/:id: get single todo. PUT /api/todos/:id: update title/description/completed. DELETE /api/todos/:id: delete todo (owner only).",
+      "bucketName": "Todos"
+    },
+    {
+      "title": "07 - Create collaboration routes",
+      "prompt": "Create src/collaboration.ts with Express Router (auth required). POST /api/todos/:id/collaborators: add collaborator (owner only). GET /api/todos/:id/collaborators: list collaborators. DELETE /api/todos/:id/collaborators/:userId: remove collaborator. Export hasTodoPermission() and requireTodoPermission() helpers.",
+      "bucketName": "Todos"
+    },
+    {
+      "title": "08 - Create frontend HTML/CSS/JS",
+      "prompt": "Create public/index.html with login/signup forms and app view (sidebar + detail). Create public/script.js with fetch-based API calls for auth, todo CRUD, and collaboration. Use vanilla JS, localStorage for JWT token. Clean modern design with inline CSS.",
+      "bucketName": "Frontend"
+    },
+    {
+      "title": "09 - Final wiring and startup",
+      "prompt": "Update src/index.ts to serve public/ as static files. Add CORS middleware. Mount all routers. Add 404 and error handlers. Create start.sh with mkdir -p data && npx tsx src/index.ts. Update package.json scripts.",
+      "bucketName": "Integration"
+    }
+  ]
+}

@@ -80,7 +80,7 @@ function isExplicitCommand(text: string): boolean {
 
 function isPatchRequest(text: string): boolean {
   return (
-    (/\b(create|make|add|fix|change|edit|implement|write|delete|remove|rename|move|refactor|update|modify|replace|generate|build|improve|add a|add the)\b/.test(text) ||
+    (/\b(create|make|add|fix|change|edit|implement|write|delete|remove|rename|move|refactor|update|modify|replace|generate|build|improve|add a|add the|install|run\b.*\binit|set up|setup|scaffold)\b/i.test(text) ||
      isVaguePatchRequest(text) ||
      isFeatureSpecification(text)) &&
     !isAskOnlyUsage(text)
@@ -96,16 +96,16 @@ function isAskRequest(text: string): boolean {
 
 function isAskOnlyUsage(text: string): boolean {
   return (
-    text.includes("explain how to") ||
-    text.includes("tell me how to") ||
-    text.includes("show me how to") ||
-    text.includes("how do i") ||
-    text.includes("how can i") ||
-    text.includes("what would") ||
-    text.includes("should i") ||
-    text.includes("can you explain") ||
-    text.includes("could you explain") ||
-    text.includes("what does")
+    /\bexplain how to\b/i.test(text) ||
+    /\btell me how to\b/i.test(text) ||
+    /\bshow me how to\b/i.test(text) ||
+    /\bhow do i\b/i.test(text) ||
+    /\bhow can i\b/i.test(text) ||
+    /\bwhat would\b/i.test(text) ||
+    /\bshould i\b/i.test(text) ||
+    /\bcan you explain\b/i.test(text) ||
+    /\bcould you explain\b/i.test(text) ||
+    /\bwhat does\b/i.test(text)
   );
 }
 
@@ -114,8 +114,9 @@ function isFeatureSpecification(text: string): boolean {
 }
 
 function isReadOnlyStatusQuestion(text: string): boolean {
+  if (text.length > 200) return false;
   return (
-    /\b(what|which|where|show|tell me|list)\b/i.test(text) &&
+    /\b(what|which|where|tell me)\b/i.test(text) &&
     /\b(last|created|changed|modified|edited|file|files|contains|content|diff|status|made|did you)\b/i.test(text)
   );
 }

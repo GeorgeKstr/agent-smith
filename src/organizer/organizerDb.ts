@@ -197,6 +197,35 @@ export function createOrganizerTask(db: Database.Database, input: { projectId: s
   db.prepare("INSERT INTO organizer_tasks (id,project_id,bucket_id,title,prompt,mode,priority,status,assigned_agent_id,implement_model,review_model,max_iterations,current_iteration,auto_approve,auto_apply,require_checks,checks_json,remote_task_id,remote_change_set_id,result_json,created_at,updated_at,started_at,finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(t.id, t.projectId, t.bucketId, t.title, t.prompt, t.mode, t.priority, t.status, t.assignedAgentId, t.implementModel, t.reviewModel, t.maxIterations, t.currentIteration, t.autoApprove ? 1 : 0, t.autoApply ? 1 : 0, t.requireChecks ? 1 : 0, t.checksJson, t.remoteTaskId, t.remoteChangeSetId, t.resultJson, t.createdAt, t.updatedAt, t.startedAt, t.finishedAt);
   return t;
 }
+function mapTaskRow(row: Record<string, unknown>): OrganizerTask {
+  return {
+    id: row.id as string,
+    projectId: row.project_id as string,
+    bucketId: row.bucket_id as string | null,
+    title: row.title as string,
+    prompt: row.prompt as string,
+    mode: row.mode as OrganizerTaskMode,
+    priority: row.priority as number,
+    status: row.status as OrganizerTaskStatus,
+    assignedAgentId: row.assigned_agent_id as string | null,
+    implementModel: row.implement_model as string | null,
+    reviewModel: row.review_model as string | null,
+    maxIterations: row.max_iterations as number,
+    currentIteration: row.current_iteration as number,
+    autoApprove: (row.auto_approve as number) === 1,
+    autoApply: (row.auto_apply as number) === 1,
+    requireChecks: (row.require_checks as number) === 1,
+    checksJson: row.checks_json as string | null,
+    remoteTaskId: row.remote_task_id as string | null,
+    remoteChangeSetId: row.remote_change_set_id as string | null,
+    resultJson: row.result_json as string | null,
+    createdAt: row.created_at as number,
+    updatedAt: row.updated_at as number,
+    startedAt: row.started_at as number | null,
+    finishedAt: row.finished_at as number | null,
+  };
+}
+
 export function listOrganizerTasks(db: Database.Database, opts?: { projectId?: string; bucketId?: string; status?: OrganizerTaskStatus; agentId?: string }): OrganizerTask[] {
   const clauses: string[] = [];
   const params: unknown[] = [];
@@ -205,9 +234,13 @@ export function listOrganizerTasks(db: Database.Database, opts?: { projectId?: s
   if (opts?.status) { clauses.push("status=?"); params.push(opts.status); }
   if (opts?.agentId) { clauses.push("assigned_agent_id=?"); params.push(opts.agentId); }
   const where = clauses.length > 0 ? " WHERE " + clauses.join(" AND ") : "";
-  return db.prepare("SELECT * FROM organizer_tasks" + where + " ORDER BY priority DESC, created_at DESC").all(...params) as OrganizerTask[];
+  const rows = db.prepare("SELECT * FROM organizer_tasks" + where + " ORDER BY priority DESC, created_at DESC").all(...params) as Record<string, unknown>[];
+  return rows.map(mapTaskRow);
 }
-export function getOrganizerTask(db: Database.Database, id: string): OrganizerTask | undefined { return db.prepare("SELECT * FROM organizer_tasks WHERE id=?").get(id) as OrganizerTask | undefined; }
+export function getOrganizerTask(db: Database.Database, id: string): OrganizerTask | undefined {
+  const row = db.prepare("SELECT * FROM organizer_tasks WHERE id=?").get(id) as Record<string, unknown> | undefined;
+  return row ? mapTaskRow(row) : undefined;
+}
 export function updateOrganizerTask(db: Database.Database, id: string, patch: { title?: string; prompt?: string; mode?: OrganizerTaskMode; priority?: number; status?: OrganizerTaskStatus; bucketId?: string | null; assignedAgentId?: string | null; implementModel?: string | null; reviewModel?: string | null; maxIterations?: number; currentIteration?: number; autoApprove?: boolean; autoApply?: boolean; requireChecks?: boolean; checksJson?: string | null; remoteTaskId?: string | null; remoteChangeSetId?: string | null; resultJson?: string | null }): OrganizerTask | undefined {
   if (patch.title) db.prepare("UPDATE organizer_tasks SET title=?, updated_at=? WHERE id=?").run(patch.title, Date.now(), id);
   if (patch.prompt) db.prepare("UPDATE organizer_tasks SET prompt=?, updated_at=? WHERE id=?").run(patch.prompt, Date.now(), id);

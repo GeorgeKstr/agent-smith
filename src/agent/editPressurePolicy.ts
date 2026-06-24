@@ -60,15 +60,24 @@ export function checkEditPressurePolicy(input: {
     ? input.evidence.filesRead.join(", ")
     : "none";
 
+  const noEdits = input.evidence.filesEdited.length === 0 && input.evidence.filesCreated.length === 0;
+
   return {
     allowed: false,
-    summary:
-      "Edit pressure active. Enough context has been inspected for this patch task. Further searching is blocked until you propose or make a change.",
-    nextActions: [
-      `Call propose_edit for one of the inspected files (${inspected}).`,
-      "Call edit or replace_lines if you know the exact change.",
-      "Call ask_user if the requested behavior is ambiguous.",
-      "Call final only if no edit is needed and explain why."
-    ]
+    summary: noEdits
+      ? "STOP SEARCHING. You have not created or edited any files yet. Use create_file or bash now."
+      : "Edit pressure active. Further searching blocked. Make a change.",
+    nextActions: noEdits
+      ? [
+          `Use create_file to create a new file. Example: <tool_call>{"tool":"create_file","args":{"path":"src/example.ts","content":"..."}}</tool_call>`,
+          "Use bash to run shell commands: mkdir, npm, git, etc.",
+          "Call edit if you have already read the file you need to change."
+        ]
+      : [
+          `Call edit for one of: ${inspected}.`,
+          "Call create_file to add a new file.",
+          "Call bash to run a shell command.",
+          "Call final only if the task is truly complete."
+        ]
   };
 }

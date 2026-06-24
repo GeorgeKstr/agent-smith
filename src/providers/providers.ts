@@ -226,7 +226,12 @@ class OpenAIProvider implements Provider {
       if (m.name) out.name = m.name;
       if (m.tool_calls) out.tool_calls = m.tool_calls;
       if (m.function_call) {
-        out.function_call = m.function_call;
+        const fc = m.function_call;
+        out.tool_calls = [{
+          id: fc.id ?? ("call_" + Math.random().toString(36).slice(2, 10)),
+          type: "function",
+          function: { name: fc.name ?? "", arguments: fc.arguments ?? "{}" }
+        }];
         out.role = "assistant";
       }
       if (m.role === "tool" && !m.tool_call_id) {

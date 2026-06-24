@@ -39,6 +39,7 @@ import { parseExplicitMode } from "./parseExplicitMode.js";
 import { runChatTurn } from "./runChatTurn.js";
 import type { RuntimeIntent } from "./runtimeIntent.js";
 import { loadSkills, findRelevantSkills, renderSkillsForPrompt } from "./skillsLoader.js";
+import { createChangeSet } from "../changes/changeSetStore.js";
 export type RunnerDeps = {
   db: SmithDatabase;
   root: string;
@@ -61,6 +62,27 @@ export async function runAsk(
 ): Promise<AskResult> {
   const { db, root, config, events } = deps;
   const emptyPacket: ContextPacket = { task, prompt: task, estimatedTokens: 0, files: [], symbols: [] };
+
+  // Review tasks: use simple completion, no agent loop needed
+  if (task.includes("You are the review model") || task.includes("## Evaluation Criteria")) {
+    const installed = await listProviderModels(config);
+    const model = options.modelOverride
+      ? await resolveProviderModelName(config, options.modelOverride, installed)
+      : config.models.patcher;
+    const providers = createProviders(config);
+    const resolved = resolveModelProvider(model, config.defaultProvider, providers);
+    if (resolved) {
+      const result = await resolved.provider.generate(resolved.model, task, {
+        system: "Output ONLY a JSON object. No conversation, no markdown outside the JSON.",
+        temperature: 0,
+        maxTokens: 2048,
+        signal: options.signal,
+      });
+      const answer = result.ok ? result.text : (result.error ?? "Review failed");
+      return { ok: result.ok, answer, packet: emptyPacket, message: result.ok ? undefined : result.error };
+    }
+    return { ok: false, answer: "No provider for review", packet: emptyPacket, message: "No provider" };
+  }
 
   const { explicitMode, cleanedPrompt } = parseExplicitMode(task);
   const intentResult = classifyRuntimeIntent({
@@ -271,6 +293,37 @@ export async function runPatch(
     recordEdit(db, taskId, file, "");
   }
 
+  // Capture git diff for review
+  let changeSetId: string | undefined;
+  let diff: string | undefined;
+  try {
+    // Ensure .gitignore excludes noise
+    const gitignorePath = path.join(root, ".gitignore");
+    let gitignoreContent = "";
+    try { gitignoreContent = await fs.readFile(gitignorePath, "utf8"); } catch { /* file may not exist */ }
+    for (const entry of [".agent/", "node_modules/", ".git/", "package-lock.json", "*.db-shm", "*.db-wal"]) {
+      if (!gitignoreContent.includes(entry)) gitignoreContent += `\n${entry}`;
+    }
+    await fs.writeFile(gitignorePath, gitignoreContent);
+
+    await execa("git", ["init"], { cwd: root, reject: false });
+    await execa("git", ["add", "-A"], { cwd: root, reject: false });
+    const diffResult = await execa("git", ["diff", "--cached"], { cwd: root, reject: false });
+    diff = diffResult.stdout || "";
+
+    if (diff.trim()) {
+      const changeSet = createChangeSet(db, {
+        taskId,
+        diff,
+        summary: workflowResult.finalText.slice(0, 500),
+        status: "proposed",
+      });
+      changeSetId = changeSet.id;
+    }
+  } catch {
+    // git operations may fail
+  }
+
   if (workflowResult.checksRun.length > 0) {
     const runResults = await runChecks(root, config.commands, ["typecheck", "test"]);
     checks.push(...runResults);
@@ -293,9 +346,11 @@ export async function runPatch(
     applied,
     attempts: 1,
     answer: workflowResult.finalText,
+    diff,
     files: workflowResult.changedFiles,
     checks,
     message: statusMsg,
+    changeSetId,
     runtimeIntent: "patch",
   };
 }
