@@ -976,11 +976,11 @@ def smith_recursion_limit() -> int:
     Default is 40. Small models with limited context should stay well under this.
     Set SMITH_RECURSION_LIMIT=60 for larger models.
     """
-    raw = os.getenv("SMITH_RECURSION_LIMIT") or os.getenv("LANGGRAPH_RECURSION_LIMIT") or "80"
+    raw = os.getenv("SMITH_RECURSION_LIMIT") or os.getenv("LANGGRAPH_RECURSION_LIMIT") or "100"
     try:
-        return max(12, min(300, int(raw)))
+        return max(12, min(400, int(raw)))
     except Exception:
-        return 80
+        return 100
 
 
 def extract_stream_text(chunk: Any) -> str:
