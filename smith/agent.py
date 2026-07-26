@@ -590,13 +590,48 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
 
     @tool
     def run_command(command: str, timeout_seconds: int = 60) -> str:
-        """Run a short safe command inside the workspace. Does not use a shell."""
+        """Run a short safe command inside the workspace. Does not use a shell.
+
+        IMPORTANT: This tool does NOT use a shell. Do NOT use shell syntax like:
+          - && (chaining) — run each command separately
+          - | (pipes) — run first command, then second
+          - # (comments) — remove them
+          - >, >>, < (redirects) — not supported
+          - $VAR, $(cmd) (expansions) — not supported
+        Pass a SINGLE command with plain arguments. Example: ls -la
+        """
         if not profile.can_run_commands:
             return "This task profile cannot run commands."
+
+        # ── Parse command safely ───────────────────────────────────────────
         try:
             parts = shlex.split(command)
-            if not parts:
-                return "No command provided."
+        except ValueError as exc:
+            return (
+                f"COMMAND_PARSE_ERROR: could not parse command: {exc}\n"
+                "Remove shell comments (# ...), fix any unmatched quotes, "
+                "and remove newlines from inside the command string."
+            )
+        if not parts:
+            return "No command provided."
+
+        # ── Detect shell metacharacters the model shouldn't use ────────────
+        shell_tokens = {"&&", "||", "|", ";"}
+        found_shell = [t for t in parts if t in shell_tokens]
+        if found_shell:
+            return (
+                f"SHELL_SYNTAX_DETECTED: found shell operator(s): {', '.join(found_shell)}.\n"
+                "This tool does NOT use a shell. Run each command as a separate call.\n"
+                "Example: instead of 'cmd1 && cmd2', call run_command twice."
+            )
+        # Also catch leading comment chars
+        if parts[0].startswith("#"):
+            return (
+                f"SHELL_COMMENT_DETECTED: command starts with '#'. Remove the comment and try again.\n"
+                "This tool does not use a shell, so '#' is treated as a command name."
+            )
+
+        try:
 
             # Read allowed commands and blocked args from settings with env/fallback
             allowed_setting = db.get_setting("bash.allowed_commands")

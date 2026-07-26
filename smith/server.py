@@ -826,11 +826,16 @@ async def ws_run(ws: WebSocket):
         coord = coordinator()
         cancel_event = threading.Event()
 
-        # Set up approval handler
+        # Set up approval handler — respect auto_approve flag from client
         approval_task = None
-        loop = asyncio.get_running_loop()
-        approval_handler = WebSocketApprovalHandler(loop)
-        approval_task = asyncio.create_task(approval_handler.poll(ws))
+        auto_approve = first.get("auto_approve", False)
+        if auto_approve:
+            from .agent import AutoApprovalHandler
+            approval_handler = AutoApprovalHandler()
+        else:
+            loop = asyncio.get_running_loop()
+            approval_handler = WebSocketApprovalHandler(loop)
+            approval_task = asyncio.create_task(approval_handler.poll(ws))
 
         await ws.send_json({"type": "started", "project_id": coord.db.project_id})
         gen = coord.stream_user_task(
