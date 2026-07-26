@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Generator
 
-from .agent import stream_agent
+from .agent import stream_agent, ApprovalHandler
 from .compaction import auto_compact_run
 from .db import ProjectDB, json_loads
 from .indexer import index_file, scan_project
@@ -97,6 +97,7 @@ class ProjectCoordinator:
         model_override: dict[str, str] | None = None,
         review_model_override: dict[str, str] | None = None,
         cancel_event: threading.Event | None = None,
+        approval_handler: ApprovalHandler | None = None,
     ) -> Generator[str, None, None]:
         task_type = task_type or classify_prompt(prompt)
         # User tasks wait only for the current small index/tool unit.
@@ -110,6 +111,7 @@ class ProjectCoordinator:
                 review_mode=review_mode,
                 model_override=model_override,
                 cancel_event=cancel_event,
+                approval_handler=approval_handler,
             ):
                 output_chunks.append(chunk)
                 yield chunk

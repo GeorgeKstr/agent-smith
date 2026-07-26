@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .agent import ApprovalHandler, ApprovalRequest, AutoApprovalHandler
 from .coordinator import ProjectCoordinator
 from .db import sha256_bytes
 from .registry_server import notify_agent_event, REGISTRY_URL, registry_lan_url
@@ -648,6 +649,81 @@ def revert_run_changes(run_id: str, token: str | None = None):
     return result
 
 
+class WebSocketApprovalHandler(ApprovalHandler):
+    """Approval handler that communicates with the caller via WebSocket.
+
+    The agent tool thread calls request_approval() (blocking).
+    We bridge to the async WS world through a queue:
+    1. request_approval() enqueues the request + blocks on threading.Event
+    2. The async poll loop picks it up, sends WS message, waits for user reply
+    3. On reply, it signals the event → thread unblocks
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop):
+        self._loop = loop
+        self._queue: asyncio.Queue[ApprovalRequest] = asyncio.Queue()
+        self._pending: dict[str, asyncio.Future] = {}  # request id → future resolved by WS message
+        self._counter = 0
+
+    def ready(self) -> bool:
+        return True
+
+    def request_approval(self, req: ApprovalRequest) -> bool:
+        """Block the tool thread until the user responds via WS."""
+        self._counter += 1
+        req_id = str(self._counter)
+        # Create a future on the event loop that the async side will resolve
+        fut: asyncio.Future = asyncio.run_coroutine_threadsafe(
+            self._send_and_wait(req, req_id), self._loop
+        ).result()
+
+        try:
+            approved = fut.result(timeout=300)  # 5 min timeout
+            if approved:
+                req.approve()
+            else:
+                req.deny("User denied the command via Web UI")
+            return approved
+        except Exception:
+            req.deny("Approval timed out or connection lost")
+            return False
+
+    async def _send_and_wait(self, req: ApprovalRequest, req_id: str) -> bool:
+        """Async side: enqueue the request so the WS handler can pick it up."""
+        await self._queue.put(req)
+        # We need a way to get the result back. Use a future stored on the
+        # ApprovalRequest itself (we'll add a private attribute).
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        req._ws_future = fut  # type: ignore[attr-defined]
+        return await fut
+
+    async def poll(self, ws: WebSocket) -> None:
+        """Called from ws_run: poll for pending approvals, send WS messages,
+        and wait for user responses.
+        """
+        while True:
+            req = await self._queue.get()
+            display = req.display[:2000]
+            await ws.send_json({
+                "type": "approval_required",
+                "command": req.command,
+                "display": display,
+            })
+            # Wait for the user's approve/deny message
+            try:
+                msg = await ws.receive_json()
+                approved = msg.get("approve", False)
+                if hasattr(req, '_ws_future'):
+                    fut: asyncio.Future = req._ws_future  # type: ignore[assignment]
+                    if not fut.done():
+                        fut.set_result(approved)
+            except Exception:
+                if hasattr(req, '_ws_future'):
+                    fut = req._ws_future  # type: ignore[assignment]
+                    if not fut.done():
+                        fut.set_result(False)
+
+
 async def stream_sync_generator_to_ws(ws: WebSocket, generator, cancel_event: threading.Event | None = None):
     import time as _smith_time
     """Run a blocking sync generator in a thread and forward chunks in real time.
@@ -750,6 +826,12 @@ async def ws_run(ws: WebSocket):
         coord = coordinator()
         cancel_event = threading.Event()
 
+        # Set up approval handler
+        approval_task = None
+        loop = asyncio.get_running_loop()
+        approval_handler = WebSocketApprovalHandler(loop)
+        approval_task = asyncio.create_task(approval_handler.poll(ws))
+
         await ws.send_json({"type": "started", "project_id": coord.db.project_id})
         gen = coord.stream_user_task(
             prompt,
@@ -758,6 +840,7 @@ async def ws_run(ws: WebSocket):
             model_override=model_override,
             review_model_override=review_model_override,
             cancel_event=cancel_event,
+            approval_handler=approval_handler,
         )
         await stream_sync_generator_to_ws(ws, gen, cancel_event=cancel_event)
         notify_registry_task_complete(
@@ -774,6 +857,12 @@ async def ws_run(ws: WebSocket):
         return
     except Exception as exc:
         await ws.send_json({"type": "error", "message": str(exc)})
+    finally:
+        if approval_task is not None:
+            try:
+                approval_task.cancel()
+            except Exception:
+                pass
 
 
 @app.websocket("/ws/events")

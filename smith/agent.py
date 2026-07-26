@@ -5,7 +5,9 @@ import json
 import difflib
 import shlex
 import subprocess
+import threading
 import time
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -26,6 +28,85 @@ ALLOWED_COMMANDS = {"python", "python3", "pytest", "npm", "pnpm", "node", "npx"}
 BLOCKED_ARGS = {"install", "add", "remove", "uninstall", "delete", "publish", "deploy", "start", "dev", "serve"}
 
 
+# ── Approval handler protocol ──────────────────────────────────────────────
+
+class ApprovalRequest:
+    """Describes a command that needs user approval."""
+    __slots__ = ("command", "display", "event", "_approved", "_denied_reason")
+
+    def __init__(self, command: str, display: str):
+        self.command = command
+        self.display = display
+        self.event = threading.Event()
+        self._approved = False
+        self._denied_reason = ""
+
+    def approve(self) -> None:
+        self._approved = True
+        self.event.set()
+
+    def deny(self, reason: str = "") -> None:
+        self._approved = False
+        self._denied_reason = reason
+        self.event.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.event.wait(timeout)
+        return self._approved
+
+    @property
+    def approved(self) -> bool:
+        return self._approved
+
+    @property
+    def denied_reason(self) -> str:
+        return self._denied_reason
+
+
+class ApprovalHandler(ABC):
+    """Abstract handler that tools call when a command needs user approval.
+
+    Concrete implementations bridge the tool-running thread (blocking) with
+    the user-facing I/O layer (CLI prompt, WebSocket message, etc.).
+    """
+
+    @abstractmethod
+    def ready(self) -> bool:
+        """Return True if the handler is fully wired and capable of
+        delivering approval requests to a user right now."""
+        ...
+
+    @abstractmethod
+    def request_approval(self, req: ApprovalRequest) -> bool:
+        """Block until the user approves or denies the request.
+
+        Returns True if approved, False if denied.
+        """
+        ...
+
+
+class AutoApprovalHandler(ApprovalHandler):
+    """Always auto-approves every command immediately."""
+
+    def ready(self) -> bool:
+        return True
+
+    def request_approval(self, req: ApprovalRequest) -> bool:
+        req.approve()
+        return True
+
+
+class SilentDenyHandler(ApprovalHandler):
+    """Always denies commands — used when no interactive handler is wired."""
+
+    def ready(self) -> bool:
+        return False
+
+    def request_approval(self, req: ApprovalRequest) -> bool:
+        req.deny("No approval handler is wired. Set SMITH_AUTO_APPROVE=true or run via server/CLI.")
+        return False
+
+
 def safe_path(root: Path, path: str) -> Path:
     candidate = (root / path).resolve()
     if candidate == root or root in candidate.parents:
@@ -39,9 +120,11 @@ def is_ignored_rel(path: Path) -> bool:
 
 
 
-def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_event=None):
+def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_event=None, approval_handler: ApprovalHandler | None = None):
     root = db.root_path
     profile = get_task_profile(task_type)
+    if approval_handler is None:
+        approval_handler = SilentDenyHandler()
 
     @tool
     def list_files(path: str = ".", recursive: bool = False, max_entries: int = 300) -> str:
@@ -517,11 +600,43 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
                 blocked_args = set(c.strip() for c in env_val.split(",") if c.strip())
 
             exe = Path(parts[0]).name
+            needs_approval = False
+            approval_reason = ""
+
             if exe not in allowed_commands:
-                return f"Command not allowed: {exe}. Allowed: {', '.join(sorted(allowed_commands))}"
+                needs_approval = True
+                approval_reason = f"'{exe}' is not in allowed commands ({', '.join(sorted(allowed_commands))})"
+
             blocked = sorted({arg.lower() for arg in parts[1:]} & blocked_args)
             if blocked:
-                return f"Blocked argument(s): {', '.join(blocked)}"
+                needs_approval = True
+                reason2 = f"blocked argument(s): {', '.join(blocked)}"
+                approval_reason = f"{approval_reason}; {reason2}" if approval_reason else reason2
+
+            if needs_approval:
+                # Check if auto-approve is enabled
+                auto_setting = db.get_setting("approval.auto", False)
+                auto_env = os.getenv("SMITH_AUTO_APPROVE", "").strip().lower()
+                if auto_env in ("1", "true", "yes"):
+                    auto_setting = True
+
+                if auto_setting or isinstance(approval_handler, AutoApprovalHandler):
+                    pass  # auto-approved, skip the approval request
+                elif not approval_handler.ready():
+                    return (
+                        f"Command not auto-approved: {exe}. {approval_reason}\n"
+                        f"Allowed commands: {', '.join(sorted(allowed_commands))}\n"
+                        "No approval handler is available. Run via 'smith run' (CLI) or the Web UI, "
+                        "or set SMITH_AUTO_APPROVE=true to auto-approve all commands."
+                    )
+                else:
+                    # Format command for display
+                    display = f"$ {' '.join(parts)}\nReason: {approval_reason}\nWorkspace: {root}"
+                    req = ApprovalRequest(command, display)
+                    if approval_handler.request_approval(req):
+                        pass  # approved, continue to execution
+                    else:
+                        return f"APPROVAL_DENIED: {req.denied_reason or 'User denied the command.'}"
             timeout_seconds = max(1, min(int(timeout_seconds), 120))
             result = sandbox.exec(command, cwd=root, timeout=timeout_seconds)
             db.record_event(
@@ -772,8 +887,34 @@ def build_agent(db: ProjectDB, task_type: str, context_bundle: str, run_id: str 
         "8. You have limited context budget. Keep tool outputs relevant.\n"
         "9. If the task seems done, just report what was accomplished. Do not invent extra work.\n"
     )
-    return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event), system_prompt=system_prompt)
+    return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event, approval_handler=None), system_prompt=system_prompt)
 
+
+def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str, run_id: str | None = None, model_override: dict[str, str] | None = None, cancel_event=None, approval_handler: ApprovalHandler | None = None):
+    """Same as build_agent but threads an ApprovalHandler to the run_command tool."""
+    profile = get_task_profile(task_type)
+    llm = build_chat_model_for_task(db, task_type, model_override=model_override)
+    actual_handler = approval_handler or SilentDenyHandler()
+    system_prompt = (
+        f"You are Agent Smith working on project: {db.root_path}\n"
+        f"Task: {task_type} — {profile.system_role}\n\n"
+        "COMPACT PROJECT CONTEXT:\n"
+        f"{context_bundle or '(no indexed context yet — explore carefully)'}\n\n"
+        "CRITICAL RULES:\n"
+        "1. Read a file before editing it (use read_file with offset/limit for large files). Do not blindly guess paths.\n"
+        "2. To change an existing file, first read it with read_file, then:\n"
+        "   - For full rewrites: use write_file(path, content).\n"
+        "   - For surgical edits: use edit_file(path, old_text, new_text) with the EXACT text to replace.\n"
+        "   Do NOT call edit_file without old_text — that will fail. Pick the right tool.\n"
+        "3. Use grep_search to find function definitions, variable references, and patterns. Use find_files to locate files by glob.\n"
+        "4. After write_file returns VERIFIED_WRITE_OK or edit_file returns VERIFIED_EDIT_OK, STOP. Do not re-read or re-edit.\n"
+        "5. If a write/edit fails, report the failure. Do not retry blindly.\n"
+        "6. Never loop: if you lack information, ask or give your best answer. Max 8 tool calls per response.\n"
+        "7. After your final tool call, output a brief summary of what you changed. Then STOP — do not call more tools.\n"
+        "8. You have limited context budget. Keep tool outputs relevant.\n"
+        "9. If the task seems done, just report what was accomplished. Do not invent extra work.\n"
+    )
+    return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event, approval_handler=actual_handler), system_prompt=system_prompt)
 
 
 def smith_recursion_limit() -> int:
@@ -1089,7 +1230,7 @@ def build_fallback_final_response(db: ProjectDB, run_id: str, task_type: str) ->
     return "\n".join(lines)
 
 
-def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode: str = "auto", model_override: dict[str, str] | None = None, cancel_event: threading.Event | None = None):
+def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode: str = "auto", model_override: dict[str, str] | None = None, cancel_event: threading.Event | None = None, approval_handler: ApprovalHandler | None = None):
     db.init()
     _reset_progress_counters()
     # Collect everything into a transcript for history replay
@@ -1113,7 +1254,7 @@ def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode
     limit = min(smith_recursion_limit(), MAX_TOOL_CALLS + 20)  # give some headroom
     yield _yield_and_save(f"[smith] starting model/tool loop...\n")
     yield _yield_and_save(f"[smith] recursion limit: {limit}\n")
-    agent = build_agent(db, task_type=task_type, context_bundle=context, run_id=run_id, model_override=model_override, cancel_event=cancel_event)
+    agent = build_agent_with_handler(db, task_type=task_type, context_bundle=context, run_id=run_id, model_override=model_override, cancel_event=cancel_event, approval_handler=approval_handler)
     full = []
     started = False
     seen_progress: set[str] = set()

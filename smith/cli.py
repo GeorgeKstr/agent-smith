@@ -13,10 +13,10 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
+from .agent import smith_recursion_limit, ApprovalHandler, ApprovalRequest, AutoApprovalHandler
 from .coordinator import ProjectCoordinator
 from .db import ProjectDB
 from .registry_server import register_agent, start_registry_if_needed, REGISTRY_URL
-from .agent import smith_recursion_limit
 from .compaction import CompactionEngine, auto_compact_run
 from .sandbox import get_sandbox_backend, DockerSandboxBackend, DirectSandboxBackend
 from .providers import (
@@ -27,10 +27,40 @@ from .providers import (
     set_project_task_model,
 )
 
+
 load_dotenv()
 
 app = typer.Typer(help="Agent Smith per-project local coordinator.")
 console = Console()
+
+
+class CLIApprovalHandler(ApprovalHandler):
+    """Approval handler that prompts the user interactively on stdin."""
+
+    def __init__(self):
+        self._connected = True
+
+    def ready(self) -> bool:
+        return self._connected
+
+    def request_approval(self, req: ApprovalRequest) -> bool:
+        console.print()
+        console.print("[bold yellow]⚠ Command needs approval:[/bold yellow]")
+        console.print(f"  [cyan]{req.display}[/cyan]")
+        try:
+            answer = input("  Approve? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            self._connected = False
+            req.deny("CLI input closed")
+            return False
+        if answer in ("y", "yes"):
+            req.approve()
+            console.print("  [green]✓ Approved[/green]")
+            return True
+        else:
+            req.deny("User denied")
+            console.print("  [red]✗ Denied[/red]")
+            return False
 
 
 def project_db(path: str) -> ProjectDB:
@@ -344,6 +374,31 @@ def sandbox_config(
 
 
 @app.command()
+def run(
+    project: str = typer.Argument(..., help="Project root path."),
+    prompt: str = typer.Argument(..., help="Prompt for Smith."),
+    task_type: str | None = typer.Option(None, "--task-type", help="ask/implement/review. Omit for auto."),
+    review: str = typer.Option("auto", "--review", help="auto/never/always."),
+    auto_approve: bool = typer.Option(False, "--auto-approve", "-y", help="Auto-approve all commands without prompting."),
+):
+    """Run an interactive Smith task for a project path."""
+    coord = ProjectCoordinator(project)
+    coord.start_worker()
+    console.print(f"[bold]Project:[/bold] {coord.db.root_path}")
+
+    if auto_approve:
+        approval_handler: ApprovalHandler = AutoApprovalHandler()
+        console.print("[yellow]Auto-approve enabled — all commands will run without prompts.[/yellow]")
+    else:
+        approval_handler = CLIApprovalHandler()
+        console.print("[dim]Commands outside allowed list will prompt for approval.[/dim]")
+
+    for token in coord.stream_user_task(prompt, task_type=task_type, review_mode=review, approval_handler=approval_handler):
+        print(token, end="", flush=True)
+    print()
+
+
+@app.command()
 def index(
     project: str = typer.Argument(".", help="Project root path."),
 ):
@@ -383,20 +438,7 @@ def resume(
     console.print("[green]Resumed background indexing[/green]")
 
 
-@app.command()
-def run(
-    project: str = typer.Argument(..., help="Project root path."),
-    prompt: str = typer.Argument(..., help="Prompt for Smith."),
-    task_type: str | None = typer.Option(None, "--task-type", help="ask/implement/review. Omit for auto."),
-    review: str = typer.Option("auto", "--review", help="auto/never/always."),
-):
-    """Run an interactive Smith task for a project path."""
-    coord = ProjectCoordinator(project)
-    coord.start_worker()
-    console.print(f"[bold]Project:[/bold] {coord.db.root_path}")
-    for token in coord.stream_user_task(prompt, task_type=task_type, review_mode=review):
-        print(token, end="", flush=True)
-    print()
+
 
 
 @app.command()
@@ -1061,11 +1103,14 @@ def _web_project_picker() -> Path | None:
                 if not chosen.is_dir():
                     raise ValueError(f"Not a folder: {chosen}")
                 selected["path"] = str(chosen)
-                done.set()
+                # Send response BEFORE signalling done — otherwise httpd.shutdown()
+                # in the main thread may close the socket mid-write.
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.end_headers()
                 self.wfile.write(b"<html><body style='font-family:sans-serif;background:#070a0f;color:#e8eef7;padding:24px'><h2>Agent Smith is starting.</h2><p>You can close this tab.</p></body></html>")
+                self.wfile.flush()
+                done.set()
                 return
             except Exception as exc:
                 selected["error"] = str(exc)
@@ -1137,13 +1182,30 @@ def app_launcher(
     typer.echo(f"Agent UI: {reg['agent_url']}")
     typer.echo(f"LAN Agent UI: {reg['agent_lan_url']}")
 
-    # Open registry first, because it is the central app shell.
+    # Start the agent server in a background thread so we can open the browser
+    # after it is ready. uvicon.run() is blocking, so we run it in a thread.
+    import threading as _threading
+    import time as _time
+
+    def _run_agent_server():
+        from smith.server import app as _app
+        uvicorn.run(_app, host=host, port=serve_port, reload=False)
+
+    _svr = _threading.Thread(target=_run_agent_server, daemon=True)
+    _svr.start()
+
+    # Give the server a moment to bind, then open the browser
+    _time.sleep(1.0)
     try:
-        webbrowser.open(reg["registry_url"])
+        webbrowser.open(reg["agent_url"])
     except Exception:
         pass
 
-    uvicorn.run("smith.server:app", host=host, port=serve_port, reload=False)
+    typer.echo(f"Server running on {reg['agent_url']}")
+    try:
+        _svr.join()
+    except KeyboardInterrupt:
+        typer.echo()
 
 
 if __name__ == "__main__":
