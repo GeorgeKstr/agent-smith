@@ -1008,7 +1008,28 @@ def extract_stream_text(chunk: Any) -> str:
     cls_name = token.__class__.__name__
     msg_type = getattr(token, "type", None)
 
-    # Only stream assistant messages. Explicitly ignore tool outputs.
+    # Tool error messages should appear in the visible stream so the user
+    # can see what went wrong (parsing errors, approval denials, etc.).
+    if cls_name == "ToolMessage" or msg_type == "tool":
+        content = getattr(token, "content", "")
+        if isinstance(content, list):
+            content = "\n".join(str(x) for x in content)
+        content = str(content or "").strip()
+        _tool_error_prefixes = (
+            "COMMAND_PARSE_ERROR", "SHELL_SYNTAX_DETECTED", "SHELL_COMMENT_DETECTED",
+            "APPROVAL_DENIED", "Command not auto-approved", "No approval handler",
+            "EDIT_NEEDS_REAL_CONTENT", "EDIT_FAILED_VERIFICATION", "EDIT_BLOCKED",
+            "EDIT_ERROR", "EDIT_INTERRUPTED", "WRITE_BLOCKED", "WRITE_FAILED_VERIFICATION",
+            "WRITE_ERROR", "WRITE_INTERRUPTED", "READ_BLOCKED", "LIST_BLOCKED",
+        )
+        if content.startswith(_tool_error_prefixes):
+            return f"\n[smith] ⚠ {content[:600]}\n"
+        # Also catch dynamic errors
+        if any(content.startswith(p) for p in ("Error", "ERROR", "error", "DENIED", "BLOCKED", "FAILED")):
+            return f"\n[smith] ⚠ {content[:600]}\n"
+        return ""
+
+    # Only stream assistant messages. Explicitly ignore non-error tool outputs.
     if cls_name not in {"AIMessageChunk", "AIMessage"} and msg_type not in {"ai", "AIMessageChunk"}:
         return ""
 
@@ -1184,10 +1205,38 @@ def describe_stream_progress(chunk, seen: set[str]) -> str:
                 "WRITE_INTERRUPTED",
                 "READ_BLOCKED",
                 "LIST_BLOCKED",
+                # run_command errors
+                "COMMAND_PARSE_ERROR",
+                "SHELL_SYNTAX_DETECTED",
+                "SHELL_COMMENT_DETECTED",
+                "APPROVAL_DENIED",
+                "Command not auto-approved",
+                "No approval handler",
+                # edit errors
+                "EDIT_NEEDS_REAL_CONTENT",
+                "EDIT_FAILED_VERIFICATION",
+                "EDIT_BLOCKED",
+                "EDIT_ERROR",
+                "EDIT_INTERRUPTED",
+                # read errors
+                "read_file error",
+                "list_files error",
+                "grep_search error",
+                "find_files error",
+                "run_command error",
+                "search error",
             )
-            if content.startswith(visible_prefixes):
+            # Also check for any error/denied/blocked/parse prefix dynamically
+            is_error = content.startswith(visible_prefixes) or any(
+                content.startswith(p) for p in (
+                    "Error", "ERROR", "error",
+                    "DENIED", "BLOCKED", "FAILED", "INTERRUPTED",
+                    "Cannot", "Could not", "Refusing",
+                )
+            )
+            if is_error:
                 first = content.splitlines()[0][:1200]
-                return f"[smith] tool result: {name} — {first}\n"
+                return f"[smith] ⚠ tool result: {name} — {first}\n"
 
             # Safe generic summaries for common tools.
             if name == "list_files" or "list_files" in str(name):
