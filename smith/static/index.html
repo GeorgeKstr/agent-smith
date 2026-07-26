@@ -42,7 +42,7 @@
     .app.changes-open .inspector { display: flex; }
     .sidebar, .main, .inspector { min-width: 0; overflow: hidden; }
     .sidebar { border-right: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; }
-    .inspector { border-left: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; }
+    .inspector { border-left: 1px solid var(--border); background: var(--panel); flex-direction: column; }
     .main { display: flex; flex-direction: column; min-width: 0; }
     .section { padding: 8px; border-bottom: 1px solid var(--border); }
     h3 { margin: 0 0 6px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .12em; }
@@ -217,7 +217,6 @@
     .app:not(.history-open) .sidebar-content { display: none; }
     .app:not(.history-open) .sidebar .panel-rail { display: flex; }
     .app:not(.changes-open) .inspector-content { display: none; }
-    .app:not(.changes-open) .inspector .panel-rail { display: flex; }
 
     .model-compact {
       display: grid;

@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 REGISTRY_PORT = int(os.getenv("SMITH_REGISTRY_PORT", "8764"))
 REGISTRY_HOST = os.getenv("SMITH_REGISTRY_HOST", "0.0.0.0")
@@ -70,15 +70,25 @@ registry_app = FastAPI(title="Agent Smith Registry")
 
 @registry_app.get("/")
 def registry_root():
-    static_dir = Path(__file__).resolve().parent.parent / "static"
-    return FileResponse(
-        static_dir / "registry.html",
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
-            "Expires": "0",
-        },
-    )
+    static_dir = Path(__file__).resolve().parent / "static"
+    html_path = static_dir / "registry.html"
+    try:
+        content = html_path.read_bytes()
+        return Response(
+            content=content,
+            media_type="text/html",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
+    except Exception as exc:
+        return Response(
+            content=f"Error loading registry UI: {exc}".encode(),
+            status_code=500,
+            media_type="text/plain",
+        )
 
 
 @registry_app.get("/api/registry/info")
@@ -226,16 +236,59 @@ def registry_is_up(url: str = REGISTRY_URL) -> bool:
         return False
 
 
-def start_registry_if_needed() -> bool:
-    """Start embedded registry server if no registry is already reachable.
+def _kill_stale_registry() -> None:
+    """Kill any process listening on the registry port (stale from a previous run)."""
+    import subprocess, shutil
+    # Try fuser first (Linux)
+    if shutil.which("fuser"):
+        try:
+            out = subprocess.check_output(
+                ["fuser", f"{REGISTRY_PORT}/tcp"],
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            )
+            pids = out.decode().strip().split()
+            for pid in pids:
+                try:
+                    os.kill(int(pid), 9)
+                except (ValueError, OSError):
+                    pass
+        except Exception:
+            pass
+    # Fallback: lsof
+    if shutil.which("lsof"):
+        try:
+            out = subprocess.check_output(
+                ["lsof", "-t", "-i", f"tcp:{REGISTRY_PORT}", "-sTCP:LISTEN"],
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            )
+            for pid in out.decode().strip().split():
+                try:
+                    os.kill(int(pid), 9)
+                except (ValueError, OSError):
+                    pass
+        except Exception:
+            pass
 
-    Returns True if this process started the registry, False if an existing registry was found.
+
+def start_registry_if_needed() -> bool:
+    """Start embedded registry server.
+
+    If a registry from this process is already running, reuse it.
+    If a stale registry from a previous run is detected, kill it and restart.
+
+    Returns True if this call started (or restarted) the registry.
     """
     global _registry_thread
-    if registry_is_up():
-        return False
+
+    # Reuse an already-running thread from this process
     if _registry_thread and _registry_thread.is_alive():
-        return True
+        return False
+
+    # If a stale registry from a previous run is still listening, kill it
+    if registry_is_up():
+        _kill_stale_registry()
 
     def run():
         uvicorn.run(registry_app, host=REGISTRY_HOST, port=REGISTRY_PORT, log_level="warning")

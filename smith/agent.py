@@ -24,7 +24,21 @@ from .sandbox import get_sandbox_backend
 load_dotenv()
 
 IGNORED_DIRS = {".git", ".agent-smith", "node_modules", "venv", ".venv", "__pycache__", "dist", "build"}
-ALLOWED_COMMANDS = {"python", "python3", "pytest", "npm", "pnpm", "node", "npx"}
+ALLOWED_COMMANDS = {
+    # Runtime / package managers
+    "python", "python3", "pytest", "npm", "pnpm", "node", "npx",
+    # Unix read-only / informational
+    "ls", "cat", "head", "tail", "wc", "grep", "find", "echo", "which",
+    "file", "stat", "du", "df", "sort", "uniq", "cut", "tr", "diff", "xargs",
+    # Unix safe writes
+    "mkdir", "touch", "cp", "mv",
+    # Editors (--no-wait modes are safe)
+    "code",
+    # SCM
+    "git",
+    # Fetch
+    "curl", "wget",
+}
 BLOCKED_ARGS = {"install", "add", "remove", "uninstall", "delete", "publish", "deploy", "start", "dev", "serve"}
 
 
