@@ -976,11 +976,11 @@ def smith_recursion_limit() -> int:
     Default is 40. Small models with limited context should stay well under this.
     Set SMITH_RECURSION_LIMIT=60 for larger models.
     """
-    raw = os.getenv("SMITH_RECURSION_LIMIT") or os.getenv("LANGGRAPH_RECURSION_LIMIT") or "40"
+    raw = os.getenv("SMITH_RECURSION_LIMIT") or os.getenv("LANGGRAPH_RECURSION_LIMIT") or "80"
     try:
-        return max(12, min(200, int(raw)))
+        return max(12, min(300, int(raw)))
     except Exception:
-        return 60
+        return 80
 
 
 def extract_stream_text(chunk: Any) -> str:
@@ -1285,7 +1285,7 @@ def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode
     # Collect everything into a transcript for history replay
     full_transcript_parts: list[str] = []
     _tool_call_count = 0
-    MAX_TOOL_CALLS = 20  # hard cap to prevent runaway tool loops
+    MAX_TOOL_CALLS = 50  # hard cap to prevent runaway tool loops
 
     def _yield_and_save(text: str):
         full_transcript_parts.append(text)
@@ -1300,7 +1300,7 @@ def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode
     db.record_event(run_id, "context_built", {"snapshot_id": snapshot_id, "chars": len(context)})
     yield _yield_and_save(f"[smith] context ready: {len(context)} chars\n")
 
-    limit = min(smith_recursion_limit(), MAX_TOOL_CALLS + 20)  # give some headroom
+    limit = smith_recursion_limit()
     yield _yield_and_save(f"[smith] starting model/tool loop...\n")
     yield _yield_and_save(f"[smith] recursion limit: {limit}\n")
     agent = build_agent_with_handler(db, task_type=task_type, context_bundle=context, run_id=run_id, model_override=model_override, cancel_event=cancel_event, approval_handler=approval_handler)
