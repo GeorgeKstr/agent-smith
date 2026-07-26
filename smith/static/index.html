@@ -1,0 +1,3306 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Agent Smith</title>
+  <style>
+    :root {
+      --bg: #080b0f;
+      --panel: #10161d;
+      --panel-2: #141c24;
+      --panel-3: #0c1117;
+      --border: #26323d;
+      --text: #e6edf3;
+      --muted: #8b98a5;
+      --accent: #78d67b;
+      --accent-2: #8ab4f8;
+      --danger: #ff7b72;
+      --warn: #f2cc60;
+      --shadow: rgba(0,0,0,.24);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: radial-gradient(circle at top, #152131 0, var(--bg) 44rem); color: var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    header { height: 42px; display: flex; gap: 6px; align-items: center; padding: 0 10px; border-bottom: 1px solid var(--border); background: var(--bg); }
+    .brand { font-weight: 900; color: var(--accent); letter-spacing: .2px; margin-right: 4px; }
+    .pill { border: 1px solid var(--border); background: var(--panel); color: var(--muted); border-radius: 8px; padding: 6px 10px; font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    button, input, select, textarea { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; }
+    button { cursor: pointer; transition: .1s ease; }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: #238636; border-color: #2ea043; color: #fff; }
+    button.primary:hover { background: #2ea043; }
+    button.ghost { background: transparent; }
+    button.danger:hover { border-color: var(--danger); }
+    input, select { min-width: 0; }
+    input:focus, select:focus, textarea:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 1px var(--accent); }
+    .app { display: grid; grid-template-columns: 0px minmax(0, 1fr) 0px; height: calc(100vh - 42px); }
+    .app.history-open { grid-template-columns: 280px minmax(0, 1fr) 0px; }
+    .app.changes-open { grid-template-columns: 0px minmax(0, 1fr) 320px; }
+    .app.history-open.changes-open { grid-template-columns: 280px minmax(0, 1fr) 320px; }
+    .sidebar { display: none; }
+    .inspector { display: none; }
+    .app.history-open .sidebar { display: flex; }
+    .app.changes-open .inspector { display: flex; }
+    .sidebar, .main, .inspector { min-width: 0; overflow: hidden; }
+    .sidebar { border-right: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; }
+    .inspector { border-left: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; }
+    .main { display: flex; flex-direction: column; min-width: 0; }
+    .section { padding: 8px; border-bottom: 1px solid var(--border); }
+    h3 { margin: 0 0 6px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .12em; }
+    .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; flex-wrap: wrap; }
+    .grow { flex: 1; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .tabs { display: flex; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); background: rgba(12,17,23,.6); }
+    .tab { border-radius: 6px; padding: 7px 10px; color: var(--muted); background: var(--panel-3); border: 1px solid var(--border); position: relative; font-size: 13px; }
+    .tab.active { color: var(--text); border-color: var(--accent); background: #13231a; box-shadow: inset 0 -2px 0 var(--accent); }
+    .task-badge { display: none; position: absolute; right: -5px; top: -5px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 999px; background: var(--warn); color: #111; font-size: 11px; line-height: 20px; font-weight: 800; text-align: center; }
+    .task-badge.running { display: block; background: var(--accent); }
+    .task-badge.paused { display: block; background: var(--warn); }
+    .task-badge.error { display: block; background: var(--danger); color: #fff; }
+    .view { display: none; min-height: 0; flex: 1; overflow: hidden; }
+    .view.active { display: flex; }
+    .chat-view { flex-direction: column; }
+    .messages { flex: 1; overflow: hidden auto; padding: 12px; }
+    .msg { max-width: 980px; margin: 0 auto 16px; display: flex; gap: 10px; }
+    .bubble { border: 1px solid var(--border); background: rgba(16,22,29,.92); border-radius: 10px; padding: 10px 12px; box-shadow: 0 6px 16px var(--shadow); line-height: 1.5; width: 100%; min-width: 0; }
+    .msg.user .bubble { background: #10231a; border-color: #275b36; }
+    .msg.assistant .bubble { background: #0d131a; }
+    .msg.system .bubble { background: transparent; box-shadow: none; border-color: transparent; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; padding: 4px 0; }
+    .composer { border-top: 1px solid var(--border); padding: 8px 10px; background: var(--bg); }
+    .composer-inner { max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
+    .prompt-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 110px;
+      grid-template-rows: 1fr 1fr;
+      gap: 4px 8px;
+      align-items: stretch;
+    }
+    .prompt-row #prompt {
+      grid-row: 1 / 3;
+      min-height: 40px;
+      max-height: 140px;
+      resize: none;
+      line-height: 1.35;
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+    .prompt-row #taskType {
+      grid-column: 2;
+      grid-row: 1;
+      padding: 6px 8px;
+      font-size: 12px;
+      align-self: stretch;
+    }
+    .prompt-row #send {
+      grid-column: 2;
+      grid-row: 2;
+      padding: 6px 8px;
+      font-size: 13px;
+      font-weight: 700;
+      align-self: stretch;
+    }
+    .prompt-hint { margin-top: 3px; font-size: 10px; }
+    .model-bar { display: grid; grid-template-columns: 130px 1fr 130px 1fr auto; gap: 6px; margin-bottom: 6px; align-items: center; }
+    .history { overflow: auto; flex: 1; padding: 6px; }
+    .history-item { border: 1px solid var(--border); background: var(--panel-3); border-radius: 8px; padding: 8px; margin-bottom: 6px; cursor: pointer; }
+    .history-item:hover { border-color: var(--accent-2); }
+    .history-item b { display: block; font-size: 12px; color: var(--accent-2); }
+    .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .stat { border: 1px solid var(--border); background: var(--panel-3); border-radius: 10px; padding: 9px; }
+    .stat b { display: block; color: var(--accent-2); font-size: 18px; }
+    .files-view { flex-direction: row; }
+    .file-tree { width: 280px; border-right: 1px solid var(--border); display: flex; flex-direction: column; min-width: 0; }
+    .file-list { overflow: auto; padding: 4px; flex: 1; }
+    .file-item { display: flex; gap: 8px; align-items: center; padding: 7px 8px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+    .file-item:hover { background: var(--panel-2); }
+    .file-item.active { background: #13231a; outline: 1px solid #275b36; }
+    .editor-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .editor-toolbar { border-bottom: 1px solid var(--border); padding: 6px 8px; display: flex; gap: 6px; align-items: center; }
+    #editor { flex: 1; width: 100%; resize: none; border-radius: 0; border: 0; background: #05080c; color: #d9e6f2; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.5; padding: 10px; }
+    .preview { flex: 1; overflow: auto; padding: 10px; background: #05080c; }
+    .preview img { max-width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--border); background: #fff; }
+    .summary-box { border-top: 1px solid var(--border); padding: 8px; background: var(--panel-3); max-height: 120px; overflow: auto; }
+    .index-view, .tasks-view { flex-direction: column; overflow: hidden; }
+    .index-list, .task-output { overflow: auto; padding: 8px; }
+    .index-row, .change, .task-step { border: 1px solid var(--border); background: var(--panel-3); border-radius: 8px; padding: 8px; margin-bottom: 6px; }
+    .index-row { cursor: pointer; }
+    .index-row:hover { border-color: var(--accent-2); }
+    .badge { display: inline-block; border: 1px solid var(--border); border-radius: 999px; padding: 2px 7px; font-size: 11px; color: var(--muted); }
+    .badge.indexed, .badge.clean, .badge.accepted, .badge.done { color: var(--accent); border-color: #2f6b3f; }
+    .badge.queued, .badge.dirty, .badge.pending, .badge.paused { color: var(--warn); border-color: #7f6730; }
+    .badge.error, .badge.reverted { color: var(--danger); border-color: #7e3535; }
+    .task-layout { display: grid; gap: 0; flex: 1; min-height: 0; }
+    .task-builder { overflow: auto; padding: 8px; border-right: 1px solid var(--border); }
+    .task-monitor { display: flex; flex-direction: column; min-width: 0; }
+    .task-step textarea { width: 100%; min-height: 80px; resize: vertical; }
+    #flowJson { width: 100%; min-height: 150px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .task-status-line { border-bottom: 1px solid var(--border); padding: 6px 8px; }
+    .md h1, .md h2, .md h3 { color: var(--text); text-transform: none; letter-spacing: 0; margin: 1em 0 .4em; }
+    .md p { margin: .6em 0; }
+    .md { overflow-wrap: break-word; word-break: break-word; }
+    .md pre { background: #05080b; border: 1px solid var(--border); border-radius: 10px; padding: 12px; overflow-x: auto; max-width: 100%; }
+
+    /* ── Live run progress display ──────────────────────────── */
+    .live-progress {
+      margin-bottom: 8px;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+      padding-bottom: 6px;
+    }
+    .progress-line {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.5;
+      opacity: .85;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .progress-line:first-child {
+      margin-top: 0;
+    }
+    .thinking-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 0;
+      font-size: 13px;
+      color: var(--accent-2);
+    }
+    .thinking-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent-2);
+      animation: thinkPulse 1.2s infinite ease-in-out;
+      flex-shrink: 0;
+    }
+    @keyframes thinkPulse {
+      0%, 100% { transform: scale(.7); opacity: .3; }
+      50% { transform: scale(1.1); opacity: 1; }
+    }
+    .actual-response {
+      margin-top: 4px;
+    }
+    /* When both progress and response are shown, separate them */
+    .live-progress + .actual-response {
+      border-top: 1px solid rgba(255,255,255,.08);
+      padding-top: 10px;
+      margin-top: 4px;
+    }
+    .md code { color: #b7f7c1; background: #05080b; border: 1px solid #18232c; border-radius: 6px; padding: 1px 5px; }
+    .md pre code { border: 0; padding: 0; background: transparent; }
+    .md ul { padding-left: 1.25rem; }
+
+    .app { position: relative; }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .panel-head h3 { margin: 0; }
+    .panel-close { width: 30px; height: 30px; padding: 0; border-radius: 6px; color: var(--muted); }
+    .sidebar-content, .inspector-content { min-width: 0; overflow: hidden; display: flex; flex-direction: column; height: 100%; }
+    .panel-rail {
+      display: none;
+      height: 100%;
+      width: 100%;
+      border: 0;
+      border-radius: 0;
+      border-right: 1px solid var(--border);
+      background: var(--panel-3);
+      color: var(--muted);
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      align-items: center;
+      justify-content: center;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      font-size: 12px;
+    }
+    .inspector .panel-rail { border-right: 0; border-left: 1px solid var(--border); }
+    .app:not(.history-open) .sidebar-content { display: none; }
+    .app:not(.history-open) .sidebar .panel-rail { display: flex; }
+    .app:not(.changes-open) .inspector-content { display: none; }
+    .app:not(.changes-open) .inspector .panel-rail { display: flex; }
+
+    .model-compact {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .model-group {
+      display: grid;
+      grid-template-columns: auto minmax(120px, .55fr) minmax(150px, 1fr);
+      gap: 6px;
+      align-items: center;
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      border-radius: 8px;
+      padding: 6px;
+      min-width: 0;
+    }
+    .model-group label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      white-space: nowrap;
+    }
+    .model-group select { padding: 6px 8px; font-size: 12px; }
+
+    .task-layout { min-height: 0; height: 100%; }
+    .task-builder { padding: 8px; }
+    .task-monitor { min-height: 0; overflow: hidden; }
+    .task-output { flex: 1; min-height: 0; overflow: auto; }
+    .task-status-line { flex: 0 0 auto; }
+
+    .task-step {
+      padding: 6px;
+      margin-bottom: 4px;
+      border-radius: 6px;
+      transition: opacity .2s;
+    }
+    .task-step.done { opacity: .65; }
+    .task-step.done .step-prompt { color: var(--muted); }
+    .task-step.running { border-color: var(--accent); }
+    .task-step.error { border-color: var(--danger); }
+    .task-step select,
+    .task-step button,
+    .task-step input {
+      padding: 3px 6px;
+      font-size: 11px;
+      border-radius: 4px;
+    }
+    .task-step textarea {
+      min-height: 40px;
+      font-size: 12px;
+      padding: 5px 7px;
+      line-height: 1.3;
+    }
+    .step-model-grid {
+      display: grid;
+      grid-template-columns: 48px minmax(80px,1fr) minmax(100px,1fr) auto auto minmax(80px,1fr) minmax(100px,1fr);
+      gap: 4px;
+      align-items: center;
+      margin-top: 4px;
+    }
+    .step-model-grid span,
+    .step-model-grid .review-label {
+      font-size: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .step-model-grid select {
+      width: 100%;
+      min-width: 0;
+      font-size: 11px;
+      padding: 2px 4px;
+    }
+    .step-model-grid .review-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      cursor: pointer;
+      color: var(--muted);
+    }
+    .step-model-grid .review-toggle input {
+      accent-color: var(--accent);
+      margin: 0;
+      width: 12px;
+      height: 12px;
+    }
+
+    .task-json-card {
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      border-radius: 8px;
+      padding: 6px;
+      margin-bottom: 6px;
+    }
+    #flowJson {
+      min-height: 80px;
+      max-height: 160px;
+      font-size: 11px;
+      padding: 5px;
+    }
+
+    .task-action-strip {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      flex-wrap: wrap;
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      border-radius: 6px;
+      padding: 4px 6px;
+      margin-bottom: 4px;
+    }
+    .task-action-strip select,
+    .task-action-strip button {
+      padding: 4px 7px;
+      font-size: 11px;
+    }
+
+    details.debug-details {
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      border-radius: 8px;
+      padding: 6px 8px;
+      margin: 6px 0;
+    }
+    details.debug-details summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+    }
+    .final-output {
+      border-top: 1px solid var(--border);
+      margin-top: 6px;
+      padding-top: 6px;
+    }
+    .bottom-add-step {
+      width: 100%;
+      border-style: dashed;
+      margin: 6px 0 2px;
+      padding: 8px;
+      font-weight: 700;
+      font-size: 13px;
+      color: var(--accent);
+    }
+    .spec-card {
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      border-radius: 8px;
+      padding: 6px;
+      margin-bottom: 6px;
+    }
+    .spec-card summary {
+      cursor: pointer;
+      color: var(--accent-2);
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .spec-card pre {
+      max-height: 200px;
+      overflow: auto;
+      background: #05080b;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px;
+      font-size: 11px;
+    }
+
+    .task-layout {
+      grid-template-columns: minmax(360px, var(--task-builder-width, 55%)) 5px minmax(280px, 1fr);
+    }
+    .task-splitter {
+      cursor: col-resize;
+      background: linear-gradient(to right, transparent, var(--border), transparent);
+      min-width: 5px;
+    }
+    .task-splitter:hover { background: var(--accent-2); }
+    .task-output-details {
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      border-radius: 8px;
+      margin-bottom: 6px;
+      overflow: hidden;
+    }
+    .task-output-details summary {
+      cursor: pointer;
+      padding: 6px 8px;
+      color: var(--accent-2);
+      border-bottom: 1px solid var(--border);
+      user-select: none;
+      font-size: 12px;
+    }
+    .task-output-inner {
+      padding: 8px;
+      max-height: 50vh;
+      overflow: auto;
+    }
+
+    @media (max-width: 1200px) {
+      .app { grid-template-columns: 1fr; }
+      .inspector { display: none; }
+      .task-layout { grid-template-columns: 1fr; --task-builder-width: 100%; }
+      .task-splitter { display:none; }
+      .task-builder { border-right: 0; border-bottom: 1px solid var(--border); }
+      .model-bar, .model-compact { grid-template-columns: 1fr; }
+      .model-group { grid-template-columns: 1fr; }
+      .step-model-grid { grid-template-columns: 1fr; }
+    }
+
+    .step-topline {
+      display: grid;
+      grid-template-columns: auto 80px 80px 1fr auto;
+      gap: 4px;
+      align-items: center;
+    }
+    .step-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      justify-self: end;
+    }
+    .step-actions .icon-button {
+      width: 24px;
+      height: 24px;
+      font-size: 14px;
+      border-radius: 4px;
+      padding: 0;
+    }
+    .review-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+.review-toggle input { accent-color: var(--accent); margin: 0; width: 12px; height: 12px; }
+    }
+    .task-step.review-disabled .step-review-provider,
+    .task-step.review-disabled .step-review-model,
+    .task-step.review-disabled .step-review-iterations {
+      display: none;
+    }
+    .task-step.review-disabled .review-label { opacity: .5; }
+    .step-restart {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--accent-2);
+      background: transparent;
+      border: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .step-restart:hover { border-color: var(--accent-2); background: rgba(138,180,248,.1); }
+    .debug-details[open] summary {
+      margin-bottom: 8px;
+    }
+    .debug-details .md {
+      max-height: 260px;
+      overflow: auto;
+      border-top: 1px solid var(--border);
+      padding-top: 8px;
+    }
+
+    @media (max-width: 760px) {
+      header {
+        height: auto;
+        min-height: 54px;
+        flex-wrap: wrap;
+        padding: 8px;
+      }
+      header input {
+        flex: 1 1 160px;
+      }
+      .app,
+      .app:not(.history-open),
+      .app:not(.changes-open),
+      .app:not(.history-open):not(.changes-open) {
+        display: flex;
+        flex-direction: column;
+        height: calc(100vh - 84px);
+      }
+      .sidebar,
+      .inspector {
+        max-height: 34vh;
+        border: 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .app:not(.history-open) .sidebar,
+      .app:not(.changes-open) .inspector {
+        display: none;
+      }
+      .panel-rail {
+        writing-mode: horizontal-tb;
+        border-left: 0;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .main {
+        flex: 1;
+        min-height: 0;
+      }
+      .tabs {
+        overflow-x: auto;
+        padding: 8px;
+      }
+      .tab {
+        min-width: 78px;
+        padding: 8px 10px;
+      }
+      .messages {
+        padding: 10px;
+      }
+      .msg {
+        margin-bottom: 10px;
+      }
+      .bubble {
+        border-radius: 12px;
+        padding: 10px;
+      }
+      .composer {
+        padding: 8px;
+      }
+      .composer-inner {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .composer-inner > button {
+        width: 100%;
+      }
+      .model-compact {
+        display: flex;
+        flex-direction: column;
+      }
+      .model-group {
+        grid-template-columns: 56px minmax(0, 1fr);
+      }
+      .model-group select:last-child {
+        grid-column: 1 / -1;
+      }
+      .row {
+        gap: 6px;
+      }
+      .files-view {
+        flex-direction: column;
+      }
+      .file-tree {
+        width: 100%;
+        max-height: 36vh;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .task-layout,
+      .task-layout[style] {
+        display: flex;
+        flex-direction: column;
+      }
+      .task-builder {
+        max-height: 48vh;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .task-monitor {
+        min-height: 260px;
+      }
+      .task-splitter {
+        display: none;
+      }
+      .step-topline {
+        grid-template-columns: 1fr 1fr auto;
+      }
+      .step-topline .badge {
+        grid-column: 1 / -1;
+        width: fit-content;
+      }
+      .step-actions {
+        grid-column: 1 / -1;
+        justify-self: stretch;
+        justify-content: space-between;
+      }
+      .step-model-grid {
+        grid-template-columns: 1fr;
+      }
+      .task-top-grid,
+      .model-bar,
+      .model-compact {
+        grid-template-columns: 1fr;
+      }
+    }
+
+
+    .hamburger { display:none; font-size:20px; min-width:40px; }
+    .mobile-backdrop {
+      display:none;
+      position:fixed;
+      inset:0;
+      background:rgba(0,0,0,.55);
+      z-index:80;
+    }
+    .mobile-menu {
+      display:none;
+      position:fixed;
+      top:0;
+      left:0;
+      bottom:0;
+      width:min(86vw, 340px);
+      background:var(--panel);
+      border-right:1px solid var(--border);
+      z-index:90;
+      padding:12px;
+      box-shadow:18px 0 40px rgba(0,0,0,.35);
+      overflow:auto;
+    }
+    .mobile-menu.open, .mobile-backdrop.open { display:block; }
+    .mobile-menu button, .mobile-menu input, .mobile-menu a {
+      display:block;
+      width:100%;
+      margin:8px 0;
+      text-align:left;
+    }
+    .model-drawer {
+      border:1px solid var(--border);
+      background:var(--panel-3);
+      border-radius:10px;
+      margin-bottom:8px;
+      padding:0;
+    }
+    .model-drawer summary {
+      cursor:pointer;
+      color:var(--muted);
+      padding:8px 10px;
+      font-size:12px;
+      user-select:none;
+    }
+    .model-drawer[open] summary {
+      border-bottom:1px solid var(--border);
+    }
+    .model-drawer .model-compact {
+      padding:8px;
+      margin-bottom:0;
+    }
+    details.debug-details {
+      overflow:hidden;
+    }
+    details.debug-details:not([open]) {
+      max-height:42px;
+    }
+    .debug-details summary::before {
+      content:"▸ ";
+    }
+    .debug-details[open] summary::before {
+      content:"▾ ";
+    }
+
+    @media (min-width: 761px) {
+      /* Models are intentionally on-demand on desktop too. */
+    }
+
+    @media (max-width: 760px) {
+      body.mobile-panel-history .sidebar,
+      body.mobile-panel-changes .inspector {
+        display:flex !important;
+        position:fixed;
+        z-index:85;
+        top:54px;
+        bottom:0;
+        left:0;
+        right:0;
+        max-height:none !important;
+        background:var(--panel);
+        border:0;
+        overflow:hidden;
+      }
+      body.mobile-panel-history .sidebar-content,
+      body.mobile-panel-changes .inspector-content {
+        display:flex !important;
+        height:100%;
+      }
+      body.mobile-panel-history .panel-rail,
+      body.mobile-panel-changes .panel-rail {
+        display:none !important;
+      }
+      body.mobile-panel-history .main,
+      body.mobile-panel-changes .main {
+        pointer-events:none;
+      }
+      .hamburger { display:inline-flex; align-items:center; justify-content:center; }
+      .header-action, .header-info {
+        display:none !important;
+      }
+      header {
+        height:54px !important;
+        min-height:54px !important;
+        flex-wrap:nowrap !important;
+        padding:0 8px !important;
+      }
+      .brand { flex:1; }
+      .app,
+      .app:not(.history-open),
+      .app:not(.changes-open),
+      .app:not(.history-open):not(.changes-open) {
+        height:calc(100vh - 54px) !important;
+      }
+      .sidebar, .inspector {
+        display:none;
+      }
+      .main {
+        min-height:0;
+        height:100%;
+      }
+      .composer {
+        padding-bottom: max(8px, env(safe-area-inset-bottom));
+      }
+      #modelDrawer:not([open]) .model-compact {
+        display:none;
+      }
+      #modelDrawer summary {
+        color:var(--accent-2);
+      }
+      #modelDrawer .model-compact {
+        display:flex;
+        flex-direction:column;
+      }
+      .model-group {
+        grid-template-columns:1fr;
+      }
+      .model-group label {
+        margin-bottom:-2px;
+      }
+      .row select, .row button, .row input {
+        max-width:100%;
+      }
+      #projectTitle {
+        max-width:100%;
+      }
+      .inspector .section {
+        height:100%;
+        display:flex;
+        flex-direction:column;
+      }
+      #changes {
+        overflow:auto;
+        min-height:0;
+      }
+      .history {
+        min-height:0;
+      }
+    }
+
+
+    .file-rail { font-size:18px; border:0; background:var(--panel-3); color:var(--muted); cursor:pointer; width:100%; height:100%; display:none; align-items:center; justify-content:center; border-right:1px solid var(--border); }
+    .file-tree-content { display:flex; flex-direction:column; height:100%; min-width:0; }
+    .files-view.file-tree-closed .file-tree { width:42px; min-width:42px; }
+    .files-view.file-tree-closed .file-tree-content { display:none; }
+    .files-view.file-tree-closed .file-rail { display:flex; }
+    .file-ref {
+      display:inline;
+      border:1px solid var(--border);
+      background:rgba(138,180,248,.10);
+      color:var(--accent-2);
+      border-radius:6px;
+      padding:1px 5px;
+      cursor:pointer;
+      font:inherit;
+    }
+    .file-ref:hover { border-color:var(--accent-2); }
+    .changes-run {
+      border:1px solid var(--border);
+      background:var(--panel-3);
+      border-radius:10px;
+      padding:10px;
+      margin-bottom:10px;
+    }
+    .changes-run details { margin-top:8px; }
+    .changes-run summary { cursor:pointer; color:var(--accent-2); }
+    .change-file-row {
+      border-top:1px solid var(--border);
+      padding:8px 0;
+    }
+    .change-file-row:first-child { border-top:0; }
+    .diff-stat { color:var(--muted); font-size:12px; }
+    .diff-stat .add { color:var(--accent); }
+    .diff-stat .del { color:var(--danger); }
+    .diff-preview {
+      max-height:220px;
+      overflow:auto;
+      white-space:pre-wrap;
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      font-size:12px;
+      background:#05080b;
+      border:1px solid var(--border);
+      border-radius:8px;
+      padding:8px;
+      margin-top:6px;
+    }
+
+    @media (max-width: 760px) {
+      .files-view.file-tree-closed .file-tree { display:flex; width:100%; min-height:38px; max-height:38px; }
+      .files-view.file-tree-closed .file-rail { border-right:0; border-bottom:1px solid var(--border); font-size:18px; }
+      .files-view:not(.file-tree-closed) .file-tree {
+        width:100%;
+        max-height:42vh;
+      }
+      .editor-toolbar {
+        flex-wrap:wrap;
+      }
+    }
+
+
+    .inspector { min-height:0; }
+    .inspector-content { min-height:0; }
+    .inspector-content > .section {
+      display:flex;
+      flex-direction:column;
+      min-height:0;
+      height:100%;
+    }
+    #changes {
+      overflow:auto;
+      min-height:0;
+      flex:1;
+      padding-right:2px;
+    }
+
+    @media (min-width: 761px) {
+      #modelDrawer {
+        display:block !important;
+      }
+      #modelDrawer > .model-compact,
+      #modelDrawer:not([open]) > .model-compact {
+        display:grid !important;
+      }
+    }
+
+
+    .optional-transcript {
+      border:1px solid var(--border);
+      background:var(--panel-3);
+      border-radius:10px;
+      margin:8px 0;
+      overflow:hidden;
+    }
+    .optional-transcript summary {
+      cursor:pointer;
+      color:var(--muted);
+      padding:8px 10px;
+      user-select:none;
+      font-size:12px;
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    }
+    .optional-transcript summary::before { content:"▸ "; }
+    .optional-transcript[open] summary::before { content:"▾ "; }
+    .optional-transcript .md {
+      max-height:320px;
+      overflow:auto;
+      border-top:1px solid var(--border);
+      padding:10px;
+    }
+    .actual-response {
+      margin-top:8px;
+    }
+    .no-final {
+      color:var(--muted);
+      border-top:1px solid var(--border);
+      padding-top:8px;
+      margin-top:8px;
+    }
+
+
+    .assistant.completed-assistant .optional-transcript:not([open]) .md,
+    .message.assistant.completed-assistant .optional-transcript:not([open]) .md {
+      display:none;
+    }
+
+
+    .history-top {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+    }
+    .history-item.active-thread {
+      outline:1px solid rgba(138,180,248,.45);
+      background:rgba(138,180,248,.08);
+    }
+    .mini-delete {
+      padding:3px 7px;
+      font-size:11px;
+      line-height:1.2;
+    }
+
+
+    /* ── Activity indicator (single timer, prominent tool info) ──── */
+    .activity-details,
+    .activity-log {
+      display: none !important;
+    }
+    .agent-activity {
+      padding: 10px 12px;
+      margin: 6px 0;
+      border-radius: 10px;
+      transition: .15s ease;
+      min-height: 44px;
+    }
+    .agent-activity.idle {
+      opacity: .45;
+    }
+    .agent-activity.running {
+      border-color: var(--accent-2);
+      background: linear-gradient(135deg, rgba(138,180,248,.08), rgba(138,180,248,.03));
+      box-shadow: 0 0 24px rgba(138,180,248,.06);
+    }
+    .activity-main {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 24px;
+    }
+    .activity-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+    }
+    .agent-activity.running .activity-dot {
+      background: var(--accent);
+      animation: smithPulse 1.2s infinite ease-in-out;
+    }
+    @keyframes smithPulse {
+      0%, 100% { transform: scale(.6); opacity: .25; box-shadow: 0 0 0 rgba(120,214,123,0); }
+      50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 16px rgba(120,214,123,.35); }
+    }
+    #activityLabel {
+      font-size: 14px;
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      letter-spacing: .1px;
+      flex: 1;
+      min-width: 0;
+    }
+    .agent-activity.running #activityLabel {
+      color: var(--text);
+    }
+    #activityElapsed {
+      flex-shrink: 0;
+      font-size: 13px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--muted) !important;
+    }
+
+    /* ── Model drawer (on-demand on all screen sizes) ─────────── */
+    #modelDrawer {
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      border-radius: 10px;
+      padding: 0;
+      margin-bottom: 8px;
+    }
+    #modelDrawer > summary {
+      display: block;
+      cursor: pointer;
+      color: var(--accent-2);
+      padding: 8px 10px;
+      font-size: 12px;
+      user-select: none;
+    }
+    #modelDrawer:not([open]) .model-compact {
+      display: none;
+    }
+    #modelDrawer[open] summary {
+      border-bottom: 1px solid var(--border);
+    }
+    .model-compact {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+      padding: 8px;
+    }
+    .model-actions {
+      display:flex;
+      gap:8px;
+      align-items:center;
+      flex-wrap:wrap;
+    }
+    .review-toggle {
+      display:flex;
+      align-items:center;
+      gap:8px;
+      color:var(--muted);
+      font-size:12px;
+      padding:4px 0;
+    }
+    .review-toggle input {
+      width:auto;
+      accent-color:var(--accent-2);
+    }
+    .review-model-group.disabled {
+      opacity:.45;
+      pointer-events:none;
+      display:none;
+    }
+
+    /* Completed chat/history bubbles should show verbose logs only inside collapsed optional details. */
+    .optional-transcript:not([open]) .md,
+    .completed-assistant .optional-transcript:not([open]) .md {
+      display:none !important;
+    }
+    .optional-transcript summary {
+      cursor:pointer;
+    }
+
+    @media (max-width:760px) {
+      .model-actions {
+        flex-direction:column;
+        align-items:stretch;
+      }
+      .model-actions button {
+        width:100%;
+      }
+    }
+
+
+    /* Mobile picker/layout polish for compact chat controls. */
+    @media (max-width:760px) {
+      .composer {
+        padding:8px;
+      }
+      .composer-inner {
+        max-width: none;
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+      }
+      .prompt-row #send {
+        width: 100%;
+        min-height: 38px;
+        padding: 8px 10px;
+        align-self: auto;
+      }
+      .prompt-row {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .prompt-row #prompt {
+        min-height: 48px;
+        max-height: 118px;
+        padding: 9px 10px;
+        font-size: 13px;
+      }
+      .prompt-row #taskType {
+        padding: 6px;
+        font-size: 11px;
+        border-radius: 10px;
+      }
+      .prompt-row #send {
+        width: 100%;
+      }
+      .prompt-row #taskType {
+        min-height:48px;
+        height:auto;
+        padding:6px;
+        font-size:11px;
+        border-radius:10px;
+      }
+      .prompt-row #prompt {
+        min-height:48px;
+        max-height:118px;
+        padding:9px 10px;
+        font-size:13px;
+      }
+      .prompt-hint {
+        display:none;
+      }
+      #modelDrawer {
+        margin-bottom:6px;
+      }
+      #modelDrawer > summary {
+        padding:7px 9px;
+      }
+      #modelDrawer .model-compact {
+        gap:7px;
+        padding:7px !important;
+      }
+      .model-group {
+        grid-template-columns:1fr !important;
+        gap:5px;
+      }
+      .model-group label {
+        font-size:11px;
+      }
+      .model-actions {
+        display:grid;
+        grid-template-columns:1fr;
+        gap:6px;
+      }
+      .model-actions button {
+        width:100%;
+        min-height:34px;
+      }
+      .review-toggle {
+        font-size:12px;
+        padding:3px 0;
+      }
+      .agent-activity {
+        margin:5px 0;
+        padding:6px 8px;
+        font-size:11px;
+      }
+      .activity-main {
+        min-width:0;
+        overflow:hidden;
+      }
+      #activityLabel {
+        min-width:0;
+        overflow:hidden;
+        text-overflow:ellipsis;
+        white-space:nowrap;
+      }
+      #activityElapsed {
+        margin-left:auto;
+        flex:0 0 auto;
+      }
+      .messages {
+        padding:10px;
+      }
+      .msg {
+        margin-bottom:10px;
+      }
+      .bubble {
+        border-radius:12px;
+        padding:10px 11px;
+      }
+    }
+
+    @media (max-width:380px) {
+      .prompt-row {
+        grid-template-columns:66px minmax(0,1fr);
+      }
+      .prompt-row #taskType {
+        font-size:10px;
+        padding:5px;
+      }
+    }
+
+
+    /* Fixed-size mobile header/menu controls. */
+    .header-icon,
+    .hamburger,
+    .panel-close {
+      width:36px !important;
+      min-width:36px !important;
+      max-width:36px !important;
+      height:36px !important;
+      min-height:36px !important;
+      max-height:36px !important;
+      padding:0 !important;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      line-height:1;
+      text-align:center;
+      flex:0 0 36px;
+      aspect-ratio:1 / 1;
+      font-size:20px;
+      border-radius:9px;
+    }
+    .hamburger {
+      width:40px !important;
+      min-width:40px !important;
+      max-width:40px !important;
+      height:40px !important;
+      min-height:40px !important;
+      max-height:40px !important;
+      flex-basis:40px;
+    }
+    .mobile-menu .panel-head {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+    }
+    .mobile-menu .panel-close {
+      display:inline-flex !important;
+      width:36px !important;
+      margin:0 !important;
+      text-align:center !important;
+    }
+    body.mobile-menu-open #mobileMenuButton {
+      border-color:var(--accent-2);
+      background:var(--panel-3);
+    }
+
+
+    /* ── History is a tab, not a side panel ─────────────────── */
+    .app,
+    .app:not(.history-open),
+    .app:not(.history-open):not(.changes-open) {
+      grid-template-columns: minmax(0, 1fr) 380px;
+    }
+    .app:not(.changes-open) {
+      grid-template-columns: minmax(0, 1fr) 42px;
+    }
+    .sidebar {
+      display: none;
+    }
+    .history-view {
+      min-height:0;
+      overflow:hidden;
+    }
+    .history-tab-shell {
+      height:100%;
+      min-height:0;
+      display:flex;
+      flex-direction:column;
+      overflow:hidden;
+    }
+    .history-tab-head {
+      flex:0 0 auto;
+    }
+    .history-tab-list {
+      flex:1;
+      min-height:0;
+      overflow:auto;
+      padding:12px;
+    }
+    @media (max-width:760px) {
+      .app,
+      .app:not(.history-open),
+      .app:not(.changes-open),
+      .app:not(.history-open):not(.changes-open) {
+        grid-template-columns:1fr !important;
+      }
+      body.mobile-panel-history .main {
+        pointer-events:auto !important;
+      }
+    }
+
+  </style>
+</head>
+<body>
+  <header>
+    <button id="mobileMenuButton" class="ghost hamburger header-icon" title="Menu" aria-label="Open menu">☰</button>
+    <div class="brand">Agent Smith</div>
+    <span id="projectTitle" class="pill header-info" style="flex:1;min-width:0">loading...</span>
+    <input id="token" class="header-action" placeholder="token" style="width:90px" />
+    <button id="refresh" class="header-action" title="Refresh status">⟳</button>
+    <button id="newThread" class="ghost header-action">+ New</button>
+  </header>
+
+  <div id="mobileMenuBackdrop" class="mobile-backdrop"></div>
+  <div id="mobileMenu" class="mobile-menu">
+    <div class="panel-head">
+      <h3>Menu</h3>
+      <button id="closeMobileMenu" class="panel-close header-icon" aria-label="Close menu">×</button>
+    </div>
+    <button id="mobileNewThread">New Thread</button>
+    <a id="mobileRegistryLink" class="pill" href="http://127.0.0.1:8764" target="_blank">Open Registry</a>
+    <button id="mobileShowHistory">History</button>
+    <button id="mobileShowChanges">Changes</button>
+    <button id="mobileRefresh">Refresh</button>
+    <input id="mobileToken" placeholder="access token" />
+    <div id="mobileProjectTitle" class="muted"></div>
+    <div id="mobileBuildBadge" class="muted">v0.1.0</div>
+  </div>
+
+  <div id="app" class="app">
+    <main class="main">
+      <nav class="tabs">
+        <button class="tab active" data-tab="chat">Chat</button>
+        <button class="tab" data-tab="history">History</button>
+        <button class="tab" data-tab="files">Files</button>
+        <button class="tab" data-tab="index">Indexing</button>
+        <button class="tab" data-tab="tasks">Tasks <span id="taskBadge" class="task-badge">0</span></button>
+      </nav>
+
+      <section id="historyView" class="view history-view">
+        <div class="history-tab-shell">
+          <div class="section history-tab-head">
+            <div class="panel-head">
+              <h3>Run History</h3>
+              <button id="loadMoreHistory" class="ghost">Load older</button>
+            </div>
+            <div class="muted">Click a thread to reopen it. Delete removes it from history; file changes are not affected.</div>
+          </div>
+          <div id="history" class="history history-tab-list"></div>
+        </div>
+      </section>
+
+      <section id="chatView" class="view chat-view active">
+        <div id="messages" class="messages"><div class="msg system" id="welcomeMsg"><div class="bubble md"><p>👋 <strong>Welcome to Agent Smith.</strong> Ask me to inspect, implement, or review code.</p><p>Select <strong>task type</strong> → <em>ask</em> (questions), <em>implement</em> (edits), <em>review</em> (check work).</p></div></div></div>
+        <div class="composer">
+          <div class="composer-inner">
+            <details id="modelDrawer" class="model-drawer">
+              <summary>⚙️ Models &amp; review settings</summary>
+              <div class="model-compact">
+                <div class="model-group">
+                  <label>Run model</label>
+                  <select id="providerSelect"></select>
+                  <select id="modelSelect"></select>
+                </div>
+                <label class="review-toggle">
+                  <input id="reviewEnabled" type="checkbox" />
+                  <span>Review after implementation</span>
+                </label>
+                <div id="reviewModelGroup" class="model-group review-model-group disabled">
+                  <label>Review model</label>
+                  <select id="reviewProviderSelect"></select>
+                  <select id="reviewModelSelect"></select>
+                </div>
+                <div class="model-actions">
+                  <button id="refreshModels" class="ghost">Refresh models</button>
+                  <button id="setDefaultModel" class="ghost">Set default</button>
+                  <span id="modelStatus" class="muted">models loading...</span>
+                </div>
+              </div>
+            </details>
+
+            <div id="agentActivity" class="agent-activity idle">
+              <div class="activity-main">
+                <span class="activity-dot"></span>
+                <span id="activityLabel">Idle</span>
+                <span id="activityElapsed" class="muted"></span>
+              </div>
+            </div>
+
+            <div class="prompt-row">
+              <select id="taskType" title="Use implement/edit when you want Smith to change files.">
+                <option value="">auto</option>
+                <option value="ask">ask</option>
+                <option value="implement">implement</option>
+                <option value="review">review</option>
+              </select>
+              <textarea id="prompt" placeholder="Ask Smith..."></textarea>
+              <div style="display:flex;gap:4px">
+                <button id="send" class="primary">Send</button>
+                <button id="chatRawToggle" class="ghost" style="font-size:10px;padding:4px 8px;border-radius:6px;border:1px solid var(--border)" title="Toggle raw model output">raw</button>
+              </div>
+            </div>
+            <div class="prompt-hint muted">Enter submits · Shift+Enter newline</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="filesView" class="view files-view">
+        <div class="file-tree">
+          <button id="openFileTree" class="file-rail" title="Open file browser">☰</button>
+          <div class="file-tree-content">
+            <div class="section">
+              <div class="panel-head">
+                <h3>Files</h3>
+                <button id="closeFileTree" class="panel-close" title="Collapse file browser">×</button>
+              </div>
+              <div class="row"><input id="fileSearch" class="grow" placeholder="Search files..." /></div>
+              <div class="row"><button id="fileRoot">Root</button><button id="fileUp">Up</button></div>
+              <div id="fileCwd" class="muted"></div>
+            </div>
+            <div id="fileList" class="file-list"></div>
+          </div>
+        </div>
+        <div class="editor-pane">
+          <div class="editor-toolbar">
+            <span id="openFilePath" class="pill grow">No file selected</span>
+            <button id="saveFile">Save</button>
+            <button id="indexOpenFile">Index File</button>
+          </div>
+          <textarea id="editor" spellcheck="false" style="display:none"></textarea>
+          <div id="preview" class="preview muted">Select a file from the tree.</div>
+          <div id="fileSummary" class="summary-box muted">No summary selected.</div>
+        </div>
+      </section>
+
+      <section id="indexView" class="view index-view">
+        <div class="section">
+          <h3>Indexing</h3>
+          <div class="status-grid">
+            <div class="stat"><span class="muted">Status</span><b id="idxStatus">-</b></div>
+            <div class="stat"><span class="muted">Files</span><b id="idxFiles">0/0</b></div>
+          </div>
+          <div class="row">
+            <button id="startIndex">Start</button>
+            <button id="pauseIndex">Pause</button>
+            <button id="resumeIndex">Resume</button>
+            <input id="indexSearch" class="grow" placeholder="Filter indexed files..." />
+            <select id="indexStatusFilter">
+              <option value="">all</option>
+              <option value="indexing">indexing</option>
+              <option value="queued">queued</option>
+              <option value="dirty">dirty</option>
+              <option value="indexed">indexed</option>
+              <option value="clean">clean</option>
+              <option value="error">error</option>
+            </select>
+          </div>
+          <div id="idxMessage" class="muted"></div>
+        </div>
+        <div id="indexList" class="index-list"></div>
+      </section>
+
+      <section id="tasksView" class="view tasks-view">
+        <div class="task-layout">
+          <div class="task-builder">
+            <details class="spec-card" open>
+              <summary>📋 Spec</summary>
+              <p class="muted">Steps auto-update the JSON preview. Paste JSON to import a flow.</p>
+              <div class="row">
+                <button id="copyFlowSpec">Copy spec for LLM</button>
+                <button id="exportFlowJson">Export</button>
+              </div>
+              <pre id="flowSpecText" style="display:none">You are creating a task flow for Agent Smith.
+
+Return only valid JSON in this shape:
+
+{
+  "approval": "auto | user",
+  "steps": [
+    {
+      "prompt": "The exact task instruction for this step.",
+      "task_type": "ask | implement | review",
+      "approval": "auto | user",
+      "provider_id": "optional provider id such as lmstudio",
+      "model_id": "optional model id for this step",
+      "review_provider_id": "optional provider id for review",
+      "review_enabled": true,
+      "review_model_id": "model id used only when review_enabled is true",
+      "review_iterations": 1
+    }
+  ]
+}</pre>
+            </details>
+
+            <div class="task-json-card">
+              <div class="panel-head">
+                <h3>JSON</h3>
+                <span class="muted">live preview</span>
+              </div>
+              <textarea id="flowJson" spellcheck="false" placeholder="JSON flow will appear here as you edit steps..."></textarea>
+              <div class="row">
+                <button id="loadFlowJson">Import from JSON</button>
+              </div>
+            </div>
+
+            <div class="task-action-strip">
+              <button id="addTaskStep">＋ Step</button>
+              <button id="runTaskFlow" class="primary">▶ Run</button>
+              <button id="approveNextTask" style="display:none" class="primary">▶ Approve Next</button>
+              <button id="stopTaskFlow" class="danger">■ Stop</button>
+              <select id="taskFlowApproval" style="margin-left:auto">
+                <option value="auto">auto</option>
+                <option value="user">ask</option>
+              </select>
+            </div>
+
+            <details open>
+              <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text);padding:2px 0">Steps</summary>
+              <div id="taskSteps" style="margin-top:4px"></div>
+              <button id="addTaskStepBottom" class="bottom-add-step">＋ Add step</button>
+            </details>
+          </div>
+
+          <div id="taskSplitter" class="task-splitter" title="Drag to resize"></div>
+          <div class="task-monitor">
+            <div class="task-status-line">
+              <div class="row" style="margin:0;gap:6px"><h3 style="margin:0">Progress</h3><span id="taskStatus" class="muted">No task flow running.</span></div>
+            </div>
+            <div id="taskOutput" class="task-output md"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <aside class="inspector">
+      <button id="openChanges" class="panel-rail" title="Open recent changes">Changes</button>
+      <div class="inspector-content">
+        <div class="section">
+          <div class="panel-head">
+            <h3>Recent Changes</h3>
+            <button id="closeChanges" class="panel-close" title="Close changes">×</button>
+          </div>
+          <div id="changes" class="muted"></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const tokenQS = () => encodeURIComponent($("token").value || "");
+    let historyOffset = 0;
+    const historyLimit = 20;
+    let selectedPath = "";
+    let fileCwd = "";
+    let currentAssistant = null;
+    let rawAssistant = "";
+    let renderTimer = null;
+    let activeThreadId = null;
+    let providersCache = [];
+    let activeRun = null;
+    let activityTimer = null;
+    let activityStartedAt = 0;
+    let activityLines = [];
+    let taskFlow = { running: false, stopped: false, paused: false, skipRequested: false, index: 0, steps: [] };
+    let chatRawMode = false;  // toggled by chat raw button
+
+    async function api(path, opts = {}) {
+      const sep = path.includes("?") ? "&" : "?";
+      const res = await fetch(path + sep + "token=" + tokenQS(), opts);
+      if (!res.ok) throw new Error(await res.text());
+      return await res.json();
+    }
+
+    function escapeHtml(s) {
+      return String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function escapeJsString(s) {
+      return String(s ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n").replace(/\r/g, "");
+    }
+
+    function linkifyFileRefs(html) {
+      const exts = "py|js|jsx|ts|tsx|json|toml|yaml|yml|md|txt|css|html|sql|sh|env|ini|cfg|rs|go|java|kt|c|cpp|h|hpp|cs|php|rb|png|jpg|jpeg|gif|webp|svg|bmp";
+      const re = new RegExp(`(^|[\\s(\\[])([A-Za-z0-9_@.+~-][A-Za-z0-9_@.+~\\-/]*\\.(${exts})(?::\\d+(?:-\\d+)?)?)`, "gi");
+      return html.replace(re, (m, prefix, raw) => {
+        const path = raw.replace(/:\d+(?:-\d+)?$/, "");
+        return `${prefix}<button class="file-ref" onclick="previewFile('${escapeJsString(path)}')">${raw}</button>`;
+      });
+    }
+
+    async function previewFile(path) {
+      document.body.classList.remove("mobile-panel-history", "mobile-panel-changes");
+      switchTab("files");
+      $("filesView").classList.remove("file-tree-closed");
+      await openFile(path);
+    }
+
+    function renderMarkdown(src) {
+      let text = escapeHtml(src).replace(/\r\n/g, "\n");
+      const chunks = [];
+      text = text.replace(/```([\s\S]*?)```/g, (_, code) => {
+        const id = chunks.length;
+        chunks.push(`<pre><code>${code.trim()}</code></pre>`);
+        return `@@CODE${id}@@`;
+      });
+      text = text.replace(/^### (.*)$/gm, "<h3>$1</h3>")
+                 .replace(/^## (.*)$/gm, "<h2>$1</h2>")
+                 .replace(/^# (.*)$/gm, "<h1>$1</h1>")
+                 .replace(/`([^`]+)`/g, "<code>$1</code>")
+                 .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      text = text.split(/\n{2,}/).map(block => {
+        if (block.startsWith("<h") || block.startsWith("<pre")) return block;
+        if (/^- /m.test(block)) {
+          return "<ul>" + block.split("\n").map(line => line.startsWith("- ") ? `<li>${line.slice(2)}</li>` : line).join("") + "</ul>";
+        }
+        return `<p>${block.replace(/\n/g, "<br>")}</p>`;
+      }).join("\n");
+      chunks.forEach((html, i) => { text = text.replace(`@@CODE${i}@@`, html); });
+      return linkifyFileRefs(text);
+    }
+
+    function extractCompletionSummary(text) {
+      const src = String(text || "").replace(/\r\n/g, "\n");
+      const lines = src.split("\n").map(l => l.trim()).filter(Boolean);
+      const changed = [];
+      const checks = [];
+      let status = "";
+      for (const line of lines) {
+        if (/^files changed:/i.test(line)) {
+          const rest = line.replace(/^files changed:\s*/i, "").trim();
+          if (rest) changed.push(...rest.split(",").map(s => s.trim()).filter(Boolean));
+        } else if (/^checks run:/i.test(line)) {
+          const rest = line.replace(/^checks run:\s*/i, "").trim();
+          if (rest) checks.push(rest);
+        } else if (line === "[smith] run finished" || line === "[smith] done") {
+          status = "Task completed.";
+        }
+      }
+
+      const out = [];
+      out.push(status || "Task completed. Open optional details to inspect the full run.");
+      if (changed.length) {
+        out.push("\nFiles changed:");
+        for (const f of [...new Set(changed)]) out.push(`- ${f}`);
+      }
+      if (checks.length) {
+        out.push("\nChecks:");
+        for (const c of checks) out.push(`- ${c}`);
+      }
+      return out.join("\n");
+    }
+
+    function looksLikeInternalAssistantNarration(text) {
+      const t = String(text || "").trim();
+      if (!t) return true;
+      const lower = t.toLowerCase();
+      const markers = [
+        "i'll need to locate",
+        "let me first",
+        "i need to modify",
+        "i'll search",
+        "i'll read",
+        "i'll update",
+        "i'll inspect",
+        "i need to locate",
+        "since there's no indexed context",
+        "the file handles",
+        "the code in ",
+        "has been successfully updated",
+        "verified write operation"
+      ];
+      if (markers.some(m => lower.includes(m))) return true;
+      if (/^to implement this change/i.test(t)) return true;
+      if (/files changed:/i.test(t) || /checks run:/i.test(t)) return true;
+      return false;
+    }
+
+    function splitDebugAndFinal(text) {
+      let src = String(text || "").replace(/\r\n/g, "\n");
+      const optional = [];
+
+      // Always hide model thinking blocks.
+      src = src.replace(/<think>[\s\S]*?<\/think>/gi, (m) => {
+        optional.push("Model thinking:\n" + m.replace(/<\/?think>/gi, "").trim());
+        return "\n";
+      });
+
+      const lines = src.split("\n");
+      const assistantSections = [];
+      let currentAssistant = null;
+      const miscText = [];
+
+      function pushAssistant() {
+        if (currentAssistant && currentAssistant.lines.join("\n").trim()) {
+          assistantSections.push(currentAssistant);
+        }
+        currentAssistant = null;
+      }
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        const lower = trimmed.toLowerCase();
+
+        const isAssistantHeader =
+          trimmed === "[smith] assistant response:" ||
+          trimmed.startsWith("[smith] assistant response:");
+        const isFallbackHeader =
+          trimmed === "[smith] fallback completion summary:" ||
+          trimmed.startsWith("[smith] fallback completion summary:");
+
+        if (isAssistantHeader || isFallbackHeader) {
+          pushAssistant();
+          optional.push(line);
+          currentAssistant = {lines: [], fallback: isFallbackHeader};
+          continue;
+        }
+
+        const isSmithMarker =
+          trimmed.startsWith("[smith]") ||
+          trimmed.startsWith("[error]") ||
+          trimmed.startsWith("--- Review") ||
+          trimmed.startsWith("--- Conditional Review") ||
+          trimmed.startsWith("--- Reiteration") ||
+          trimmed.startsWith("Project: ");
+
+        const isDebugText =
+          lower === "thinking" ||
+          lower === "thinking..." ||
+          lower.startsWith("thought:") ||
+          lower.startsWith("reasoning:") ||
+          lower.startsWith("debug:") ||
+          lower.startsWith("tool call:") ||
+          lower.startsWith("tool result:") ||
+          lower.startsWith("observation:") ||
+          lower.startsWith("action:") ||
+          lower.startsWith("action input:");
+
+        if (isSmithMarker || isDebugText) {
+          pushAssistant();
+          if (trimmed) optional.push(line);
+          continue;
+        }
+
+        if (currentAssistant) {
+          currentAssistant.lines.push(line);
+        } else {
+          miscText.push(line);
+        }
+      }
+      pushAssistant();
+
+      // Hide all intermediate assistant sections. Only a clean final answer should be visible.
+      let final = "";
+      for (const section of assistantSections) {
+        const sectionText = section.lines.join("\n").trim();
+        if (!sectionText) continue;
+
+        if (section.fallback && !looksLikeInternalAssistantNarration(sectionText)) {
+          final = sectionText;
+        } else if (!section.fallback && !looksLikeInternalAssistantNarration(sectionText)) {
+          final = sectionText;
+        } else {
+          optional.push("Assistant/model transcript:\n" + sectionText);
+        }
+      }
+
+      const misc = miscText.join("\n").trim();
+      if (misc) {
+        if (!final && !looksLikeInternalAssistantNarration(misc)) {
+          final = misc;
+        } else {
+          optional.push("Other transcript text:\n" + misc);
+        }
+      }
+
+      if (!final) final = extractCompletionSummary(src);
+
+      return {
+        debug: optional.join("\n\n").trim(),
+        final
+      };
+    }
+
+    function renderAssistantBubble(bubble, text, done=false) {
+      bubble.dataset.rawText = text;
+      if (!done) {
+        bubble.innerHTML = renderMarkdown(text);
+        return;
+      }
+      const parts = splitDebugAndFinal(text);
+      const optionalHtml = parts.debug
+        ? `<details class="optional-transcript"><summary>Optional details: thinking, tool calls, system logs</summary><div class="md">${renderMarkdown(parts.debug)}</div></details>`
+        : "";
+      let finalHtml = "";
+      if (parts.final) {
+        finalHtml = `<div class="actual-response">${renderMarkdown(parts.final)}</div>`;
+      } else if (parts.debug) {
+        finalHtml = `<div class="no-final">No separate final response was produced. Open optional details to inspect the run.</div>`;
+      } else {
+        finalHtml = `<div class="actual-response">${renderMarkdown(text)}</div>`;
+      }
+      bubble.innerHTML = finalHtml + optionalHtml;
+    }
+
+    function addMessage(role, content) {
+      const wrap = document.createElement("div");
+      wrap.className = `msg ${role}`;
+      const bubble = document.createElement("div");
+      bubble.className = "bubble md";
+      if (role === "assistant") {
+        renderAssistantBubble(bubble, content, false);
+      } else {
+        bubble.innerHTML = linkifyFileRefs(escapeHtml(content).replace(/\n/g, "<br>"));
+      }
+      wrap.appendChild(bubble);
+      $("messages").appendChild(wrap);
+      $("messages").scrollTop = $("messages").scrollHeight;
+      return bubble;
+    }
+
+    function renderLiveBubble(bubble, fullRaw) {
+      // Split the raw transcript into [smith] progress lines and actual response text.
+      // Progress lines are dimmed; response text is rendered as normal markdown.
+      const lines = fullRaw.split("\n");
+      const progressLines = [];
+      const responseLines = [];
+      let inResponse = false;
+
+      for (const line of lines) {
+        const t = line.trim();
+        if (t.startsWith("[smith] assistant response:") || t.startsWith("[smith] fallback completion summary:")) {
+          inResponse = true;
+          progressLines.push(t);
+          continue;
+        }
+        if (t.startsWith("[smith]") || t.startsWith("---")) {
+          if (inResponse) {
+            // Once we've seen the response header, everything goes to response
+            responseLines.push(line);
+          } else {
+            progressLines.push(t);
+          }
+          continue;
+        }
+        if (inResponse) {
+          responseLines.push(line);
+        } else if (t) {
+          // Text before the [smith] assistant response: header — treat as early response
+          responseLines.push(line);
+        }
+      }
+
+      let html = "";
+
+      // Show progress lines as dimmed system messages
+      if (progressLines.length) {
+        html += `<div class="live-progress">${progressLines.map(l => `<div class="progress-line">${escapeHtml(l)}</div>`).join("")}</div>`;
+      }
+
+      // If no response yet, show a thinking indicator
+      const responseText = responseLines.join("\n").trim();
+      if (!responseText && progressLines.length > 0) {
+        html += `<div class="thinking-indicator"><span class="thinking-dot"></span> Thinking... <span class="muted">(${progressLines.length} steps so far)</span></div>`;
+      }
+
+      // Show response text
+      if (responseText) {
+        html += `<div class="actual-response">${renderMarkdown(responseText)}</div>`;
+      }
+
+      bubble.innerHTML = html || "<div class='muted' style='padding:8px'>Waiting for model response...</div>";
+    }
+
+    function appendAssistant(s) {
+      rawAssistant += s;
+      if (currentAssistant) currentAssistant.dataset.rawText = rawAssistant;
+      if (!renderTimer) {
+        renderTimer = setTimeout(() => {
+          if (currentAssistant) {
+            renderLiveBubble(currentAssistant, rawAssistant);
+            // Re-render raw if chartRawMode is on
+            if (chatRawMode && currentAssistant.dataset.rawText) {
+              currentAssistant.innerHTML = `<pre style="white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:#05080b;border-radius:6px;padding:8px">${escapeHtml(currentAssistant.dataset.rawText)}</pre>`;
+              currentAssistant.classList.add("raw");
+            }
+          }
+          $("messages").scrollTop = $("messages").scrollHeight;
+          renderTimer = null;
+        }, 30);
+      }
+    }
+
+    function updateTaskBadge(state, count) {
+      const b = $("taskBadge");
+      b.className = "task-badge";
+      if (!state) { b.textContent = "0"; return; }
+      b.classList.add(state);
+      b.textContent = String(count ?? 0);
+    }
+
+    function formatElapsed(ms) {
+      const sec = Math.max(0, Math.floor(ms / 1000));
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return m ? `${m}:${String(s).padStart(2, "0")}` : `${s}s`;
+    }
+
+    function classifyActivityLine(text) {
+      const t = String(text || "").trim();
+      if (!t) return "";
+
+      // Tool calls — show tool name + key argument like "🔧 #3 read_file path=src/main.py"
+      if (t.includes("🔧 #") || t.includes("tool call:")) {
+        const m = t.match(/🔧\s*#?(\d+)?\s*(\w+)/);
+        const toolName = m ? m[2] : "tool";
+        const num = m && m[1] ? `#${m[1]}` : "";
+        const detailMatch = t.match(/—\s*(.+?)(?:\s*content_chars|$)/);
+        const detail = detailMatch ? detailMatch[1].trim().slice(0, 60) : "";
+        return `🔧 ${num} ${toolName}${detail ? " " + detail : ""}`.trim();
+      }
+
+      // Tool results — show name + key stat like "📥 read_file: 42 lines, 1850 chars"
+      if (t.includes("tool result:") || t.includes("tool result received:")) {
+        const m = t.match(/tool result:\s*(\w+)/);
+        const name = m ? m[1] : "tool";
+        const s = t.match(/—\s*(.+)/);
+        const summary = s ? s[1].trim().slice(0, 80) : "";
+        return `📥 ${name}: ${summary}`.trim();
+      }
+
+      if (t.includes("assistant response")) return "💬 generating response";
+
+      if (t.includes("model is generating tool calls")) {
+        const m = t.match(/\(([^)]+) so far\)/);
+        if (m) return `🤖 generating tool calls... (${m[1]})`;
+        return "🤖 generating tool calls...";
+      }
+
+      if (t.includes("model is generating")) return "🤖 model generating...";
+      if (t.includes("starting model/tool loop")) return "🤖 model/tool loop started";
+      if (t.includes("building context")) return "📂 building project context";
+      if (t.includes("context ready")) return "📂 context loaded";
+      if (t.includes("starting run:")) return t.replace("[smith] ", "");
+      if (t.includes("recursion limit")) return "🔄 recursion limit set";
+
+      // Live tool generation from tool_call_chunks — shows 🛠 generating read_file...
+      if (t.includes("🛠 generating")) {
+        return t.replace("[smith] ", "").trim();
+      }
+
+      // Heartbeat — single unified message, no extra timer
+      if (t.includes("processing")) return "⏳ processing...";
+      if (t.includes("waiting for model/tool output") || t.includes("waiting for model")) return "⏳ processing...";
+
+      if (t.includes("interrupted")) return "⛔ interrupted";
+      if (t.includes("[error]")) return `❌ ${t.replace("[error] ", "")}`;
+      if (t.includes("done") || t.includes("completed")) return "✅ done";
+
+      const cleaned = t.replace(/^\[smith\]\s*/, "");
+      return cleaned || "";
+    }
+
+    let lastRealActivity = 0;
+
+    function pushActivity(text, {real = true} = {}) {
+      if (!real) {
+        // heartbeat – only update if no real activity for 6+ seconds
+        if (Date.now() - lastRealActivity < 6000) return;
+      } else {
+        lastRealActivity = Date.now();
+      }
+      const clean = classifyActivityLine(text);
+      if (!clean) return;
+      if ($("activityLabel")) $("activityLabel").textContent = clean;
+      if (taskFlow.running && $("taskStatus")) {
+        $("taskStatus").textContent = clean;
+      }
+    }
+
+    function startActivity(label = "starting") {
+      activityStartedAt = Date.now();
+      activityLines = [];
+      lastRealActivity = Date.now();
+      const box = $("agentActivity");
+      if (box) {
+        box.classList.remove("idle");
+        box.classList.add("running");
+      }
+      if ($("activityLabel")) $("activityLabel").textContent = label;
+      if ($("activityElapsed")) $("activityElapsed").textContent = "0s";
+      // No recent activity log in the compact UI; only current action + duration.
+      if (activityTimer) clearInterval(activityTimer);
+      activityTimer = setInterval(() => {
+        if (!$("activityElapsed")) return;
+        $("activityElapsed").textContent = activityStartedAt ? formatElapsed(Date.now() - activityStartedAt) : "";
+      }, 500);
+      pushActivity(label);
+    }
+
+    function stopActivity(label = "done") {
+      pushActivity(label);
+      if (activityTimer) {
+        clearInterval(activityTimer);
+        activityTimer = null;
+      }
+      const box = $("agentActivity");
+      if (box) {
+        box.classList.remove("running");
+        box.classList.add("idle");
+      }
+      if ($("activityElapsed")) $("activityElapsed").textContent = activityStartedAt ? formatElapsed(Date.now() - activityStartedAt) : "";
+      if ($("activityLabel")) $("activityLabel").textContent = label;
+    }
+
+    function setRunButtonState(active) {
+      $("send").textContent = active ? "Interrupt" : "Send";
+      $("send").classList.toggle("danger", !!active);
+      $("prompt").disabled = !!active;
+      $("taskStatus").classList.toggle("muted", !active && !taskFlow.running);
+    }
+
+    function interruptActiveRun(reason = "interrupted by user") {
+      if (!activeRun || !activeRun.ws) return false;
+      activeRun.interrupted = true;
+      try {
+        activeRun.ws.close(4000, reason);
+      } catch {}
+      return true;
+    }
+
+    async function runSmithPrompt(prompt, opts, onToken, onHeartbeat) {
+      if (activeRun) {
+        throw new Error("Another Smith run is active. Interrupt it before starting a new message.");
+      }
+
+      return await new Promise((resolve, reject) => {
+        let full = "";
+        let settled = false;
+        const proto = location.protocol === "https:" ? "wss" : "ws";
+        const ws = new WebSocket(`${proto}://${location.host}/ws/run`);
+        const runState = {ws, interrupted: false};
+        activeRun = runState;
+        startActivity("connecting to agent");
+        setRunButtonState(true);
+
+        // Timeout: abort if no tokens arrive for 90s while heartbeats keep coming
+        const STUCK_TIMEOUT_S = 90;
+        let lastTokenTime = Date.now();
+        let stuckTimer = null;
+
+        function scheduleStuckCheck() {
+          clearTimeout(stuckTimer);
+          stuckTimer = setTimeout(() => {
+            if (settled) return;
+            const idle = (Date.now() - lastTokenTime) / 1000;
+            if (idle >= STUCK_TIMEOUT_S) {
+              pushActivity(`[smith] step timed out after ${STUCK_TIMEOUT_S}s with no model output; closing connection.`);
+              onToken && onToken(`\n[smith] step timed out after ${STUCK_TIMEOUT_S}s with no model output. Try simplifying the prompt or using a smaller context.\n`);
+              finishErr(new Error(`Step timed out after ${STUCK_TIMEOUT_S}s with no model output.`));
+              ws.close();
+            } else {
+              scheduleStuckCheck();
+            }
+          }, 5000);
+        }
+
+        function finishOk(value) {
+          clearTimeout(stuckTimer);
+          if (settled) return;
+          settled = true;
+          if (activeRun === runState) activeRun = null;
+          setRunButtonState(false);
+          stopActivity(runState.interrupted ? "interrupted" : "done");
+          resolve(value);
+        }
+
+        function finishErr(err) {
+          clearTimeout(stuckTimer);
+          if (settled) return;
+          settled = true;
+          if (activeRun === runState) activeRun = null;
+          setRunButtonState(false);
+          stopActivity(runState.interrupted ? "interrupted" : "error");
+          reject(err);
+        }
+
+        ws.onopen = () => {
+          pushActivity("WebSocket connected; sending prompt");
+          const payload = {
+            token: $("token").value || "",
+            prompt,
+            task_type: opts.task_type || null,
+            review: opts.review || "auto"
+          };
+          if (opts.provider_id && opts.model_id) {
+            payload.provider_id = opts.provider_id;
+            payload.model_id = opts.model_id;
+          }
+          if (opts.review_provider_id && opts.review_model_id) {
+            payload.review_provider_id = opts.review_provider_id;
+            payload.review_model_id = opts.review_model_id;
+          }
+          ws.send(JSON.stringify(payload));
+          lastTokenTime = Date.now();
+          scheduleStuckCheck();
+        };
+
+        ws.onmessage = (event) => {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "heartbeat") {
+            const elapsed = msg.elapsed || "?";
+            pushActivity(`[smith] ${msg.message || "waiting for model/tool output"} (${elapsed}s)`, {real: false});
+            if (onHeartbeat) onHeartbeat(elapsed);
+            return;
+          }
+          if (msg.type === "token") {
+            lastTokenTime = Date.now();
+            full += msg.text;
+            const lines = String(msg.text || "").split("\n").map(s => s.trim()).filter(Boolean);
+            const progressLines = lines.filter(line =>
+              line.startsWith("[smith]") ||
+              line.startsWith("[error]") ||
+              line.startsWith("--- Review") ||
+              line.includes("tool call:") ||
+              line.includes("tool result:")
+            );
+            if (progressLines.length) {
+              for (const line of progressLines.slice(-4)) pushActivity(line);
+            } else if (String(msg.text || "").trim()) {
+              pushActivity("model is generating text");
+            }
+            onToken && onToken(msg.text);
+          }
+          if (msg.type === "error") {
+            pushActivity(`[error] ${msg.message}`);
+            onToken && onToken(`\n[error] ${msg.message}\n`);
+            finishErr(new Error(msg.message));
+          }
+          if (msg.type === "done") finishOk(full);
+        };
+
+        ws.onclose = () => {
+          clearTimeout(stuckTimer);
+          if (settled) return;
+          if (runState.interrupted) {
+            const msg = "\n[smith] interrupted by user\n";
+            full += msg;
+            onToken && onToken(msg);
+            finishOk(full);
+          } else {
+            finishErr(new Error("WebSocket closed before completion"));
+          }
+        };
+
+        ws.onerror = () => {
+          clearTimeout(stuckTimer);
+          if (runState.interrupted) {
+            finishOk(full);
+          } else {
+            finishErr(new Error("WebSocket error"));
+          }
+        };
+      });
+    }
+
+    async function refreshStatus() {
+      const data = await api("/api/project/status");
+      $("projectTitle").textContent = data.project.root_path;
+      $("mobileProjectTitle").textContent = data.project.root_path;
+      $("idxStatus").textContent = data.index.status || "-";
+      $("idxFiles").textContent = `${data.index.files_done || 0}/${data.index.files_total || 0}`;
+      $("idxMessage").textContent = data.index.message || "";
+      await refreshChanges();
+      await refreshIndexFiles();
+    }
+
+    function resetChatSession({clearMessages = true, threadId = null} = {}) {
+      if (renderTimer) {
+        clearTimeout(renderTimer);
+        renderTimer = null;
+      }
+      currentAssistant = null;
+      rawAssistant = "";
+      activeThreadId = threadId;
+      if (clearMessages) {
+        $("messages").innerHTML = '<div class="msg system" id="welcomeMsg"><div class="bubble md"><p>👋 <strong>Welcome to Agent Smith.</strong> Ask me to inspect, implement, or review code.</p><p>Select <strong>task type</strong> → <em>ask</em> (questions), <em>implement</em> (edits), <em>review</em> (check work).</p></div></div>';
+      }
+      if (activeRun) {
+        interruptActiveRun("switching thread");
+      }
+      stopActivity("idle");
+    }
+
+    async function loadRunFromHistory(runId) {
+      const data = await api(`/api/project/runs/${encodeURIComponent(runId)}`);
+      const r = data.run;
+      resetChatSession({clearMessages: true, threadId: r.id});
+      switchTab("chat");
+      addMessage("user", r.user_prompt || "");
+
+      // Use full_transcript for detailed progress, fall back to final_response
+      const fullTranscript = r.full_transcript || "";
+      const finalText = r.final_response || r.final_summary || (r.error ? `[error] ${r.error}` : "No saved response.");
+
+      if (fullTranscript) {
+        // Extract progress lines (tool calls, results, model messages) from the transcript
+        const progressLines = [];
+        const assistantParts = [];
+        for (const line of fullTranscript.split("\n")) {
+          const t = line.trim();
+          if (!t) continue;
+          if (t.startsWith("[smith]")) {
+            progressLines.push(line);
+          } else {
+            assistantParts.push(line);
+          }
+        }
+
+        const bubble = addMessage("assistant", "");
+        bubble.dataset.rawTranscript = fullTranscript;
+
+        // Show final response prominently
+        let html = `<div class="actual-response">${renderMarkdown(finalText)}</div>`;
+
+        // Show progress lines in a collapsed details block
+        if (progressLines.length) {
+          const progressHtml = progressLines
+            .filter(l => !l.includes("assistant response:") && !l.includes("run finished") && !l.includes("fallback completion"))
+            .map(l => escapeHtml(l))
+            .join("<br>");
+          html += `<details class="optional-transcript" open><summary>📋 Run progress — ${progressLines.length} steps</summary><div class="md">${progressHtml}</div></details>`;
+        }
+
+        // Show file changes if any
+        if (data.changes && data.changes.length) {
+          const files = data.changes.map(ch => `- ${ch.path} (+${ch.lines_added ?? "?"}/-${ch.lines_removed ?? "?"})`).join("\n");
+          html += `<details class="optional-transcript"><summary>📄 File changes</summary><div class="md">${escapeHtml(files).replace(/\n/g, "<br>")}</div></details>`;
+        }
+
+        bubble.innerHTML = html + `<div style="margin-top:8px"><button class="ghost" style="font-size:11px;padding:4px 8px;border-radius:4px" onclick="viewRawLog('${runId}')">📋 View Raw Log</button></div>`;
+      } else {
+        // Fallback: no saved transcript
+        const bubble = addMessage("assistant", "");
+        bubble.dataset.rawTranscript = finalText;
+        renderAssistantBubble(bubble, finalText, true);
+        if (data.changes && data.changes.length) {
+          const files = data.changes.map(ch => `- ${ch.path} (+${ch.lines_added ?? "?"}/-${ch.lines_removed ?? "?"})`).join("\n");
+          addMessage("system", `[smith] Files changed in this run:\n${files}`);
+        }
+      }
+
+      document.body.classList.remove("mobile-panel-history");
+      closeMobilePanels();
+      await loadHistory(true);
+    }
+
+    async function deleteRun(runId, event) {
+      if (event) event.stopPropagation();
+      if (!confirm("Delete this thread from history? This will not revert file changes.")) return;
+      await api(`/api/project/runs/${encodeURIComponent(runId)}`, {method: "DELETE"});
+      if (activeThreadId === runId) {
+        resetChatSession({clearMessages: true, threadId: null});
+        switchTab("chat");
+      }
+      await loadHistory(true);
+      await refreshChanges();
+    }
+
+    function formatDuration(start, end) {
+      if (!start) return "";
+      const s = new Date(start).getTime();
+      const e = end ? new Date(end).getTime() : Date.now();
+      const ms = Math.max(0, e - s);
+      if (ms < 1000) return "<1s";
+      if (ms < 60000) return Math.floor(ms / 1000) + "s";
+      const m = Math.floor(ms / 60000);
+      const sec = Math.floor((ms % 60000) / 1000);
+      return `${m}m${sec}s`;
+    }
+
+    async function loadHistory(reset=false) {
+      if (reset) { historyOffset = 0; $("history").innerHTML = ""; }
+      const data = await api(`/api/project/runs?limit=${historyLimit}&offset=${historyOffset}`);
+      historyOffset += data.runs.length;
+      if (!data.runs.length && reset) {
+        $("history").innerHTML = '<div class="muted" style="padding:16px;text-align:center">No previous runs. Send a message in Chat to start.</div>';
+        return;
+      }
+      for (const r of data.runs) {
+        const div = document.createElement("div");
+        div.className = "history-item" + (activeThreadId === r.id ? " active-thread" : "");
+        const dur = formatDuration(r.started_at, r.ended_at);
+        div.innerHTML = `
+          <div class="history-top">
+            <b>${escapeHtml(r.task_type || "?")} · ${escapeHtml(r.status)}</b>
+            <button class="ghost danger mini-delete" title="Delete thread" onclick="deleteRun('${r.id}', event)">Delete</button>
+          </div>
+          <div>${escapeHtml((r.user_prompt || "").slice(0, 140))}</div>
+          <div class="muted">${formatRunTime(r.started_at)}${dur ? ` · ${dur}` : ""}</div>`;
+        div.onclick = () => loadRunFromHistory(r.id).catch(err => addMessage("system", `[smith] failed to load run: ${err.message}`));
+        $("history").appendChild(div);
+      }
+    }
+
+    function formatRunTime(ts) {
+      if (!ts) return "";
+      const d = new Date(ts);
+      const now = new Date();
+      const sameDay = d.toDateString() === now.toDateString();
+      if (sameDay) return d.toLocaleTimeString(undefined, {hour: "2-digit", minute: "2-digit"});
+      const thisYear = d.getFullYear() === now.getFullYear();
+      return d.toLocaleString(undefined, {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+    }
+
+    async function deleteRunGroup(runId, event) {
+      if (event) event.stopPropagation();
+      if (!confirm("Delete this run from history? File changes are not affected.")) return;
+      await api(`/api/project/runs/${encodeURIComponent(runId)}`, {method: "DELETE"});
+      await refreshStatus();
+    }
+
+    async function refreshChanges() {
+      const groups = await api("/api/project/changes/detailed?limit=60");
+      if (!groups.length) { $("changes").innerHTML = '<div class="muted" style="padding:12px;text-align:center">No changes yet. Run a task to see file edits here.</div>'; return; }
+      // Preserve which run groups + file diffs are open so re-renders don't collapse them
+      const openFiles = new Set();
+      $("changes").querySelectorAll(".changes-run").forEach(el => {
+        const runId = el.dataset.runId || "";
+        el.querySelectorAll("details[open]").forEach(d => {
+          const key = d.dataset.key || d.querySelector("summary")?.textContent?.trim() || "";
+          if (key) openFiles.add(runId + "|" + key);
+        });
+      });
+
+      $("changes").innerHTML = groups.slice(0, 18).map(group => {
+        const files = group.changes || [];
+        const fileRows = files.map(ch => `
+          <div class="change-file-row">
+            <button class="file-ref" onclick="previewFile('${escapeJsString(ch.path)}')">${escapeHtml(ch.path)}</button>
+            <span class="diff-stat"><span class="add">+${ch.lines_added ?? "?"}</span> <span class="del">-${ch.lines_removed ?? "?"}</span></span>
+            ${ch.diff_preview ? `<details data-key="diff|${escapeHtml(ch.path)}" ${openFiles.has(group.run_id + "|diff|" + ch.path) ? "open" : ""}><summary>Diff</summary><pre class="diff-preview">${escapeHtml(ch.diff_preview)}</pre></details>` : ""}
+          </div>`).join("");
+        const filesOpen = openFiles.has(group.run_id + "|Files changed");
+        return `
+          <div class="changes-run" data-run-id="${group.run_id}">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+              <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml((group.user_prompt || "Smith change").slice(0, 120))}</b>
+              <button class="ghost" onclick="deleteRunGroup('${group.run_id}', event)" title="Delete run" style="flex-shrink:0;width:26px;height:26px;padding:0;border-radius:6px;font-size:14px;line-height:1">×</button>
+            </div>
+            <div class="row">
+              <span class="badge ${escapeHtml(group.decision_status || "pending")}">${escapeHtml(group.decision_status || "pending")}</span>
+              <span class="diff-stat"><span class="add">+${group.lines_added ?? 0}</span> <span class="del">-${group.lines_removed ?? 0}</span> · ${files.length} file${files.length === 1 ? "" : "s"}</span>
+              <span class="muted" style="margin-left:auto">${formatRunTime(group.started_at || "")}</span>
+            </div>
+            <details data-key="Files changed" ${filesOpen ? "open" : (files.length <= 3 ? "open" : "")} style="margin-top:6px">
+              <summary>Files changed</summary>
+              ${fileRows}
+            </details>
+            <div class="row" style="margin-top:8px">
+              <button onclick="acceptRun('${group.run_id}')" style="font-size:12px;padding:5px 8px">Accept</button>
+              <button class="danger" onclick="revertRun('${group.run_id}')" style="font-size:12px;padding:5px 8px">Revert</button>
+              <button class="ghost" onclick="loadRunFromHistory('${group.run_id}')" style="font-size:12px;padding:5px 8px">Open</button>
+              <button class="ghost" onclick="viewRawLog('${group.run_id}')" style="font-size:12px;padding:5px 8px">Log</button>
+            </div>
+          </div>`;
+      }).join("");
+    }
+
+    async function viewRawLog(runId) {
+      try {
+        const data = await api(`/api/project/runs/${encodeURIComponent(runId)}`);
+        const r = data.run;
+        const transcript = r.full_transcript || r.final_response || "No transcript available.";
+        // Open a small overlay with the raw text
+        const overlay = document.createElement("div");
+        overlay.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;padding:20px";
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+        const box = document.createElement("div");
+        box.style.cssText = "background:var(--panel);border:1px solid var(--border);border-radius:12px;max-width:90vw;max-height:90vh;width:900px;display:flex;flex-direction:column";
+        const head = document.createElement("div");
+        head.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)";
+        head.innerHTML = `<span style="font-weight:700;font-size:13px">Raw Log — ${escapeHtml((r.user_prompt || "").slice(0, 80))}</span><button class="ghost" style="font-size:18px;padding:0;width:30px;height:30px">×</button>`;
+        head.querySelector("button").onclick = () => overlay.remove();
+        const body = document.createElement("div");
+        body.style.cssText = "overflow:auto;padding:14px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.5;white-space:pre-wrap;color:var(--text)";
+        body.textContent = transcript;
+        box.appendChild(head);
+        box.appendChild(body);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+      } catch (err) {
+        alert("Could not load run log: " + err.message);
+      }
+    }
+
+    async function acceptRun(runId) {
+      await api(`/api/project/runs/${runId}/accept`, {method: "POST"});
+      await refreshStatus();
+    }
+
+    async function revertRun(runId) {
+      if (!confirm("Revert all file changes from this run?")) return;
+      const result = await api(`/api/project/runs/${runId}/revert`, {method: "POST"});
+      switchTab("chat");
+      addMessage("system", `[smith] revert result:\n${JSON.stringify(result, null, 2)}`);
+      await refreshStatus();
+      if (selectedPath) await openFile(selectedPath);
+    }
+
+    async function fillProviderSelect(sel, selected) {
+      sel.innerHTML = "";
+      if (!providersCache.length) {
+        providersCache = await api("/api/providers").catch(() => []);
+      }
+      providersCache.filter(p => p.enabled).forEach(p => {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.name;
+        if (selected && selected === p.id) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    }
+
+    async function fillModelSelect(providerId, sel, selected) {
+      if (!providerId) {
+        sel.innerHTML = "";
+        return 0;
+      }
+      const models = await api(`/api/providers/${providerId}/models`).catch(() => []);
+      sel.innerHTML = "";
+      models.forEach(m => {
+        const opt = document.createElement("option");
+        opt.value = m.model_id;
+        opt.textContent = m.model_id;
+        if (selected && selected === m.model_id) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      return models.length;
+    }
+
+    async function fillReviewModelSelect(providerId, sel, selected) {
+      if (!providerId) {
+        sel.innerHTML = "";
+        return 0;
+      }
+      const models = await api(`/api/providers/${providerId}/models`).catch(() => []);
+      sel.innerHTML = "";
+      models.forEach(m => {
+        const opt = document.createElement("option");
+        opt.value = m.model_id;
+        opt.textContent = m.model_id;
+        if (selected && selected === m.model_id) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      if (!sel.value && sel.options.length) sel.selectedIndex = 0;
+      return models.length;
+    }
+
+    function updateStepReviewVisibility(el) {
+      const enabled = !!el.querySelector(".step-review-enabled").checked;
+      el.classList.toggle("review-enabled", enabled);
+      el.classList.toggle("review-disabled", !enabled);
+    }
+
+    function getLastStepDefaults() {
+      const last = [...document.querySelectorAll(".task-step")].at(-1);
+      if (!last) {
+        return {
+          task_type: "implement",
+          approval: "",
+          provider_id: $("providerSelect").value,
+          model_id: $("modelSelect").value,
+          review_enabled: true,
+          review_provider_id: $("reviewProviderSelect").value,
+          review_model_id: $("reviewModelSelect").value,
+          review_iterations: 1
+        };
+      }
+      return {
+        task_type: last.querySelector(".step-type").value || "implement",
+        approval: last.querySelector(".step-approval").value || "",
+        provider_id: last.querySelector(".step-provider").value || $("providerSelect").value,
+        model_id: last.querySelector(".step-model").value || $("modelSelect").value,
+        review_enabled: last.querySelector(".step-review-enabled").checked,
+        review_provider_id: last.querySelector(".step-review-provider").value || $("reviewProviderSelect").value,
+        review_model_id: last.querySelector(".step-review-model").value || $("reviewModelSelect").value,
+        review_iterations: Math.max(1, Math.min(10, parseInt(last.querySelector(".step-review-iterations").value || "1", 10)))
+      };
+    }
+
+    async function loadProviders() {
+      providersCache = await api("/api/providers");
+      await fillProviderSelect($("providerSelect"));
+      await fillProviderSelect($("reviewProviderSelect"));
+      const n1 = await fillModelSelect($("providerSelect").value || "lmstudio", $("modelSelect"));
+      await fillModelSelect($("reviewProviderSelect").value || "lmstudio", $("reviewModelSelect"));
+      $("modelStatus").textContent = `${n1} model(s) shown`;
+    }
+
+    async function loadMainModels() {
+      const n = await fillModelSelect($("providerSelect").value || "lmstudio", $("modelSelect"));
+      $("modelStatus").textContent = `${n} model(s) shown`;
+    }
+
+    async function loadReviewModels() {
+      await fillModelSelect($("reviewProviderSelect").value || "lmstudio", $("reviewModelSelect"));
+    }
+
+    async function loadFileTree(path="", q="") {
+      const list = $("fileList");
+      list.innerHTML = `<div class="file-item muted">Loading files...</div>`;
+      $("fileCwd").textContent = q ? `Search: ${q}` : `/${path || ""}`;
+      try {
+        const data = await api(`/api/project/files/tree?path=${encodeURIComponent(path)}&q=${encodeURIComponent(q)}`);
+        fileCwd = data.path || "";
+        $("fileCwd").textContent = q ? `Search: ${q}` : `/${fileCwd}`;
+        list.innerHTML = "";
+        if (!data.items || !data.items.length) {
+          list.innerHTML = `<div class="file-item muted">No files found.</div>`;
+          return;
+        }
+        data.items.forEach(item => {
+          const div = document.createElement("div");
+          div.className = `file-item ${item.path === selectedPath ? "active" : ""}`;
+          const icon = item.type === "directory" ? "📁" : item.type === "image" ? "🖼️" : item.type === "text" ? "📄" : "◻️";
+          div.innerHTML = `<span>${icon}</span><span class="grow">${escapeHtml(item.name)}</span><span class="muted">${item.type}</span>`;
+          div.onclick = () => item.type === "directory" ? loadFileTree(item.path) : openFile(item.path);
+          list.appendChild(div);
+        });
+        if (data.truncated) {
+          const div = document.createElement("div");
+          div.className = "file-item muted";
+          div.textContent = "Showing first 500 results. Use search or open a subfolder to narrow.";
+          list.appendChild(div);
+        }
+      } catch (err) {
+        list.innerHTML = `<div class="file-item muted">Could not load files: ${escapeHtml(err.message || String(err))}</div>`;
+      }
+    }
+
+    async function openFile(path) {
+      selectedPath = path;
+      const safe = encodeURIComponent(path).replaceAll("%2F","/");
+      let data;
+      try {
+        data = await api(`/api/project/files/${safe}/read`);
+      } catch (err) {
+        $("openFilePath").textContent = path;
+        $("preview").style.display = "block";
+        $("preview").textContent = `Could not open file: ${err.message || String(err)}`;
+        $("editor").style.display = "none";
+        return;
+      }
+      $("openFilePath").textContent = path;
+      $("editor").style.display = "none";
+      $("preview").style.display = "block";
+      if (data.type === "text") {
+        $("editor").value = data.content || "";
+        $("editor").style.display = "block";
+        $("preview").style.display = "none";
+      } else if (data.type === "image") {
+        $("preview").innerHTML = `<img src="/api/project/files/${safe}/image?token=${tokenQS()}" alt="${escapeHtml(path)}" />`;
+      } else {
+        $("preview").textContent = `${data.type} file preview is not supported.`;
+      }
+      const s = data.summary;
+      $("fileSummary").innerHTML = s ? `<b>Indexed summary</b><br>${escapeHtml(s.summary || "").replace(/\n/g,"<br>")}` : "No indexed summary yet.";
+      await loadFileTree(fileCwd, $("fileSearch").value.trim());
+    }
+
+    async function saveOpenFile() {
+      if (!selectedPath) return;
+      const safe = encodeURIComponent(selectedPath).replaceAll("%2F","/");
+      await api(`/api/project/files/${safe}/write`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({content: $("editor").value})
+      });
+      addMessage("system", `[smith] saved ${selectedPath}`);
+      await refreshStatus();
+      await openFile(selectedPath);
+    }
+
+    async function refreshIndexFiles() {
+      const q = $("indexSearch").value.trim();
+      const st = $("indexStatusFilter").value;
+      const rows = await api(`/api/project/index/files?q=${encodeURIComponent(q)}&status=${encodeURIComponent(st)}&limit=120`);
+      $("indexList").innerHTML = rows.map(r => `
+        <div class="index-row" onclick="switchTab('files'); openFile('${escapeHtml(r.path).replace(/'/g, "\\'")}')">
+          <div><b>${escapeHtml(r.path)}</b> <span class="badge ${escapeHtml(r.status)}">${escapeHtml(r.status)}</span></div>
+          <div class="muted">${escapeHtml((r.summary || "No summary yet.").slice(0, 220))}</div>
+        </div>`).join("");
+    }
+
+    function switchTab(name) {
+      document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
+      document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+      $(`${name}View`).classList.add("active");
+      if (name === "files") loadFileTree(fileCwd, $("fileSearch").value.trim());
+      if (name === "history") loadHistory(true);
+      if (name === "index") refreshIndexFiles();
+      if (name === "tasks") renderTaskSteps();
+    }
+
+    function submitPrompt() {
+      if (activeRun) {
+        interruptActiveRun();
+        return;
+      }
+      const prompt = $("prompt").value.trim();
+      if (!prompt) return;
+      $("prompt").value = "";
+      switchTab("chat");
+      activeThreadId = null;
+      addMessage("user", prompt);
+      rawAssistant = "";
+      currentAssistant = addMessage("assistant", "");
+      currentAssistant.dataset.rawText = "";
+      let _chatLastToken = Date.now();
+      runSmithPrompt(prompt, {
+        task_type: $("taskType").value || null,
+        review: $("reviewEnabled").checked ? "always" : "never",
+        provider_id: $("providerSelect").value,
+        model_id: $("modelSelect").value,
+        review_provider_id: $("reviewProviderSelect").value,
+        review_model_id: $("reviewModelSelect").value
+      }, (txt) => {
+        _chatLastToken = Date.now();
+        appendAssistant(txt);
+      }, (elapsed) => {
+        if (Date.now() - _chatLastToken > 3000) {
+          stopActivity(`generating (${elapsed}s)`);
+          startActivity(`⏳ generating (${elapsed}s)`);
+        }
+      }).then(() => {
+        rawAssistant += "\n\n[smith] done\n";
+        if (currentAssistant) renderAssistantBubble(currentAssistant, rawAssistant, true);
+        refreshStatus();
+        refreshChanges();
+        loadHistory(true);
+      }).catch(err => {
+        rawAssistant += `\n[error] ${err.message}\n`;
+        if (currentAssistant) renderAssistantBubble(currentAssistant, rawAssistant, true);
+      });
+    }
+
+    function getFlowStepsFromUi() {
+      return [...document.querySelectorAll(".task-step")].map((el, idx) => {
+        const reviewEnabled = !!el.querySelector(".step-review-enabled").checked;
+        const reviewModel = el.querySelector(".step-review-model").value || $("reviewModelSelect").value || "";
+        return {
+          prompt: el.querySelector(".step-prompt").value.trim(),
+          task_type: el.querySelector(".step-type").value || "ask",
+          review: "never",
+          approval: el.querySelector(".step-approval").value || $("taskFlowApproval").value,
+          provider_id: el.querySelector(".step-provider").value || $("providerSelect").value,
+          model_id: el.querySelector(".step-model").value || $("modelSelect").value,
+          review_enabled: reviewEnabled,
+          review_provider_id: reviewEnabled ? (el.querySelector(".step-review-provider").value || $("reviewProviderSelect").value) : "",
+          review_model_id: reviewEnabled ? reviewModel : "",
+          review_iterations: reviewEnabled ? Math.max(1, Math.min(10, parseInt(el.querySelector(".step-review-iterations").value || "1", 10))) : 0,
+          index: idx + 1
+        };
+      }).filter(s => s.prompt);
+    }
+
+    async function addTaskStep(step = {}) {
+      if (!providersCache.length) {
+        providersCache = await api("/api/providers").catch(() => []);
+      }
+      const inherited = Object.keys(step || {}).length ? {} : getLastStepDefaults();
+      step = {...inherited, ...step};
+      const container = $("taskSteps");
+      const el = document.createElement("div");
+      el.className = "task-step";
+      el.innerHTML = `
+        <div class="step-topline">
+          <span class="badge pending">◌</span>
+          <select class="step-type">
+            <option value="ask">ask</option>
+            <option value="implement">implement</option>
+            <option value="review">review</option>
+          </select>
+          <select class="step-approval">
+            <option value="">flow</option>
+            <option value="auto">auto</option>
+            <option value="user">pause</option>
+          </select>
+          <div class="step-actions">
+            <button class="step-restart" title="Run flow from this step onwards">▶ from here</button>
+            <button class="remove-step danger icon-button" title="Remove step">✕</button>
+          </div>
+        </div>
+        <textarea class="step-prompt" placeholder="Prompt for this task step..."></textarea>
+        <div class="step-model-grid">
+          <span>Run</span>
+          <select class="step-provider"></select>
+          <select class="step-model"></select>
+          <span class="review-label">
+            <label class="review-toggle" title="Enable review/retry">
+              <input class="step-review-enabled" type="checkbox" checked /> Review
+            </label>
+          </span>
+          <select class="step-review-iterations" style="font-size:11px;padding:2px 4px;width:60px">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+            <option value="9">9</option>
+            <option value="10">10</option>
+          </select>
+          <select class="step-review-provider"></select>
+          <select class="step-review-model"></select>
+        </div>
+      `;
+      container.appendChild(el);
+      el.querySelector(".step-prompt").value = step.prompt || "";
+      el.querySelector(".step-type").value = step.task_type || step.taskType || "implement";
+      el.querySelector(".step-approval").value = step.approval || "";
+      el.querySelector(".step-review-enabled").checked = step.review_enabled !== false;
+      el.querySelector(".step-review-iterations").value = Math.max(1, Math.min(10, step.review_iterations ?? step.reviewIterations ?? 1));
+      await fillProviderSelect(el.querySelector(".step-provider"), step.provider_id || $("providerSelect").value);
+      await fillProviderSelect(el.querySelector(".step-review-provider"), step.review_provider_id || $("reviewProviderSelect").value);
+      await fillModelSelect(el.querySelector(".step-provider").value, el.querySelector(".step-model"), step.model_id || $("modelSelect").value);
+      await fillReviewModelSelect(el.querySelector(".step-review-provider").value, el.querySelector(".step-review-model"), step.review_model_id || $("reviewModelSelect").value);
+      el.querySelector(".step-review-enabled").onchange = () => { updateStepReviewVisibility(el); updateFlowJsonPreview(); };
+      el.querySelector(".remove-step").onclick = () => { el.remove(); updateFlowJsonPreview(); };
+      el.querySelector(".step-restart").onclick = () => restartFlowFrom(el);
+      el.querySelector(".step-prompt").oninput = updateFlowJsonPreview;
+      el.querySelector(".step-type").onchange = updateFlowJsonPreview;
+      el.querySelector(".step-approval").onchange = updateFlowJsonPreview;
+      el.querySelector(".step-provider").onchange = () => { fillModelSelect(el.querySelector(".step-provider").value, el.querySelector(".step-model")); updateFlowJsonPreview(); };
+      el.querySelector(".step-model").onchange = updateFlowJsonPreview;
+      el.querySelector(".step-review-provider").onchange = async () => {
+        await fillReviewModelSelect(el.querySelector(".step-review-provider").value, el.querySelector(".step-review-model"), el.querySelector(".step-review-model").value);
+        updateStepReviewVisibility(el);
+        updateFlowJsonPreview();
+      };
+      el.querySelector(".step-review-model").onchange = updateFlowJsonPreview;
+      el.querySelector(".step-review-iterations").onchange = updateFlowJsonPreview;
+      updateStepReviewVisibility(el);
+      updateFlowJsonPreview();
+    }
+
+    function renderTaskSteps() {
+      if (!$("taskSteps").children.length) addTaskStep({task_type:"implement"});
+    }
+
+    function setStepStatus(i, status) {
+      const el = document.querySelectorAll(".task-step")[i];
+      if (!el) return;
+      const badge = el.querySelector(".badge");
+      badge.className = `badge ${status}`;
+      if (status === "done") badge.textContent = "✓";
+      else if (status === "error") badge.textContent = "✗";
+      else if (status === "running") badge.textContent = "…";
+      else if (status === "paused") badge.textContent = "⏸";
+      else badge.textContent = "◌";
+      el.className = `task-step ${status === "done" || status === "skipped" ? "done" : status}`;
+    }
+
+    function restartFlowFrom(el) {
+      const steps = getFlowStepsFromUi();
+      if (!steps.length) return;
+      const allSteps = [...document.querySelectorAll(".task-step")];
+      const idx = allSteps.indexOf(el);
+      if (idx === -1) return;
+      // Mark this and all prior steps as pending, reset everything after for fresh run
+      allSteps.forEach((s, i) => {
+        if (i >= idx) {
+          s.className = "task-step";
+          const badge = s.querySelector(".badge");
+          badge.className = "badge pending";
+          badge.textContent = "◌";
+        }
+      });
+      taskFlow = { running: true, stopped: false, paused: false, skipRequested: false, index: idx, steps };
+      // Remove output details from this step onward
+      const details = document.querySelectorAll(".task-output-details");
+      details.forEach((d, i) => {
+        if (i >= idx) d.remove();
+      });
+      $("taskStatus").textContent = `Restarting from step ${idx + 1}/${steps.length}...`;
+      updateTaskBadge("running", steps.length - idx);
+      runNextTaskStep();
+    }
+
+    function renderTaskOutputDone(outEl, text) {
+      const parts = splitDebugAndFinal(text);
+      const optionalHtml = parts.debug
+        ? `<details class="optional-transcript"><summary>Optional details: thinking, tool calls, system logs</summary><div class="md">${renderMarkdown(parts.debug)}</div></details>`
+        : "";
+      const finalHtml = parts.final
+        ? `<div class="actual-response">${renderMarkdown(parts.final)}</div>`
+        : (parts.debug ? `<div class="no-final">No separate final response was produced. Open optional details to inspect the run.</div>` : renderMarkdown(text));
+      outEl.innerHTML = finalHtml + optionalHtml;
+    }
+
+    function reviewIsUnsatisfactory(text) {
+      const low = (text || "").toLowerCase();
+      if (/satisfactory\s*:\s*no/.test(low)) return true;
+      if (/satisfactory\s*:\s*yes/.test(low)) return false;
+      if (/(unsatisfactory|not satisfactory|needs changes|needs work|failed|failure|must fix|should fix|blocking issue)/.test(low)) return true;
+      return false;
+    }
+
+    async function runTaskFlow() {
+      const steps = getFlowStepsFromUi();
+      if (!steps.length) return;
+      // Reset all step badges
+      document.querySelectorAll(".task-step").forEach(el => {
+        el.className = "task-step";
+        const badge = el.querySelector(".badge");
+        badge.className = "badge pending";
+        badge.textContent = "◌";
+      });
+      taskFlow = { running: true, stopped: false, paused: false, skipRequested: false, index: 0, steps };
+      $("taskOutput").innerHTML = `<div style="margin-bottom:8px;display:flex;align-items:center;gap:8px"><span style="font-weight:700;font-size:12px">Task Output</span><button id="taskOutputMode" class="ghost" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--border)">raw</button><button id="skipStepBtn" class="ghost" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--border);margin-left:auto;display:none" title="Skip current step and continue with next">skip step</button></div>`;
+      $("taskStatus").textContent = `Running ${steps.length} step(s)...`;
+      updateTaskBadge("running", steps.length);
+      $("taskOutputMode").onclick = function() {
+        taskFlow.rawMode = !taskFlow.rawMode;
+        this.textContent = taskFlow.rawMode ? "rendered" : "raw";
+        this.style.borderColor = taskFlow.rawMode ? "var(--accent-2)" : "var(--border)";
+      };
+      $("skipStepBtn").onclick = function() {
+        if (!taskFlow.running || taskFlow.paused) return;
+        // Set flag so the normal flow handler knows to skip instead of rendering
+        taskFlow.skipRequested = true;
+        if (activeRun) {
+          interruptActiveRun("skipped by user");
+        }
+      };
+      await runNextTaskStep();
+    }
+
+    async function runNextTaskStep() {
+      if (!taskFlow.running || taskFlow.stopped) {
+        $("taskStatus").textContent = "Task flow stopped.";
+        updateTaskBadge("error", "!");
+        return;
+      }
+      if (taskFlow.index >= taskFlow.steps.length) {
+        $("taskStatus").textContent = "Task flow completed.";
+        updateTaskBadge(null, 0);
+        taskFlow.running = false;
+        await refreshStatus();
+        return;
+      }
+
+      const i = taskFlow.index;
+      document.querySelectorAll(".task-output-details").forEach((d, idx) => {
+        if (idx < i) d.open = false;
+      });
+      const step = taskFlow.steps[i];
+      taskFlow.skipRequested = false;
+      setStepStatus(i, "running");
+      $("taskStatus").textContent = `Running step ${i + 1}/${taskFlow.steps.length}: ${step.task_type}`;
+      $("skipStepBtn").style.display = "inline-block";
+      $("taskOutput").innerHTML += `
+        <details class="task-output-details" open>
+          <summary>Step ${i + 1}: ${escapeHtml(step.task_type)} — ${escapeHtml(step.prompt.slice(0, 90))} <button class="raw-toggle ghost" data-target="taskOut${i}" style="font-size:10px;margin-left:8px;padding:1px 6px;border-radius:3px">raw</button></summary>
+          <div id="taskOut${i}" class="task-output-inner md"></div>
+        </details>`;
+      let raw = "";
+      const outEl = $(`taskOut${i}`);
+
+      function checkSkip() {
+        if (taskFlow.skipRequested) {
+          throw new Error("__SKIP_STEP__");
+        }
+      }
+
+      // Global render helper that switches between raw and markdown mode
+      function renderOut(text) {
+        return taskFlow.rawMode
+          ? `<pre style="white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:#05080b;border-radius:6px;padding:8px">${escapeHtml(text)}</pre>`
+          : renderMarkdown(text);
+      }
+
+      // Helper to extract a notes section from markdown text
+      // Handles `## Notes` or `**## Notes**` or `### Notes` variants
+      function extractNotes(text, heading) {
+        const re = new RegExp(`\\*?\\*?###?\\s*${heading}\\*?\\*?\\s*([\\s\\S]*?)(?=\\n\\*?\\*?#{1,3}\\s+|$)`);
+        const m = re.exec(text);
+        return m ? m[1].trim() : "";
+      }
+
+      // Show elapsed time during quiet periods (no tokens received recently)
+      let _lastTokenTime = Date.now();
+      const showElapsed = (label) => (elapsed) => {
+        // Only show elapsed if no tokens arrived in the last 3 seconds
+        if (Date.now() - _lastTokenTime > 3000) {
+          $("taskStatus").textContent = `${label} (${elapsed}s)`;
+        }
+      };
+      // Patch onToken wrappers to track token recency and store raw text
+      function wrapOnToken(fn) {
+        return (txt) => {
+          _lastTokenTime = Date.now();
+          $("taskStatus").textContent = $("taskStatus").textContent.replace(/\s*\(\d+\.?\d*s\)$/, '');
+          // Store raw text on the output element for raw/md toggle
+          outEl.dataset.raw = (outEl.dataset.raw || "") + txt;
+          fn(txt);
+        };
+      }
+
+      try {
+        // First implementation run — ask for implementation notes
+        const implSystemNote = `\n\nWhen you finish, include a section titled ## Implementation Notes at the end of your response. In those notes, briefly describe:\n- What changes you made and why\n- Any trade-offs or design decisions\n- Any areas you're unsure about or that need careful review\n\nDo NOT skip the implementation notes — they are essential for the reviewer.`;
+        await runSmithPrompt(step.prompt + implSystemNote, step, wrapOnToken((txt) => {
+          raw += txt;
+          outEl.innerHTML = taskFlow.rawMode ? `<pre style="white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:#05080b;border-radius:6px;padding:8px">${escapeHtml(raw)}</pre>` : renderMarkdown(raw);
+          $("taskOutput").scrollTop = $("taskOutput").scrollHeight;
+        }), showElapsed("⏳ generating..."));
+        checkSkip();
+
+        let implNotes = extractNotes(raw, "Implementation Notes");
+
+        if (step.review_enabled && step.review_model_id && step.task_type === "implement") {
+          const maxRetries = Math.max(0, Math.min(10, parseInt(step.review_iterations || "0", 10)));
+
+          for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            const reviewNotesIntro = implNotes
+              ? `\n\nThe implementor provided these implementation notes:\n${implNotes}\n\nRead them carefully to understand the approach taken, then evaluate the result.`
+              : "";
+            const reviewPrompt = `Review the result of task step ${i + 1}.${reviewNotesIntro}
+
+Output your verdict EXACTLY ONCE. DO NOT repeat yourself.
+
+Start your answer with exactly one of:
+SATISFACTORY: yes
+SATISFACTORY: no
+
+Only choose SATISFACTORY: no if the result is materially incomplete, incorrect, unsafe, or fails the requested task. If no, list the specific fixes needed.
+
+Original task:
+${step.prompt}
+
+After your verdict, include a section titled ## Review Notes at the end of your response. Do NOT repeat the notes section. In those notes, briefly describe:\n- Code quality observations\n- Potential edge cases or regressions\n- Suggestions for improvement beyond the specific fix requirements`;
+            let reviewText = "";
+            raw += `\n\n--- Conditional Review ${attempt + 1} ---\n`;
+            outEl.innerHTML = renderOut(raw);
+
+            await runSmithPrompt(reviewPrompt, {
+              task_type: "review",
+              review: "never",
+              provider_id: step.review_provider_id,
+              model_id: step.review_model_id
+            }, wrapOnToken((txt) => {
+              reviewText += txt;
+              raw += txt;
+              outEl.innerHTML = renderOut(raw);
+              $("taskOutput").scrollTop = $("taskOutput").scrollHeight;
+            }), showElapsed("⏳ reviewing..."));
+            checkSkip();
+
+            // Deduplicate: if the review text has repeated "SATISFACTORY:" blocks, keep only the first
+            function deduplicateReview(text) {
+              const parts = text.split(/(?=SATISFACTORY:\s*(?:yes|no))/gi);
+              if (parts.length <= 2) return text;
+              // Keep the lead-in text + first verdict block
+              return parts[0] + parts[1];
+            }
+            const deduped = deduplicateReview(reviewText);
+            if (deduped !== reviewText) {
+              raw = raw.replace(reviewText, deduped);
+              reviewText = deduped;
+              outEl.innerHTML = renderOut(raw);
+            }
+
+            const reviewNotes = extractNotes(reviewText, "Review Notes");
+
+            if (!reviewIsUnsatisfactory(reviewText)) {
+              raw += `\n\n[smith] Review deemed the result satisfactory. No reiteration needed.\n`;
+              if (reviewNotes) raw += `\n\n**Reviewer's notes:** ${reviewNotes}\n`;
+              outEl.innerHTML = renderOut(raw);
+              break;
+            }
+
+            if (attempt >= maxRetries) {
+              raw += `\n\n[smith] Review still unsatisfactory, but retry limit reached.\n`;
+              if (reviewNotes) raw += `\n\n**Reviewer's notes:** ${reviewNotes}\n`;
+              outEl.innerHTML = renderOut(raw);
+              break;
+            }
+
+            const notesBlock = implNotes
+              ? `\n\nImplementation notes from previous attempt:\n${implNotes}`
+              : "";
+            const fixPrompt = `The review found the previous result unsatisfactory. Re-implement only the fixes requested by the review.${notesBlock}
+
+After making changes, output a final summary of what you did. Do NOT call additional tools after your summary — stop immediately.
+
+Original task:
+${step.prompt}
+
+Review feedback:
+${reviewText}
+
+After making changes, include a section titled ## Implementation Notes at the end of your response. In those notes, briefly describe:\n- What fixes you applied\n- Any adjustments made based on the review\n- Any remaining concerns`;
+            raw += `\n\n--- Reiteration ${attempt + 1}/${maxRetries} ---\n`;
+            outEl.innerHTML = renderOut(raw);
+
+            await runSmithPrompt(fixPrompt, {
+              task_type: "implement",
+              review: "never",
+              provider_id: step.provider_id,
+              model_id: step.model_id
+            }, wrapOnToken((txt) => {
+              raw += txt;
+              outEl.innerHTML = renderOut(raw);
+              $("taskOutput").scrollTop = $("taskOutput").scrollHeight;
+            }), showElapsed("⏳ re-implementing..."));
+            checkSkip();
+
+            // Capture implementation notes from this retry for the next iteration
+            implNotes = extractNotes(raw, "Implementation Notes");
+          }
+        }
+
+        $("skipStepBtn").style.display = "none";
+        renderTaskOutputDone(outEl, raw);
+        if (taskFlow.stopped) {
+          renderTaskOutputDone(outEl, raw + "\n\n[smith] task flow stopped by user\n");
+          setStepStatus(i, "error");
+          $("taskStatus").textContent = "Task flow stopped.";
+          updateTaskBadge("error", "!");
+          return;
+        }
+
+        setStepStatus(i, "done");
+        taskFlow.index += 1;
+        const approval = step.approval || $("taskFlowApproval").value;
+        if (approval === "user" && taskFlow.index < taskFlow.steps.length) {
+          taskFlow.paused = true;
+          $("approveNextTask").style.display = "inline-block";
+          $("taskStatus").textContent = `Paused before step ${taskFlow.index + 1}. Approve to continue.`;
+          updateTaskBadge("paused", taskFlow.steps.length - taskFlow.index);
+          return;
+        }
+        await runNextTaskStep();
+      } catch (err) {
+        $("skipStepBtn").style.display = "none";
+        taskFlow.skipRequested = false;
+        if (err.message === "__SKIP_STEP__") {
+          setStepStatus(i, "done");
+          outEl.innerHTML += `<div class="muted" style="padding:8px;font-style:italic">Skipped by user.</div>`;
+          if (outEl.dataset.raw) outEl.dataset.raw += "\n[smith] skipped by user\n";
+          taskFlow.index += 1;
+          await runNextTaskStep();
+          return;
+        }
+        setStepStatus(i, "error");
+        raw += `\n\n[smith] step failed: ${err.message}\n`;
+        outEl.innerHTML = renderOut(raw);
+        $("taskStatus").textContent = `Task flow error on step ${i + 1}: ${err.message}`;
+        updateTaskBadge("error", "!");
+        // Allow continuing to next step despite error
+        const contBtn = document.createElement("button");
+        contBtn.className = "ghost";
+        contBtn.textContent = "Continue to next step";
+        contBtn.style.cssText = "margin-top:8px;font-size:12px;padding:4px 12px;border-radius:4px";
+        contBtn.onclick = async () => {
+          contBtn.remove();
+          taskFlow.index += 1;
+          await runNextTaskStep();
+        };
+        $("taskOutput").appendChild(contBtn);
+      }
+    }
+
+    function approveNextTask() {
+      if (!taskFlow.running || !taskFlow.paused) return;
+      taskFlow.paused = false;
+      $("approveNextTask").style.display = "none";
+      updateTaskBadge("running", taskFlow.steps.length - taskFlow.index);
+      runNextTaskStep();
+    }
+
+    function stopTaskFlow() {
+      taskFlow.stopped = true;
+      taskFlow.running = false;
+      taskFlow.paused = false;
+      $("approveNextTask").style.display = "none";
+      const interrupted = interruptActiveRun("task flow stopped by user");
+      $("taskStatus").textContent = interrupted
+        ? "Interrupted current run. No next step will start."
+        : "Stop requested. No next step will start.";
+      updateTaskBadge("error", "!");
+    }
+
+    async function loadFlowJson() {
+      const parsed = JSON.parse($("flowJson").value);
+      const steps = Array.isArray(parsed) ? parsed : parsed.steps;
+      if (!Array.isArray(steps)) throw new Error("JSON must be an array or contain a steps array.");
+      $("taskSteps").innerHTML = "";
+      if (!Array.isArray(parsed)) {
+        if (parsed.approval) $("taskFlowApproval").value = parsed.approval;
+        // Reviews are now configured per step using review_model_id and review_iterations.
+      }
+      for (const raw of steps) {
+        const step = typeof raw === "string" ? {prompt: raw} : raw;
+        await addTaskStep(step);
+      }
+    }
+
+    function updateFlowJsonPreview() {
+      const steps = getFlowStepsFromUi();
+      if (!steps.length) {
+        $("flowJson").value = "";
+        return;
+      }
+      const data = {
+        approval: $("taskFlowApproval").value,
+        steps
+      };
+      $("flowJson").value = JSON.stringify(data, null, 2);
+    }
+
+    function exportFlowJson() {
+      updateFlowJsonPreview();
+      // Select all for easy copy
+      $("flowJson").select();
+    }
+
+    function syncResponsiveUiState() {
+      const drawer = $("modelDrawer");
+      if (!drawer) return;
+      // Keep model drawer on-demand on all view sizes.
+    }
+
+    function setupTaskSplitter() {
+      const splitter = $("taskSplitter");
+      const layout = document.querySelector(".task-layout");
+      if (!splitter || !layout) return;
+      let dragging = false;
+      splitter.addEventListener("mousedown", (e) => {
+        dragging = true;
+        document.body.style.cursor = "col-resize";
+        e.preventDefault();
+      });
+      window.addEventListener("mousemove", (e) => {
+        if (!dragging) return;
+        const rect = layout.getBoundingClientRect();
+        const pct = Math.max(32, Math.min(76, ((e.clientX - rect.left) / rect.width) * 100));
+        layout.style.setProperty("--task-builder-width", pct.toFixed(1) + "%");
+      });
+      window.addEventListener("mouseup", () => {
+        dragging = false;
+        document.body.style.cursor = "";
+      });
+    }
+
+    function openMobileMenu() {
+      $("mobileMenu").classList.add("open");
+      $("mobileMenuBackdrop").classList.add("open");
+      document.body.classList.add("mobile-menu-open");
+    }
+    function closeMobileMenu() {
+      $("mobileMenu").classList.remove("open");
+      $("mobileMenuBackdrop").classList.remove("open");
+      document.body.classList.remove("mobile-menu-open");
+    }
+    function closeMobilePanels() {
+      document.body.classList.remove("mobile-panel-history", "mobile-panel-changes");
+    }
+
+    window.addEventListener("resize", syncResponsiveUiState);
+    $("prompt").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitPrompt(); }
+    });
+
+    document.querySelectorAll(".tab").forEach(t => t.onclick = () => switchTab(t.dataset.tab));
+    $("send").onclick = submitPrompt;
+    // Chat raw mode toggle
+    $("chatRawToggle").onclick = function() {
+      chatRawMode = !chatRawMode;
+      this.textContent = chatRawMode ? "rendered" : "raw";
+      this.style.borderColor = chatRawMode ? "var(--accent-2)" : "var(--border)";
+      // Re-render existing assistant bubbles to raw if toggled on
+      document.querySelectorAll(".msg.assistant .bubble").forEach((b) => {
+        const raw = b.dataset.rawText;
+        if (!raw) return;
+        if (chatRawMode) {
+          if (!b.classList.contains("raw")) {
+            b.dataset.renderedHtml = b.innerHTML;
+            b.innerHTML = `<pre style="white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:#05080b;border-radius:6px;padding:8px">${escapeHtml(raw)}</pre>`;
+            b.classList.add("raw");
+          }
+        } else {
+          if (b.classList.contains("raw")) {
+            b.innerHTML = b.dataset.renderedHtml || renderMarkdown(raw);
+            b.classList.remove("raw");
+          }
+        }
+      });
+    };
+    function syncReviewControls() {
+      const enabled = $("reviewEnabled")?.checked;
+      const group = $("reviewModelGroup");
+      if (!group) return;
+      group.classList.toggle("disabled", !enabled);
+      $("reviewProviderSelect").disabled = !enabled;
+      $("reviewModelSelect").disabled = !enabled;
+    }
+    $("reviewEnabled").addEventListener("change", syncReviewControls);
+    syncReviewControls();
+
+    function startNewThread() {
+      resetChatSession({clearMessages: true, threadId: null});
+      switchTab("chat");
+      closeMobileMenu();
+      closeMobilePanels();
+      loadHistory(true);
+    }
+    $("newThread").onclick = startNewThread;
+    $("closeChanges").onclick = () => { $("app").classList.remove("changes-open"); document.body.classList.remove("mobile-panel-changes"); };
+    $("openChanges").onclick = () => $("app").classList.add("changes-open");
+    $("mobileMenuButton").onclick = openMobileMenu;
+    $("closeMobileMenu").onclick = closeMobileMenu;
+    $("mobileMenuBackdrop").onclick = () => { closeMobileMenu(); closeMobilePanels(); };
+    $("mobileNewThread").onclick = startNewThread;
+    $("mobileRefresh").onclick = async () => { await refreshStatus(); await loadProviders(); closeMobileMenu(); };
+    $("mobileShowHistory").onclick = () => {
+      closeMobileMenu();
+      closeMobilePanels();
+      switchTab("history");
+      loadHistory(true);
+    };
+    $("mobileShowChanges").onclick = () => {
+      closeMobileMenu();
+      document.body.classList.add("mobile-panel-changes");
+      document.body.classList.remove("mobile-panel-history");
+      $("app").classList.add("changes-open");
+    };
+    $("mobileToken").addEventListener("input", () => { $("token").value = $("mobileToken").value; });
+    $("token").addEventListener("input", () => { $("mobileToken").value = $("token").value; });
+
+    // Raw/rendered toggle for task output
+    document.addEventListener("click", (e) => {
+      const btn = e.target.closest(".raw-toggle");
+      if (!btn) return;
+      const targetId = btn.dataset.target;
+      const el = document.getElementById(targetId);
+      if (!el) return;
+      const rawText = el.dataset.raw;
+      if (!rawText) return;
+      const isRaw = el.classList.toggle("raw");
+      btn.textContent = isRaw ? "md" : "raw";
+      if (isRaw) {
+        el.innerHTML = `<pre style="white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:#05080b;border-radius:6px;padding:8px">${escapeHtml(rawText)}</pre>`;
+      } else {
+        el.innerHTML = renderMarkdown(rawText);
+      }
+    });
+
+    $("loadMoreHistory").onclick = () => loadHistory(false);
+    $("history").addEventListener("scroll", () => {
+      const el = $("history");
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) loadHistory(false);
+    });
+    $("providerSelect").onchange = loadMainModels;
+    $("reviewProviderSelect").onchange = loadReviewModels;
+    $("refresh").onclick = async () => { await refreshStatus(); await loadProviders(); await loadHistory(true); };
+    $("refreshModels").onclick = async () => {
+      const provider = $("providerSelect").value || "lmstudio";
+      $("modelStatus").textContent = "Refreshing...";
+      const data = await api(`/api/providers/${provider}/refresh-models`, {method: "POST"});
+      $("modelStatus").textContent = `Refreshed ${data.models.length} model(s)`;
+      await loadMainModels();
+      await loadReviewModels();
+    };
+    $("setDefaultModel").onclick = async () => {
+      const provider = $("providerSelect").value;
+      const model = $("modelSelect").value;
+      if (!provider || !model) return;
+      await api(`/api/models/default?provider_id=${encodeURIComponent(provider)}&model_id=${encodeURIComponent(model)}`, {method: "POST"});
+      $("modelStatus").textContent = `Project default set: ${provider}/${model}`;
+    };
+    $("startIndex").onclick = async () => { await api(`/api/project/index/start`, {method: "POST"}); refreshStatus(); };
+    $("pauseIndex").onclick = async () => { await api(`/api/project/index/pause`, {method: "POST"}); refreshStatus(); };
+    $("resumeIndex").onclick = async () => { await api(`/api/project/index/resume`, {method: "POST"}); refreshStatus(); };
+    $("closeFileTree").onclick = () => $("filesView").classList.add("file-tree-closed");
+    $("openFileTree").onclick = () => $("filesView").classList.remove("file-tree-closed");
+        $("fileSearch").addEventListener("input", () => loadFileTree("", $("fileSearch").value.trim()));
+    $("fileRoot").onclick = () => loadFileTree("");
+    $("fileUp").onclick = () => {
+      const parts = fileCwd.split("/").filter(Boolean);
+      parts.pop();
+      loadFileTree(parts.join("/"));
+    };
+    $("saveFile").onclick = saveOpenFile;
+    $("indexOpenFile").onclick = async () => {
+      if (!selectedPath) return;
+      await api(`/api/project/index/file?path=${encodeURIComponent(selectedPath)}`, {method: "POST"});
+      await refreshStatus();
+    };
+    $("indexSearch").addEventListener("input", refreshIndexFiles);
+    $("indexStatusFilter").onchange = refreshIndexFiles;
+    $("addTaskStep").onclick = () => addTaskStep({task_type:"implement"});
+    $("addTaskStepBottom").onclick = () => addTaskStep({task_type:"implement"});
+    $("copyFlowSpec").onclick = async () => {
+      await navigator.clipboard.writeText($("flowSpecText").innerText);
+      $("copyFlowSpec").textContent = "Copied";
+      setTimeout(() => $("copyFlowSpec").textContent = "Copy spec", 1200);
+    };
+    $("runTaskFlow").onclick = runTaskFlow;
+    $("approveNextTask").onclick = approveNextTask;
+    $("stopTaskFlow").onclick = stopTaskFlow;
+    $("loadFlowJson").onclick = () => loadFlowJson().catch(err => alert(err.message));
+    $("exportFlowJson").onclick = exportFlowJson;
+    $("taskFlowApproval").onchange = updateFlowJsonPreview;
+
+    async function boot() {
+      try {
+        const info = await fetch("/api/build-info").then(r => r.json());
+        // build_id: info.build_id
+        const registryHref = info.registry_lan_url || info.registry_url || "http://127.0.0.1:8764";
+        // registry link: registryHref
+      } catch {}
+      await loadProviders().catch(console.error);
+      await addTaskStep({task_type:"implement"}).catch(console.error);
+      await refreshStatus().catch(console.error);
+      await loadHistory(true).catch(console.error);
+      await loadFileTree("").catch(console.error);
+      $("modelDrawer").open = false;
+      syncResponsiveUiState();
+      setupTaskSplitter();
+      setInterval(refreshStatus, 3000);
+    }
+    boot();
+  </script>
+</body>
+</html>

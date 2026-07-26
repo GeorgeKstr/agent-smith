@@ -1,0 +1,445 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent Smith Registry</title>
+  <style>
+    :root {
+      --bg: #080b0f;
+      --panel: #10161d;
+      --panel-2: #141c24;
+      --panel-3: #0c1117;
+      --border: #26323d;
+      --text: #e6edf3;
+      --muted: #8b98a5;
+      --accent: #78d67b;
+      --accent-2: #8ab4f8;
+      --danger: #ff7b72;
+      --shadow: rgba(0,0,0,.24);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      height: 54px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(8,11,15,.95);
+    }
+    .brand { color: var(--accent); font-weight: 900; font-size: 15px; letter-spacing: .2px; }
+    .pill {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--muted);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    button {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font: inherit;
+      transition: .12s ease;
+    }
+    button:hover { border-color: var(--accent); }
+    .app {
+      height: calc(100vh - 54px);
+      display: grid;
+      grid-template-columns: 310px minmax(0, 1fr);
+    }
+    aside {
+      border-right: 1px solid var(--border);
+      background: var(--panel);
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .aside-head {
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+      flex: 0 0 auto;
+    }
+    .aside-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    h3 {
+      margin: 0 0 6px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .12em;
+    }
+    .agents {
+      overflow: auto;
+      padding: 8px;
+      flex: 1;
+      min-height: 0;
+    }
+    .agent {
+      border: 1px solid var(--border);
+      background: var(--panel-3);
+      border-radius: 10px;
+      padding: 10px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      position: relative;
+      transition: .12s ease;
+    }
+    .agent:hover { border-color: var(--accent-2); }
+    .agent.active { border-color: var(--accent); background: #10231a; }
+    .agent-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .agent-title {
+      font-weight: 700;
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding-right: 36px;
+      flex: 1;
+      min-width: 0;
+    }
+    .agent-actions {
+      display: flex;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .agent-actions button {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      line-height: 1;
+    }
+    .delete-agent:hover { border-color: var(--danger); color: var(--danger); }
+    .agent-path {
+      color: var(--muted);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-bottom: 2px;
+    }
+    .agent-url {
+      color: var(--accent-2);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-bottom: 4px;
+    }
+    .agent-footer {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+    .status-dot.online {
+      background: var(--accent);
+      box-shadow: 0 0 6px rgba(120,214,123,.35);
+    }
+    .status-dot.offline {
+      background: var(--muted);
+      opacity: .45;
+    }
+    .agent-time {
+      color: var(--muted);
+      font-size: 11px;
+      flex: 1;
+      text-align: right;
+    }
+    .notify-badge {
+      display: none;
+      position: absolute;
+      right: 8px;
+      top: 8px;
+      min-width: 22px;
+      height: 20px;
+      border-radius: 999px;
+      padding: 0 6px;
+      line-height: 20px;
+      text-align: center;
+      background: var(--accent);
+      color: #071008;
+      font-size: 11px;
+      font-weight: 900;
+      box-shadow: 0 0 0 2px rgba(120,214,123,.15);
+    }
+    .agent.has-notify { border-color: var(--accent); }
+    .agent.has-notify .notify-badge { display: block; }
+    .muted { color: var(--muted); }
+    .desc { font-size: 11px; color: var(--muted); }
+    main {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .toolbar {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      background: var(--panel-3);
+      flex: 0 0 auto;
+    }
+    iframe {
+      flex: 1;
+      width: 100%;
+      border: 0;
+      background: #000;
+    }
+    .empty {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      flex-direction: column;
+      gap: 12px;
+    }
+    .empty h2 { margin: 0; font-size: 18px; font-weight: 700; }
+    .empty p { margin: 0; font-size: 13px; max-width: 360px; text-align: center; }
+
+    /* ── Collapsed state ─────────────────────────────────────── */
+    body.agents-collapsed .app { grid-template-columns: 42px minmax(0,1fr); }
+    body.agents-collapsed aside .aside-content { display: none; }
+    .agent-rail {
+      display: none;
+      height: 100%;
+      width: 100%;
+      border: 0;
+      border-radius: 0;
+      border-right: 1px solid var(--border);
+      background: var(--panel-3);
+      color: var(--muted);
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      align-items: center;
+      justify-content: center;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      font-size: 12px;
+    }
+    body.agents-collapsed aside .agent-rail { display: flex; }
+    .aside-content {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-width: 0;
+    }
+    .icon-button {
+      width: 36px !important;
+      min-width: 36px !important;
+      height: 36px !important;
+      min-height: 36px !important;
+      padding: 0 !important;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      border-radius: 9px;
+    }
+    #agentsMenuButton { color: var(--accent); font-size: 20px; }
+    body.agents-collapsed #agentsMenuButton { border-color: var(--accent-2); background: var(--panel-3); }
+
+    /* ── Responsive ────────────────────────────────────────────── */
+    @media (max-width: 760px) {
+      header { height: auto; min-height: 54px; flex-wrap: wrap; padding: 8px 10px; gap: 8px; }
+      header .pill:nth-child(n+3) { display: none; }
+      #refresh { margin-left: auto; }
+      .app { display: flex; flex-direction: column; }
+      aside { max-height: 38vh; border-right: 0; border-bottom: 1px solid var(--border); }
+      .agents { max-height: 100%; }
+      main { flex: 1; min-height: 0; }
+      .toolbar { flex-wrap: wrap; }
+      iframe { min-height: 0; }
+      body.agents-collapsed aside { max-height: 40px; min-height: 40px; }
+      body.agents-collapsed .agent-rail { writing-mode: horizontal-tb; border-right: 0; border-bottom: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <button id="agentsMenuButton" class="icon-button" title="Toggle sidebar" aria-label="Toggle sidebar">☰</button>
+    <div class="brand">Agent Smith Registry</div>
+    <button id="refresh" class="ghost">⟳</button>
+    <span id="count" class="pill">0 agents</span>
+  </header>
+  <div class="app">
+    <aside>
+      <button id="openAgents" class="agent-rail" title="Open agents panel">☰</button>
+      <div class="aside-content">
+        <div class="aside-head">
+          <div class="aside-top">
+            <h3>Agents</h3>
+          </div>
+          <div class="desc">Select an agent to view its UI.</div>
+        </div>
+        <div id="agents" class="agents"></div>
+      </div>
+    </aside>
+    <main>
+      <div class="toolbar">
+        <span id="selected" class="pill">No agent selected</span>
+        <button id="openDirect">Open direct</button>
+        <button id="openLan">Open LAN URL</button>
+        <span id="toolbarStatus" class="muted" style="margin-left:auto"></span>
+      </div>
+      <iframe id="frame" style="display:none"></iframe>
+      <div id="empty" class="empty">
+        <h2>No agents yet</h2>
+        <p>Run <code>./start.sh app</code> or <code>./start.sh serve /path/to/project</code> to start a Smith agent. It will appear here automatically.</p>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    let selected = null;
+    const $ = id => document.getElementById(id);
+    const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    function ago(ts) {
+      if (!ts) return "";
+      const diff = Date.now() / 1000 - ts;
+      if (diff < 5) return "just now";
+      if (diff < 60) return Math.floor(diff) + "s ago";
+      if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+      if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+      return Math.floor(diff / 86400) + "d ago";
+    }
+
+    function formatTime(ts) {
+      if (!ts) return "";
+      const d = new Date(ts * 1000);
+      return d.toLocaleString(undefined, {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+    }
+
+    let markingRead = false;
+
+    async function deleteAgent(projectId, event) {
+      event.stopPropagation();
+      if (!confirm("Remove this agent from the registry? This does not stop the running server.")) return;
+      await fetch(`/api/registry/agents/${encodeURIComponent(projectId)}`, {method: "DELETE"});
+      if (selected && selected.project_id === projectId) {
+        selected = null;
+        $("selected").textContent = "No agent selected";
+        $("frame").style.display = "none";
+        $("empty").style.display = "flex";
+      }
+      await loadAgents();
+    }
+
+    async function loadAgents() {
+      const agents = await fetch("/api/registry/agents").then(r => r.json());
+
+      // Auto-mark selected agent as read
+      const selectedFresh = selected ? agents.find(a => a.project_id === selected.project_id) : null;
+      if (selectedFresh && Number(selectedFresh.unread_count || 0) > 0 && !markingRead) {
+        markingRead = true;
+        fetch(`/api/registry/agents/${encodeURIComponent(selectedFresh.project_id)}/read`, {method:"POST"})
+          .finally(() => { markingRead = false; setTimeout(loadAgents, 150); });
+      }
+
+      $("count").textContent = `${agents.length} agent${agents.length === 1 ? "" : "s"}`;
+      $("agents").innerHTML = "";
+
+      if (!agents.length) {
+        $("agents").innerHTML = '<div class="muted" style="padding:16px;text-align:center">No agents registered yet.</div>';
+        return;
+      }
+
+      agents.forEach(a => {
+        const div = document.createElement("div");
+        div.className = "agent" + (selected && selected.project_id === a.project_id ? " active" : "");
+        const unread = Number(a.unread_count || 0);
+        if (unread > 0) div.className += " has-notify";
+
+        const lastSeen = a.last_seen_ts || a.last_completed_ts || a.started_at || null;
+        const isOnline = lastSeen && (Date.now() / 1000 - lastSeen < 300); // 5 min threshold
+
+        div.innerHTML = `
+          <span class="notify-badge">${unread}</span>
+          <div class="agent-top">
+            <span class="agent-title">${esc(a.title || a.project_id)}</span>
+            <span class="agent-actions">
+              <button class="delete-agent" onclick="deleteAgent('${a.project_id}', event)" title="Remove agent">×</button>
+            </span>
+          </div>
+          <div class="agent-path" title="${esc(a.root_path || "")}">${esc(a.root_path || "")}</div>
+          <div class="agent-url">${esc(a.lan_url || a.url || "")}</div>
+          <div class="agent-footer">
+            <span class="status-dot ${isOnline ? 'online' : 'offline'}"></span>
+            <span>${isOnline ? 'Online' : 'Offline'}</span>
+            ${unread > 0 ? `<span style="color:var(--accent);font-weight:600">${unread} new</span>` : ""}
+            <span class="agent-time">${lastSeen ? ago(lastSeen) : ""}</span>
+          </div>
+        `;
+        div.onclick = () => selectAgent(a);
+        $("agents").appendChild(div);
+      });
+      if (!selected && agents.length) selectAgent(agents[0], {markRead: false});
+    }
+
+    async function selectAgent(a, opts = {markRead: true}) {
+      selected = a;
+      $("selected").textContent = a.title || a.project_id;
+      const url = (a.lan_url || a.url);
+      $("frame").src = url + "/?embedded=1&v=registryui";
+      $("frame").style.display = "block";
+      $("empty").style.display = "none";
+      $("toolbarStatus").textContent = "";
+      if (opts.markRead !== false) {
+        fetch(`/api/registry/agents/${encodeURIComponent(a.project_id)}/read`, {method: "POST"})
+          .then(() => setTimeout(loadAgents, 150))
+          .catch(() => {});
+      }
+    }
+
+    function toggleSidebar() {
+      const collapsed = document.body.classList.toggle("agents-collapsed");
+      $("agentsMenuButton").textContent = collapsed ? "☰" : "✕";
+      $("openAgents").textContent = collapsed ? "☰" : "✕";
+    }
+    $("agentsMenuButton").onclick = toggleSidebar;
+    $("openAgents").onclick = () => {
+      document.body.classList.remove("agents-collapsed");
+      $("agentsMenuButton").textContent = "✕";
+      $("openAgents").textContent = "✕";
+    };
+    $("refresh").onclick = loadAgents;
+    $("openDirect").onclick = () => { if (selected) window.open(selected.url || selected.lan_url, "_blank"); };
+    $("openLan").onclick = () => { if (selected) window.open(selected.lan_url || selected.url, "_blank"); };
+
+    setInterval(loadAgents, 5000);
+    loadAgents();
+  </script>
+</body>
+</html>

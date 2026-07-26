@@ -1,0 +1,2 @@
+include smith/static/*
+include smith/schema.sql
