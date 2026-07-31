@@ -6,6 +6,8 @@ from typing import Any
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
+import os
+
 from .db import ProjectDB
 
 
@@ -134,6 +136,45 @@ def get_project_model_selection(db: ProjectDB, task_type: str = "ask") -> dict[s
     return {"provider_id": "lmstudio", "model_id": provider["default_model"]}
 
 
+def _should_use_text_tools(model_id: str) -> bool:
+    """Determine if text-based tool calling should be used for this model.
+
+    Decision order:
+    1. SMITH_TEXT_TOOL_MODE env var (explicit override: 1/true/yes/on = force text,
+       0/false/no/off = force native)
+    2. Model-family heuristic: certain open-source model families emit tool
+       calls as text rather than via OpenAI's native function-calling API
+    3. Default: native mode (works for qwen3-coder, GPT-OSS, etc.)
+    """
+    env_val = os.getenv("SMITH_TEXT_TOOL_MODE", "").strip().lower()
+    if env_val in ("1", "true", "yes", "on"):
+        return True
+    if env_val in ("0", "false", "no", "off"):
+        return False
+
+    # ── Model-family heuristic ──────────────────────────────────────────
+    # These families are known to emit textual tool calls (<|tool_call>,
+    # <tool_call>, etc.) rather than native OpenAI function-calling JSON.
+    model_lower = model_id.lower()
+
+    _TEXT_MODE_PATTERNS = (
+        "gemma",       # Gemma 4 — native tool streaming is broken in langchain, use text parser
+        "glm",         # GLM models — uses <function=...> XML format, no native support
+        "deepseek",    # DeepSeek local variants
+        "llama",       # Llama 3.1 / Llama 2 / etc. — many local variants lack native support
+        "phi",         # Microsoft Phi models
+        "mistral",     # Mistral variants without native support
+        "mixtral",     # Mixtral variants
+    )
+
+    for pattern in _TEXT_MODE_PATTERNS:
+        if pattern in model_lower:
+            return True
+
+    # ── Default: native ─────────────────────────────────────────────────
+    return False
+
+
 def build_chat_model_for_task(
     db: ProjectDB,
     task_type: str,
@@ -142,14 +183,29 @@ def build_chat_model_for_task(
 ) -> ChatOpenAI:
     selection = model_override or get_project_model_selection(db, task_type)
     provider = get_provider(selection["provider_id"])
+    model_id = selection["model_id"]
+
+    text_tool_mode = _should_use_text_tools(model_id)
+
+    if text_tool_mode:
+        from .local_model import LocalModelChatOpenAI
+        return LocalModelChatOpenAI(
+            model=model_id,
+            base_url=provider["base_url"],
+            api_key=provider.get("api_key") or "not-needed",
+            temperature=0,
+            max_tokens=max_tokens or 4096,
+            timeout=300,
+            stream_usage=False,
+            text_tool_mode=True,
+        )
 
     return ChatOpenAI(
-        model=selection["model_id"],
+        model=model_id,
         base_url=provider["base_url"],
         api_key=provider.get("api_key") or "not-needed",
         temperature=0,
         max_tokens=max_tokens or 4096,
         timeout=300,
         stream_usage=False,
-        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )

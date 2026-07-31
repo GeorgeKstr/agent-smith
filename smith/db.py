@@ -770,7 +770,7 @@ class ProjectDB:
                 if files:
                     content = "## Project Files\n" + "\n".join(files)
             except Exception:
-                content = "(project listing unavailable — explore with list_files)"
+                content = "(project listing unavailable — explore with ls)"
 
         if len(content) > budget_chars:
             content = content[:budget_chars] + "\n\n... context truncated to budget"

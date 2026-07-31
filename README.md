@@ -33,9 +33,9 @@ smith2
 
 | Feature | Description |
 |---------|-------------|
-| **Surgical editing** | `edit_file` tool finds exact text to replace, verifies uniqueness, creates backups, shows diffs |
-| **Grep + find** | `grep_search` (regex/literal with context lines, glob filtering) and `find_files` (glob-based) |
-| **Read file** | `read_file` with offset/limit line-range support |
+| **Surgical editing** | `edit` tool applies find/replace edits (with fuzzy matching like pi), verifies uniqueness, creates backups, shows diffs |
+| **Grep + find** | `grep` (regex/literal, case-insensitive, context lines, glob filtering) and `find` (glob-based) |
+| **Read file** | `read` with offset/limit line-range support |
 | **Configurable bash** | Command allowlist/blocklist via DB settings, env vars, or hardcoded defaults |
 | **Context compaction** | Automatically condenses long histories between runs to fit smaller context windows |
 | **Docker sandboxing** | Optional Docker-backed command execution with memory/CPU limits |
@@ -84,13 +84,13 @@ Available tools in the agent loop:
 
 | Tool | Description | Profiles |
 |------|-------------|----------|
-| `read_file` | Read a file with offset/limit | ask, implement, review |
-| `write_file` | Write a new file or overwrite | implement |
-| `edit_file` | Surgical text replacement with verification | implement |
-| `grep_search` | Regex/literal pattern search with context | ask, implement, review |
-| `find_files` | Glob-based file discovery | ask, implement |
-| `run_command` | Execute a command (sandboxed/restricted) | implement |
-| `list_files` | List directory contents | all |
+| `read` | Read a file with offset/limit | ask, implement, review |
+| `write` | Write a new file or overwrite | implement |
+| `edit` | Surgical find/replace edits (array of {oldText, newText}) | implement |
+| `grep` | Regex/literal pattern search with context | ask, implement, review |
+| `find` | Glob-based file discovery | ask, implement |
+| `bash` | Execute a command (sandboxed/restricted) | implement, review |
+| `ls` | List directory contents | all |
 | `search_project_context` | Search indexed project memory | all |
 | `get_file_summary` | Get indexed file summary | all |
 | `get_related_files` | Get file relationships | all |

@@ -15,13 +15,99 @@ from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
 
 from .db import ProjectDB, sha256_bytes, json_loads
+from .error_logger import ToolErrorLogger, detect_model_anomalies
 from .registry import get_task_profile
 from .providers import build_chat_model_for_task
 from .sandbox import get_sandbox_backend
 
 load_dotenv()
+
+
+def _text_tool_prompt(profile) -> str:
+    """Build text-based tool calling instructions for local models.
+
+    When SMITH_TEXT_TOOL_MODE is enabled, the model receives explicit
+    instructions for calling tools using XML-style syntax that our
+    tool_parser can reliably extract.
+    """
+    # Build allowed tools list from profile
+    tool_lines = []
+    for tname in profile.tools:
+        if tname == "ls":
+            tool_lines.append(
+                "- ls(path=\\“.\\”, limit=200): List directory. Dirs end with '/'. "
+                "Ignored dirs (.git, node_modules, etc.) are hidden."
+            )
+        elif tname == "read":
+            tool_lines.append(
+                "- read(path=\"file.py\", offset=1, limit=100): Read a text file. "
+                "Use offset (1-indexed line) and limit for large files."
+            )
+        elif tname == "write":
+            tool_lines.append(
+                "- write(path=\"file.py\", content=\"...\"): Create or overwrite a file."
+            )
+        elif tname == "edit":
+            tool_lines.append(
+                "- edit(path=\"file.py\", edits=[{oldText: \"exact old\", newText: \"replacement\"}]): "
+                "Surgical find/replace. Read file first to get exact oldText."
+            )
+        elif tname == "grep":
+            tool_lines.append(
+                "- grep(pattern=\"regex\", path=\".\", glob=\"*.py\", ignoreCase=False, "
+                "literal=False, context=2, limit=30): Search file contents."
+            )
+        elif tname == "find":
+            tool_lines.append(
+                "- find(pattern=\"*.py\", path=\".\", limit=50): Find files by glob pattern."
+            )
+        elif tname == "bash":
+            tool_lines.append(
+                "- bash(command=\"ls -la\", timeout=60): Run a SINGLE command. "
+                "No shell operators (&&, |, >, #)."
+            )
+        elif tname == "search_project_context":
+            tool_lines.append(
+                "- search_project_context(query=\"...\", limit=8): Search indexed project memory."
+            )
+        elif tname == "get_file_summary":
+            tool_lines.append(
+                "- get_file_summary(path=\"file.py\"): Get indexed file summary."
+            )
+        elif tname == "get_related_files":
+            tool_lines.append(
+                "- get_related_files(path=\"file.py\"): Get related file relationships."
+            )
+        elif tname == "get_run_changes":
+            tool_lines.append(
+                "- get_run_changes(limit=20): Show recent file changes."
+            )
+
+    tools_text = "\n".join(tool_lines) if tool_lines else "(no tools available)"
+
+    return (
+        "TOOL CALLING FORMAT — You MUST use this EXACT syntax for every tool call:\n\n"
+        "  call:NAME{key1:\"value1\", key2:\"value2\"}\n\n"
+        "Use double quotes for ALL values. Separate key:value pairs with comma+space.\n"
+        "Wrap your tool call like this (these delimiters are REQUIRED):\n\n"
+        "  <|tool_call>call:write{\"path\":\"hello.py\",\"content\":\"print('hello')\"}<tool_call|>\n\n"
+        "IMPORTANT RULES:\n"
+        "- ALWAYS include the <|tool_call> at the start and <tool_call|> at the end.\n"
+        "- EVERY value MUST be in double quotes, e.g. \"value\".\n"
+        "- Separate multiple key:\"value\" pairs with comma + space.\n"
+        "- For multi-line content, everything goes inside the double quotes.\n"
+        "- Use proper JSON-style escaping: \\n for newlines, \\\" for literal quotes inside values.\n"
+        "- You may include multiple <|tool_call>...<tool_call|> blocks in one response.\n"
+        "- After tool results come back, you may call more tools or give your final answer.\n"
+        "- When done, do NOT include any <|tool_call> blocks — just write your answer.\n"
+        "- DO NOT explain your reasoning or plan. Output ONLY the tool call or the final answer.\n\n"
+        "AVAILABLE TOOLS:\n"
+        f"{tools_text}\n\n"
+    )
+
 
 IGNORED_DIRS = {".git", ".agent-smith", "node_modules", "venv", ".venv", "__pycache__", "dist", "build"}
 ALLOWED_COMMANDS = {
@@ -40,6 +126,23 @@ ALLOWED_COMMANDS = {
     "curl", "wget",
 }
 BLOCKED_ARGS = {"install", "add", "remove", "uninstall", "delete", "publish", "deploy", "start", "dev", "serve"}
+
+
+def _split_on_ampersand(parts: list[str]) -> list[list[str]]:
+    """Split a command like ['mkdir', '-p', 'dir', '&&', 'touch', 'file']
+    into [['mkdir', '-p', 'dir'], ['touch', 'file']]."""
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for part in parts:
+        if part == "&&":
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(part)
+    if current:
+        segments.append(current)
+    return segments
 
 
 # ── Approval handler protocol ──────────────────────────────────────────────
@@ -132,48 +235,139 @@ def is_ignored_rel(path: Path) -> bool:
     return any(part in IGNORED_DIRS for part in path.parts)
 
 
+# ── Tool input schema (mirrors the pi agent exactly) ───────────────────────
+# Local models are far more reliable when tool names + parameter names match a
+# schema they have seen in training. These mirror pi's TypeBox schemas 1:1.
+
+class EditItem(BaseModel):
+    """A single find/replace edit applied by the `edit` tool."""
+    oldText: str = Field(..., description="Exact text to find in the file.")
+    newText: str = Field(..., description="Text to replace the matched text with.")
 
 
-def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_event=None, approval_handler: ApprovalHandler | None = None):
+_PLACEHOLDER_PATTERNS = [
+    "... existing code ...", "// ...", "/* ...", "# ...",
+    "<!-- ...", "... rest of file ...", "... other methods",
+    "... remain unchanged", "{{ ... }}", "{% ... %}",
+    "// rest of the code", "/* rest of the code */",
+]
+
+
+def _normalize_for_fuzzy(t: str) -> str:
+    """Normalize text for fuzzy matching (mirrors pi's normalizeForFuzzyMatch).
+
+    Collapses line-ending, trailing-whitespace, smart-quote, dash and NBSP
+    differences so that edits authored by a model still match the file even
+    when the model slightly misremembers whitespace or punctuation.
+    """
+    t = t.replace("\r\n", "\n").replace("\r", "\n")
+    t = "\n".join(line.rstrip() for line in t.split("\n"))
+    t = t.replace("\u2018", "'").replace("\u2019", "'")
+    t = t.replace("\u201c", "\"").replace("\u201d", "\"")
+    t = t.replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
+    t = t.replace("\u00a0", " ").replace("\u200b", "")
+    return t
+
+
+def _locate_match(haystack: str, needle: str) -> tuple[int, int, bool]:
+    """Find `needle` in `haystack`. Returns (start, length_in_haystack, used_fuzzy).
+
+    Tries an exact match first, then a fuzzy match in normalized space (mirrors
+    pi's edit tool). Returns (-1, -1, False) when not found.
+    """
+    idx = haystack.find(needle)
+    if idx != -1:
+        return idx, len(needle), False
+
+    norm_hay = _normalize_for_fuzzy(haystack)
+    norm_needle = _normalize_for_fuzzy(needle)
+    fidx = norm_hay.find(norm_needle)
+    if fidx == -1:
+        return -1, -1, False
+
+    # Map the normalized index back to an index in the original haystack by
+    # walking both strings in lockstep.
+    orig_pos = 0
+    norm_pos = 0
+    while norm_pos < fidx and orig_pos < len(haystack):
+        nc = _normalize_for_fuzzy(haystack[orig_pos])
+        if nc == norm_hay[norm_pos:norm_pos + len(nc)]:
+            norm_pos += len(nc)
+        orig_pos += 1
+    start = orig_pos
+
+    # Determine the length in the original that the normalized needle covers.
+    actual_len = 0
+    npos = 0
+    snippet = haystack[start:]
+    while npos < len(norm_needle) and actual_len < len(snippet):
+        nc = _normalize_for_fuzzy(snippet[actual_len])
+        npos += len(nc)
+        actual_len += 1
+    return start, actual_len, True
+
+
+def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_event=None, approval_handler: ApprovalHandler | None = None, error_logger: ToolErrorLogger | None = None, model_context: list[dict[str, Any]] | None = None):
     root = db.root_path
     profile = get_task_profile(task_type)
     if approval_handler is None:
         approval_handler = SilentDenyHandler()
+    if error_logger is None:
+        error_logger = ToolErrorLogger(db)
+
+    def _log_error(tool_name: str, args: dict[str, Any] | None, error_result: str) -> None:
+        """Record a tool error for debugging."""
+        try:
+            error_logger.record_tool_error(
+                run_id=run_id or "unknown",
+                tool_name=tool_name,
+                tool_args=args,
+                error_result=error_result,
+                model_messages=model_context,
+            )
+        except Exception:
+            pass  # Never let error logging break the tool
 
     @tool
-    def list_files(path: str = ".", recursive: bool = False, max_entries: int = 300) -> str:
-        """List files inside the project workspace."""
+    def ls(path: str = ".", limit: int = 200) -> str:
+        """List the contents of a directory inside the project workspace.
+
+        Returns relative paths, one per line. Directories are suffixed with '/'.
+        Paths inside ignored directories (.git, node_modules, venv, ...) are hidden.
+        """
         try:
             target = safe_path(root, path)
             if not target.exists():
                 return f"Path does not exist: {path}"
             if target.is_file():
                 return str(target.relative_to(root))
-            it = target.rglob("*") if recursive else target.iterdir()
+            limit = max(1, min(2000, int(limit or 200)))
             out = []
-            for item in sorted(it):
+            for item in sorted(target.iterdir()):
                 rel = item.relative_to(root)
                 if is_ignored_rel(rel):
                     continue
                 out.append(str(rel) + ("/" if item.is_dir() else ""))
-                if len(out) >= max_entries:
-                    out.append(f"... truncated after {max_entries} entries")
+                if len(out) >= limit:
+                    out.append(f"... truncated after {limit} entries")
                     break
             db.record_event(run_id, "tool_list_files", {"path": path, "count": len(out)}, actor="agent")
             return "\n".join(out) if out else "(empty)"
         except Exception as exc:
-            return f"list_files error: {exc}"
+            err_msg = f"ls error: {exc}"
+            _log_error("ls", {"path": path, "limit": limit}, err_msg)
+            return err_msg
 
     @tool
-    def read_file(path: str, offset: int | None = None, limit: int | None = None, max_chars: int = 8000) -> str:
+    def read(path: str, offset: int | None = None, limit: int | None = None) -> str:
         """Read a text file inside the project workspace.
 
         Args:
             path: Relative or absolute path inside the workspace.
             offset: Optional line number to start reading from (1-indexed).
-            limit: Optional max lines to read.
-            max_chars: Maximum characters to return.
+            limit: Optional max number of lines to read.
         """
+        max_chars = 200_000
         try:
             target = safe_path(root, path)
             if not target.exists():
@@ -185,7 +379,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
                 return f"Refusing likely binary file: {path}"
             text = data.decode("utf-8", errors="replace")
 
-            # Apply offset/limit (line-based truncation before char limit)
+            # Apply offset/limit (line-based slicing before the char limit)
             if offset is not None or limit is not None:
                 lines = text.splitlines()
                 start = max(0, (offset or 1) - 1)
@@ -200,51 +394,59 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
                 return text[:max_chars] + f"\n\n... truncated at {max_chars} chars"
             return text
         except Exception as exc:
-            return f"read_file error: {exc}"
+            err_msg = f"read error: {exc}"
+            _log_error("read", {"path": path, "offset": offset, "limit": limit}, err_msg)
+            return err_msg
 
     write_count = {"total": 0}
     write_counts_by_path: dict[str, int] = {}
     max_writes_per_run = max(1, min(100, int(os.getenv("SMITH_MAX_WRITES_PER_RUN", "30"))))
     max_writes_per_file = max(1, min(30, int(os.getenv("SMITH_MAX_WRITES_PER_FILE", "8"))))
-    read_counts_by_path: dict[str, int] = {}
-    list_count = {"total": 0}
-    max_reads_per_run = max(1, min(200, int(os.getenv("SMITH_MAX_READS_PER_RUN", "35"))))
-    max_reads_per_file = max(1, min(20, int(os.getenv("SMITH_MAX_READS_PER_FILE", "4"))))
-    max_lists_per_run = max(1, min(50, int(os.getenv("SMITH_MAX_LISTS_PER_RUN", "6"))))
 
     # Create sandbox backend for isolated command execution
     sandbox = get_sandbox_backend(db)
 
     @tool
-    def write_file(path: str, content: str) -> str:
-        """Write a text file inside the project workspace.
+    def write(path: str, content: str) -> str:
+        """Write a text file inside the project workspace, creating it if needed.
 
-        Returns a verified result containing existence, size, hash, and line stats.
+        Returns a verified result containing existence, size, hash and line stats.
+        Use this to create new files or to overwrite an existing file completely.
         """
         if not profile.can_write:
-            return "WRITE_BLOCKED: This task profile cannot write files."
+            err_msg = "WRITE_BLOCKED: This task profile cannot write files."
+            _log_error("write", {"path": path}, err_msg)
+            return err_msg
         try:
             if cancel_event is not None and cancel_event.is_set():
-                return "WRITE_INTERRUPTED: user interruption requested; do not call more tools."
+                err_msg = "WRITE_INTERRUPTED: user interruption requested; do not call more tools."
+                _log_error("write", {"path": path, "content_chars": len(content)}, err_msg)
+                return err_msg
 
             target = safe_path(root, path)
             rel = target.relative_to(root)
             rel_str = str(rel)
             if is_ignored_rel(rel):
-                return f"WRITE_BLOCKED: Refusing ignored path: {path}"
+                err_msg = f"WRITE_BLOCKED: Refusing ignored path: {path}"
+                _log_error("write", {"path": path, "content_chars": len(content)}, err_msg)
+                return err_msg
 
             write_count["total"] += 1
             write_counts_by_path[rel_str] = write_counts_by_path.get(rel_str, 0) + 1
             if write_count["total"] > max_writes_per_run:
-                return (
+                err_msg = (
                     f"WRITE_BLOCKED: per-run write limit reached ({max_writes_per_run}). "
                     "Stop calling tools and return a concise summary of the changes already made."
                 )
+                _log_error("write", {"path": path, "content_chars": len(content)}, err_msg)
+                return err_msg
             if write_counts_by_path[rel_str] > max_writes_per_file:
-                return (
+                err_msg = (
                     f"WRITE_BLOCKED: per-file write limit reached for {rel_str} ({max_writes_per_file}). "
                     "Stop rewriting this file and return a concise summary."
                 )
+                _log_error("write", {"path": path, "content_chars": len(content)}, err_msg)
+                return err_msg
 
             before_exists = target.exists() and target.is_file()
             before_bytes = target.read_bytes() if before_exists else b""
@@ -321,10 +523,12 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             db.enqueue_job("index_file", priority=4, payload={"path": rel_str})
 
             if not verified or not exists_after:
-                return (
+                err_msg = (
                     f"WRITE_FAILED_VERIFICATION: attempted {rel_str}; exists_after={exists_after}; "
                     f"verified={verified}; size_bytes={size_bytes}. Stop and report this failure."
                 )
+                _log_error("write", {"path": path, "content_chars": len(content)}, err_msg)
+                return err_msg
 
             return (
                 f"VERIFIED_WRITE_OK path={rel_str} chars={len(content)} bytes={size_bytes} "
@@ -332,191 +536,170 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
                 "The file now exists on disk. If this satisfied the request, stop calling tools and return the final answer."
             )
         except Exception as exc:
-            return f"WRITE_ERROR: {type(exc).__name__}: {exc}. Stop and report this error instead of retrying blindly."
+            err_msg = f"WRITE_ERROR: {type(exc).__name__}: {exc}. Stop and report this error instead of retrying blindly."
+            _log_error("write", {"path": path, "content_chars": len(content)}, err_msg)
+            return err_msg
 
     @tool
-    def edit_file(path: str, old_text: str = "", new_text: str = "") -> str:
-        """Apply a surgical edit to a file by finding exact old text and replacing it with new text.
+    def edit(path: str, edits: list[EditItem]) -> str:
+        """Apply surgical find/replace edits to an existing file.
 
-        Use this for targeted changes instead of writing the whole file. Provide old_text to
-        surgically replace text, OR omit old_text to write the entire file (same as write_file).
+        Each edit in `edits` finds `oldText` and replaces it with `newText`.
+        All edits are applied to the file in order, in a single write. Always
+        read the file first with `read` to get the exact text to match.
 
-        Always read the file first with read_file to find the exact text to replace.
-        Include surrounding context in old_text to ensure uniqueness.
+        Include enough surrounding context in `oldText` so it matches uniquely.
+        Do NOT use placeholder ellipses like "... existing code ..." — pass the
+        real text from the file.
 
         Args:
             path: Path to the file to edit (relative to project root).
-            old_text: Exact text to find and replace. Must match exactly and uniquely.
-                If omitted or empty, the entire file is overwritten (like write_file).
-            new_text: Replacement text. Can be empty to delete text.
+            edits: List of {oldText, newText} edits to apply in order.
         """
-        # Common placeholder patterns models use instead of actual file content
-        _PLACEHOLDER_PATTERNS = [
-            "... existing code ...", "// ...", "/* ...", "# ...",
-            "<!-- ...", "... rest of file ...", "... other methods",
-            "... remain unchanged", "{{ ... }}", "{% ... %}",
-            "// rest of the code", "/* rest of the code */",
-        ]
-
         if not profile.can_write:
-            return "EDIT_BLOCKED: This task profile cannot edit files."
+            err_msg = "EDIT_BLOCKED: This task profile cannot edit files."
+            _log_error("edit", {"path": path}, err_msg)
+            return err_msg
 
-        # If old_text is missing/empty, the model probably meant write_file.
-        # Only auto-fallback if new_text looks like a full file (>= 200 chars
-        # and contains multiple lines), otherwise give a clear hint.
-        if not old_text:
-            # Check for placeholder patterns in new_text even for full writes
-            combined = new_text.lower()
+        if not edits:
+            err_msg = (
+                "EDIT_NEEDS_EDITS: the 'edits' parameter is required and must be a non-empty array "
+                "of {oldText, newText} objects. Read the file first, then pass the exact text to "
+                "replace as oldText and the replacement as newText."
+            )
+            _log_error("edit", {"path": path}, err_msg)
+            return err_msg
+
+        # Reject placeholder ellipses models sometimes use instead of real content.
+        for e in edits:
+            combined = (e.oldText + "\n" + e.newText).lower()
             found_ph = [p for p in _PLACEHOLDER_PATTERNS if p in combined]
             if found_ph:
-                return (
-                    f"EDIT_NEEDS_REAL_CONTENT: new_text contains placeholder markers like {found_ph[0]!r}.\n"
-                    f"  Placeholders are not actual file content. Use write_file(path, content) with the\n"
-                    f"  COMPLETE content of the file including all existing code you want to preserve.\n"
-                    f"  Read the file with read_file first, then pass its entire content to write_file."
+                err_msg = (
+                    f"EDIT_FAILED: placeholder text detected in edit arguments ({found_ph[0]!r}).\n"
+                    "Placeholders are not actual file content. Read the file with `read`, then pass "
+                    "the literal text as oldText. Do NOT abbreviate with placeholders."
                 )
-            if len(new_text) >= 200 and new_text.count("\n") >= 3:
-                return write_file(path=path, content=new_text)
-            return (
-                f"EDIT_NEEDS_OLDTEXT: You called edit_file without the required 'old_text' parameter.\n"
-                f"  - To overwrite the entire file, use write_file(path=\"{path}\", content=...).\n"
-                f"  - To make a surgical edit, provide the exact 'old_text' to find and replace.\n"
-                f"  Read the file first with read_file to find the exact text to match."
-            )
+                _log_error("edit", {"path": path, "edits_count": len(edits)}, err_msg)
+                return err_msg
+            if not e.oldText:
+                err_msg = (
+                    "EDIT_NEEDS_OLDTEXT: one of your edits has an empty oldText. To overwrite an "
+                    "entire file, use the `write` tool instead."
+                )
+                _log_error("edit", {"path": path, "edits_count": len(edits)}, err_msg)
+                return err_msg
+
         try:
             if cancel_event is not None and cancel_event.is_set():
-                return "EDIT_INTERRUPTED: user interruption requested; do not call more tools."
+                err_msg = "EDIT_INTERRUPTED: user interruption requested; do not call more tools."
+                _log_error("edit", {"path": path, "edits_count": len(edits)}, err_msg)
+                return err_msg
 
             target = safe_path(root, path)
             rel = target.relative_to(root)
             rel_str = str(rel)
             if is_ignored_rel(rel):
-                return f"EDIT_BLOCKED: Refusing ignored path: {path}"
+                err_msg = f"EDIT_BLOCKED: Refusing ignored path: {path}"
+                _log_error("edit", {"path": path, "edits_count": len(edits)}, err_msg)
+                return err_msg
 
-            # Respect same write limits as write_file
+            # Respect the same write limits as `write`.
             write_count["total"] += 1
             write_counts_by_path[rel_str] = write_counts_by_path.get(rel_str, 0) + 1
             if write_count["total"] > max_writes_per_run:
-                return (
+                err_msg = (
                     f"EDIT_BLOCKED: per-run edit limit reached ({max_writes_per_run}). "
                     "Stop calling tools and return a concise summary of the changes already made."
                 )
+                _log_error("edit", {"path": path, "edits_count": len(edits)}, err_msg)
+                return err_msg
             if write_counts_by_path[rel_str] > max_writes_per_file:
-                return (
+                err_msg = (
                     f"EDIT_BLOCKED: per-file edit limit reached for {rel_str} ({max_writes_per_file}). "
                     "Stop rewriting this file and return a concise summary."
                 )
+                _log_error("edit", {"path": path, "edits_count": len(edits)}, err_msg)
+                return err_msg
 
             if not target.exists():
-                return f"EDIT_ERROR: File does not exist: {path}. Use write_file to create new files."
+                err_msg = f"EDIT_ERROR: File does not exist: {path}. Use the `write` tool to create new files."
+                _log_error("edit", {"path": path, "edits_count": len(edits)}, err_msg)
+                return err_msg
             if not target.is_file():
-                return f"EDIT_ERROR: Not a file: {path}"
+                err_msg = f"EDIT_ERROR: Not a file: {path}"
+                _log_error("edit", {"path": path, "edits_count": len(edits)}, err_msg)
+                return err_msg
 
             before_bytes = target.read_bytes()
             if b"\x00" in before_bytes[:4096]:
-                return f"EDIT_ERROR: Refusing binary file: {path}"
+                err_msg = f"EDIT_ERROR: Refusing binary file: {path}"
+                _log_error("edit", {"path": path, "edits_count": len(edits)}, err_msg)
+                return err_msg
 
             before_text = before_bytes.decode("utf-8", errors="replace")
+            after_text = before_text
 
-            combined = old_text + "\n" + new_text
-            found_placeholders = [p for p in _PLACEHOLDER_PATTERNS if p in combined.lower()]
-            if found_placeholders:
-                return (
-                    f"EDIT_FAILED: placeholder text detected in edit_file arguments.\n"
-                    f"You used placeholder markers like {found_placeholders[0]!r} instead of actual file content.\n"
-                    f"Placeholders do not match real file contents. Use write_file(path, content) to write\n"
-                    f"the COMPLETE new file content, or provide exact text from the file as old_text.\n"
-                    f"Read the file contents again and pass them literally — do NOT abbreviate with placeholders."
-                )
+            # Apply each edit in order, locating it in the *current* after_text so
+            # earlier edits shift offsets for later ones (mirrors pi's edit tool).
+            applied = []
+            for idx, e in enumerate(edits):
+                start, length, used_fuzzy = _locate_match(after_text, e.oldText)
+                if start == -1:
+                    lines = after_text.splitlines()
+                    hint_lines = []
+                    search = e.oldText.strip()[:30].lower()
+                    for i, line in enumerate(lines, 1):
+                        if search and search in line.lower():
+                            hint_lines.append(f"  Line {i}: {line[:200]}")
+                            if len(hint_lines) >= 5:
+                                break
+                    hint = "\n".join(hint_lines)
+                    extra = f"\nDid you mean one of these lines?\n{hint}" if hint else ""
 
-            # ── Fuzzy matching (like Pi agent) ──
-            # Normalize text for matching: line endings, NFKC, smart quotes, dashes, trailing whitespace
-            def _norm(t):
-                """Normalize text for fuzzy matching (like Pi's normalizeForFuzzyMatch)."""
-                # Normalize line endings
-                t = t.replace("\r\n", "\n").replace("\r", "\n")
-                # Strip trailing whitespace per line
-                t = "\n".join(l.rstrip() for l in t.split("\n"))
-                # Normalize smart quotes, dashes, spaces
-                t = t.replace("\u2018", "'").replace("\u2019", "'")
-                t = t.replace("\u201c", "\"").replace("\u201d", "\"")
-                t = t.replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
-                t = t.replace("\u00a0", " ").replace("\u200b", "")
-                return t
-            norm_content = _norm(before_text)
-            norm_old = _norm(old_text)
-
-            # 1. Try exact match
-            match_idx = before_text.find(old_text)
-            used_fuzzy = False
-
-            # 2. If that fails, try fuzzy match in normalized space
-            if match_idx == -1:
-                fidx = norm_content.find(norm_old)
-                if fidx != -1:
-                    # Map normalized position back to original text position
-                    # Walk both strings simultaneously
-                    orig_pos = 0
-                    norm_pos = 0
-                    while norm_pos < fidx and orig_pos < len(before_text):
-                        # Advance orig_pos by 1 normalized char
-                        nc = _norm(before_text[orig_pos])
-                        if nc == norm_content[norm_pos:norm_pos+len(nc)]:
-                            norm_pos += len(nc)
-                        orig_pos += 1
-                    match_idx = orig_pos
-                    used_fuzzy = True
-
-            if match_idx == -1:
-                # old_text not found — show hints
-                lines = before_text.splitlines()
-                hint_lines = []
-                search = old_text.strip()[:30].lower()
-                for i, line in enumerate(lines, 1):
-                    if search and search in line.lower():
-                        hint_lines.append(f"  Line {i}: {line[:200]}")
-                        if len(hint_lines) >= 5:
+                    # Detect if the model put reasoning/comments in the oldText
+                    oldtext = e.oldText
+                    reasoning_markers = [
+                        "# Wait", "# Actually", "# Let", "# Since", "# But",
+                        "// Wait", "// Actually", "// Let", "# Note", "# The",
+                        "# I should", "# We should", "# First", "# Next",
+                    ]
+                    reasoning_hint = ""
+                    for marker in reasoning_markers:
+                        if marker.lower() in oldtext.lower():
+                            reasoning_hint = (
+                                "\n⚠ Your oldText appears to contain reasoning or commentary "
+                                f"('{marker}...'). Remove ALL reasoning — oldText must contain "
+                                "ONLY the exact text from the file, character-for-character."
+                            )
                             break
-                hint = "\n".join(hint_lines)
-                extra = f"\nDid you mean one of these lines?\n{hint}" if hint else ""
-                return (
-                    f"EDIT_FAILED: old_text not found in {rel_str}. "
-                    f"The provided text does not appear anywhere in the file.{extra}\n\n"
-                    "Read the file again to find the exact text, then retry with the correct old_text.\n"
-                    "If you want to rewrite the entire file, use write_file(path, content) instead."
-                )
 
-            # Check uniqueness
-            check_text = norm_content if used_fuzzy else before_text
-            check_old = norm_old if used_fuzzy else old_text
-            count = check_text.count(check_old)
-            if count > 1:
-                return (
-                    f"EDIT_FAILED: old_text appears {count} times in {rel_str}. "
-                    "Include more surrounding context in old_text to make it unique.\n"
-                    "Read the file to see the exact lines, then retry with more context."
-                )
+                    err_msg = (
+                        f"EDIT_FAILED: oldText not found in {rel_str} (edit #{idx + 1}). "
+                        f"The provided text does not appear anywhere in the file.{extra}\n"
+                        f"{reasoning_hint}\n"
+                        "TIP: If you are unsure about the exact text, re-read the file with `read`, "
+                        "or use `write` to replace the entire file content instead of `edit`."
+                    )
+                    _log_error("edit", {"path": path, "edits_count": len(edits), "failed_edit_index": idx}, err_msg)
+                    return err_msg
 
-            # Apply replacement at the matched position
-            if used_fuzzy:
-                # Find the length of the matched text in the original
-                match_len = len(old_text)
-                # Normalize the original snippet at match_idx to find the actual boundary
-                orig_snippet = before_text[match_idx:]
-                norm_snippet = _norm(orig_snippet)
-                # The match in normalized space has length len(norm_old)
-                # Walk norm_snippet to find how many original chars that corresponds to
-                actual_len = 0
-                npos = 0
-                while npos < len(norm_old) and actual_len < len(orig_snippet):
-                    nc = _norm(orig_snippet[actual_len])
-                    npos += len(nc)
-                    actual_len += 1
-                after_text = before_text[:match_idx] + new_text + before_text[match_idx + actual_len:]
-            else:
-                after_text = before_text.replace(old_text, new_text, 1)
+                # Uniqueness check (in the same matching space as the hit).
+                check_text = _normalize_for_fuzzy(after_text) if used_fuzzy else after_text
+                check_needle = _normalize_for_fuzzy(e.oldText) if used_fuzzy else e.oldText
+                count = check_text.count(check_needle)
+                if count > 1:
+                    err_msg = (
+                        f"EDIT_FAILED: oldText appears {count} times in {rel_str} (edit #{idx + 1}). "
+                        "Include more surrounding context in oldText to make it unique."
+                    )
+                    _log_error("edit", {"path": path, "edits_count": len(edits), "failed_edit_index": idx}, err_msg)
+                    return err_msg
 
-            # Backup
+                after_text = after_text[:start] + e.newText + after_text[start + length:]
+                applied.append({"old_len": len(e.oldText), "new_len": len(e.newText), "fuzzy": used_fuzzy})
+
+            # Backup, write, verify.
             before = sha256_bytes(before_bytes)
             backup_rel = None
             if run_id:
@@ -529,11 +712,9 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             after_bytes = target.read_bytes()
             after = sha256_bytes(after_bytes)
 
-            # Verify
             verified_text = after_bytes.decode("utf-8", errors="replace")
             verified = verified_text == after_text
 
-            # Compute diff
             diff_lines = list(difflib.unified_diff(
                 before_text.splitlines(),
                 after_text.splitlines(),
@@ -553,12 +734,13 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
                 "diff_preview": "\n".join(diff_lines[:220]),
                 "verified": verified,
                 "edit_type": "surgical",
+                "edits_applied": len(applied),
+                "fuzzy_used": any(a["fuzzy"] for a in applied),
             }
 
             db.record_event(run_id, "tool_edit_file", {
                 "path": rel_str,
-                "old_text_len": len(old_text),
-                "new_text_len": len(new_text),
+                "edits": len(applied),
                 "verified": verified,
                 "lines_added": lines_added,
                 "lines_removed": lines_removed,
@@ -576,20 +758,22 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             db.enqueue_job("index_file", priority=4, payload={"path": rel_str})
 
             if not verified:
-                return (
-                    f"EDIT_FAILED_VERIFICATION: edit applied but verification failed for {rel_str}. "
-                )
+                err_msg = f"EDIT_FAILED_VERIFICATION: edit applied but verification failed for {rel_str}."
+                _log_error("edit", {"path": path, "edits_count": len(edits)}, err_msg)
+                return err_msg
 
             return (
-                f"VERIFIED_EDIT_OK path={rel_str} lines_added={lines_added} lines_removed={lines_removed} "
-                f"sha256={after}. "
+                f"VERIFIED_EDIT_OK path={rel_str} edits={len(applied)} lines_added={lines_added} "
+                f"lines_removed={lines_removed} sha256={after}. "
                 "The edit has been applied. If this satisfied the request, stop calling tools and return the final answer."
             )
         except Exception as exc:
-            return f"EDIT_ERROR: {type(exc).__name__}: {exc}. Stop and report this error instead of retrying blindly."
+            err_msg = f"EDIT_ERROR: {type(exc).__name__}: {exc}. Stop and report this error instead of retrying blindly."
+            _log_error("edit", {"path": path, "edits_count": len(edits)}, err_msg)
+            return err_msg
 
     @tool
-    def run_command(command: str, timeout_seconds: int = 60) -> str:
+    def bash(command: str, timeout: int = 60) -> str:
         """Run a short safe command inside the workspace. Does not use a shell.
 
         IMPORTANT: This tool does NOT use a shell. Do NOT use shell syntax like:
@@ -601,35 +785,65 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         Pass a SINGLE command with plain arguments. Example: ls -la
         """
         if not profile.can_run_commands:
-            return "This task profile cannot run commands."
+            err_msg = "This task profile cannot run commands."
+            _log_error("bash", {"command": command}, err_msg)
+            return err_msg
 
         # ── Parse command safely ───────────────────────────────────────────
         try:
             parts = shlex.split(command)
         except ValueError as exc:
-            return (
+            err_msg = (
                 f"COMMAND_PARSE_ERROR: could not parse command: {exc}\n"
                 "Remove shell comments (# ...), fix any unmatched quotes, "
                 "and remove newlines from inside the command string."
             )
+            _log_error("bash", {"command": command}, err_msg)
+            return err_msg
         if not parts:
-            return "No command provided."
+            err_msg = "No command provided."
+            _log_error("bash", {"command": command}, err_msg)
+            return err_msg
 
         # ── Detect shell metacharacters the model shouldn't use ────────────
         shell_tokens = {"&&", "||", "|", ";"}
         found_shell = [t for t in parts if t in shell_tokens]
+        # Auto-split on && (the most common mistake) — run each segment
+        # separately and combine results. This is safe because each sub-command
+        # still goes through the same approval and sandbox checks.
+        if "&&" in found_shell and all(t not in {"||", "|", ";"} for t in found_shell if t != "&&"):
+            segments = _split_on_ampersand(parts)
+            if len(segments) > 1:
+                all_outputs = []
+                last_exit = 0
+                for seg_parts in segments:
+                    seg_cmd = " ".join(seg_parts)
+                    seg_result = sandbox.exec(seg_cmd, cwd=root, timeout=timeout)
+                    out_parts = [f"$ {seg_cmd}", f"exit_code={seg_result.exit_code}"]
+                    if seg_result.stdout:
+                        out_parts.append("\nSTDOUT:\n" + seg_result.stdout[-8000:])
+                    if seg_result.stderr:
+                        out_parts.append("\nSTDERR:\n" + seg_result.stderr[-8000:])
+                    all_outputs.append("\n".join(out_parts))
+                    last_exit = seg_result.exit_code
+                db.record_event(run_id, "tool_run_command", {"command": command, "exit_code": last_exit, "auto_split": True}, actor="agent")
+                return "\n---\n".join(all_outputs)
         if found_shell:
-            return (
+            err_msg = (
                 f"SHELL_SYNTAX_DETECTED: found shell operator(s): {', '.join(found_shell)}.\n"
                 "This tool does NOT use a shell. Run each command as a separate call.\n"
-                "Example: instead of 'cmd1 && cmd2', call run_command twice."
+                "Example: instead of 'cmd1 && cmd2', call bash twice."
             )
+            _log_error("bash", {"command": command}, err_msg)
+            return err_msg
         # Also catch leading comment chars
         if parts[0].startswith("#"):
-            return (
+            err_msg = (
                 f"SHELL_COMMENT_DETECTED: command starts with '#'. Remove the comment and try again.\n"
                 "This tool does not use a shell, so '#' is treated as a command name."
             )
+            _log_error("bash", {"command": command}, err_msg)
+            return err_msg
 
         try:
 
@@ -672,12 +886,14 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
                 if auto_setting or isinstance(approval_handler, AutoApprovalHandler):
                     pass  # auto-approved, skip the approval request
                 elif not approval_handler.ready():
-                    return (
+                    err_msg = (
                         f"Command not auto-approved: {exe}. {approval_reason}\n"
                         f"Allowed commands: {', '.join(sorted(allowed_commands))}\n"
                         "No approval handler is available. Run via 'smith run' (CLI) or the Web UI, "
                         "or set SMITH_AUTO_APPROVE=true to auto-approve all commands."
                     )
+                    _log_error("bash", {"command": command}, err_msg)
+                    return err_msg
                 else:
                     # Format command for display
                     display = f"$ {' '.join(parts)}\nReason: {approval_reason}\nWorkspace: {root}"
@@ -685,9 +901,11 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
                     if approval_handler.request_approval(req):
                         pass  # approved, continue to execution
                     else:
-                        return f"APPROVAL_DENIED: {req.denied_reason or 'User denied the command.'}"
-            timeout_seconds = max(1, min(int(timeout_seconds), 120))
-            result = sandbox.exec(command, cwd=root, timeout=timeout_seconds)
+                        err_msg = f"APPROVAL_DENIED: {req.denied_reason or 'User denied the command.'}"
+                        _log_error("bash", {"command": command}, err_msg)
+                        return err_msg
+            timeout = max(1, min(int(timeout), 120))
+            result = sandbox.exec(command, cwd=root, timeout=timeout)
             db.record_event(
                 run_id,
                 "tool_run_command",
@@ -696,14 +914,16 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             )
             out = [f"$ {' '.join(parts)}", f"exit_code={result.exit_code}"]
             if result.timed_out:
-                out.append(f"\nCommand timed out after {timeout_seconds}s")
+                out.append(f"\nCommand timed out after {timeout}s")
             if result.stdout:
                 out.append("\nSTDOUT:\n" + result.stdout[-12000:])
             if result.stderr:
                 out.append("\nSTDERR:\n" + result.stderr[-12000:])
             return "\n".join(out)
         except Exception as exc:
-            return f"run_command error: {exc}"
+            err_msg = f"bash error: {exc}"
+            _log_error("bash", {"command": command}, err_msg)
+            return err_msg
 
     @tool
     def search_project_context(query: str, limit: int = 8) -> str:
@@ -751,7 +971,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         return "\n".join(f"{r['created_at']} {r['path']} {r['change_type']}" for r in rows)
 
     @tool
-    def grep_search(pattern: str, path: str = ".", pattern_type: str = "regex", include: str | None = None, context_lines: int = 2, max_results: int = 30) -> str:
+    def grep(pattern: str, path: str = ".", glob: str | None = None, ignoreCase: bool = False, literal: bool = False, context: int = 2, limit: int = 30) -> str:
         """Search file contents for a pattern, like the Unix 'grep' command.
 
         Use this to find where functions are defined, variables are referenced, or any text pattern.
@@ -760,10 +980,11 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         Args:
             pattern: The search pattern (regex or literal string).
             path: Directory or file to search. Defaults to project root.
-            pattern_type: "regex" or "literal".
-            include: Optional glob to filter files (e.g. "*.py" includes only Python files).
-            context_lines: Number of context lines before and after each match (0-10).
-            max_results: Maximum matches to return (1-200).
+            glob: Optional glob to filter files (e.g. "*.py" searches only Python files).
+            ignoreCase: When true, perform a case-insensitive search.
+            literal: When true, treat `pattern` as a literal string instead of a regex.
+            context: Number of context lines before and after each match (0-10).
+            limit: Maximum matches to return (1-200).
         """
         import re as _re
         try:
@@ -771,9 +992,10 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             if not target.exists():
                 return f"Path does not exist: {path}"
 
-            ctx = max(0, min(10, int(context_lines or 0)))
-            limit = max(1, min(200, int(max_results or 30)))
-            is_regex = pattern_type == "regex"
+            ctx = max(0, min(10, int(context or 0)))
+            limit = max(1, min(200, int(limit or 30)))
+            is_regex = not literal
+            flags = _re.IGNORECASE if ignoreCase else 0
 
             # Collect files to search
             if target.is_file():
@@ -789,7 +1011,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
                         continue
                     if is_ignored_rel(rp):
                         continue
-                    if include and not p.match(include):
+                    if glob and not p.match(glob):
                         continue
                     files_to_search.append(p)
                     if len(files_to_search) > 500:
@@ -821,11 +1043,14 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
                     matched = False
                     if is_regex:
                         try:
-                            matched = _re.search(pattern, line)
+                            matched = _re.search(pattern, line, flags)
                         except _re.error:
                             return f"GREP_ERROR: Invalid regex: {pattern}"
                     else:
-                        matched = pattern in line
+                        if ignoreCase:
+                            matched = pattern.lower() in line.lower()
+                        else:
+                            matched = pattern in line
 
                     if not matched:
                         continue
@@ -852,10 +1077,12 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
 
             return output
         except Exception as exc:
-            return f"grep_search error: {exc}"
+            err_msg = f"grep error: {exc}"
+            _log_error("grep", {"pattern": pattern, "path": path, "glob": glob}, err_msg)
+            return err_msg
 
     @tool
-    def find_files(pattern: str, path: str = ".", max_results: int = 50) -> str:
+    def find(pattern: str, path: str = ".", limit: int = 50) -> str:
         """Find files matching a glob pattern, like the Unix 'find' command.
 
         Use this to locate files by name, extension, or path pattern.
@@ -863,7 +1090,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         Args:
             pattern: Glob pattern to match (e.g. "*.py", "**/test_*.py", "src/**/*.ts").
             path: Directory to search from. Defaults to project root.
-            max_results: Maximum results to return (1-200).
+            limit: Maximum results to return (1-200).
         """
         try:
             target = safe_path(root, path)
@@ -872,7 +1099,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             if not target.is_dir():
                 return f"Not a directory: {path}"
 
-            limit = max(1, min(200, int(max_results or 50)))
+            limit = max(1, min(200, int(limit or 50)))
             results = []
 
             for p in target.rglob(pattern):
@@ -896,16 +1123,18 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
 
             return "\n".join(results)
         except Exception as exc:
-            return f"find_files error: {exc}"
+            err_msg = f"find error: {exc}"
+            _log_error("find", {"pattern": pattern, "path": path}, err_msg)
+            return err_msg
 
     all_tools = {
-        "list_files": list_files,
-        "read_file": read_file,
-        "write_file": write_file,
-        "edit_file": edit_file,
-        "grep_search": grep_search,
-        "find_files": find_files,
-        "run_command": run_command,
+        "ls": ls,
+        "read": read,
+        "write": write,
+        "edit": edit,
+        "grep": grep,
+        "find": find,
+        "bash": bash,
         "search_project_context": search_project_context,
         "get_file_summary": get_file_summary,
         "get_related_files": get_related_files,
@@ -914,56 +1143,80 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
     return [all_tools[name] for name in profile.tools if name in all_tools]
 
 
-def build_agent(db: ProjectDB, task_type: str, context_bundle: str, run_id: str | None = None, model_override: dict[str, str] | None = None, cancel_event=None):
+def build_agent(db: ProjectDB, task_type: str, context_bundle: str, run_id: str | None = None, model_override: dict[str, str] | None = None, cancel_event=None, error_logger: ToolErrorLogger | None = None, model_context: list[dict[str, Any]] | None = None):
     profile = get_task_profile(task_type)
     llm = build_chat_model_for_task(db, task_type, model_override=model_override)
     system_prompt = (
-        f"You are Agent Smith working on project: {db.root_path}\n"
+        f"You are Agent Smith, a coding agent working on project: {db.root_path}\n"
         f"Task: {task_type} — {profile.system_role}\n\n"
         "COMPACT PROJECT CONTEXT:\n"
         f"{context_bundle or '(no indexed context yet — explore carefully)'}\n\n"
+        "TOOLS (use these exactly):\n"
+        "- ls(path?, limit?): list a directory. Returns relative paths; dirs end with '/'.\n"
+        "- read(path, offset?, limit?): read a file. Use offset/limit for large files.\n"
+        "- write(path, content): create or completely overwrite a file.\n"
+        "- edit(path, edits): apply find/replace edits. `edits` is an array of {oldText, newText}.\n"
+        "- grep(pattern, path?, glob?, ignoreCase?, literal?, context?, limit?): search file contents.\n"
+        "- find(pattern, path?, limit?): find files by glob pattern.\n"
+        "- bash(command, timeout?): run a single shell-free command (no &&, |, >, #).\n\n"
         "CRITICAL RULES:\n"
-        "1. Read a file before editing it (use read_file with offset/limit for large files). Do not blindly guess paths.\n"
-        "2. To change an existing file, first read it with read_file, then:\n"
-        "   - For full rewrites: use write_file(path, content).\n"
-        "   - For surgical edits: use edit_file(path, old_text, new_text) with the EXACT text to replace.\n"
-        "   Do NOT call edit_file without old_text — that will fail. Pick the right tool.\n"
-        "3. Use grep_search to find function definitions, variable references, and patterns. Use find_files to locate files by glob.\n"
-        "4. After write_file returns VERIFIED_WRITE_OK or edit_file returns VERIFIED_EDIT_OK, STOP. Do not re-read or re-edit.\n"
+        "1. Read a file with `read` before editing it. Never guess paths.\n"
+        "2. To change an existing file, use `edit(path, edits=[{oldText, newText}])` with the EXACT text from the file.\n"
+        "   To create or fully replace a file, use `write(path, content)`. Never use placeholder ellipses like '... existing code ...'.\n"
+        "3. Find code with `grep`; locate files with `find`.\n"
+        "4. After `write` returns VERIFIED_WRITE_OK or `edit` returns VERIFIED_EDIT_OK, STOP. Do not re-read or re-edit.\n"
         "5. If a write/edit fails, report the failure. Do not retry blindly.\n"
-        "6. Never loop: if you lack information, ask or give your best answer. Max 8 tool calls per response.\n"
-        "7. After your final tool call, output a brief summary of what you changed. Then STOP — do not call more tools.\n"
-        "8. You have limited context budget. Keep tool outputs relevant.\n"
-        "9. If the task seems done, just report what was accomplished. Do not invent extra work.\n"
+        "6. Never loop. Max 8 tool calls per response. If you lack information, ask.\n"
+        "7. After your final tool call, output a brief summary of what you changed, then STOP.\n"
+        "8. Keep tool outputs relevant — you have a limited context budget.\n"
+        "9. If the task is done, just report what was accomplished. Do not invent extra work.\n"
     )
-    return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event, approval_handler=None), system_prompt=system_prompt)
+    return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event, approval_handler=None, error_logger=error_logger, model_context=model_context), system_prompt=system_prompt)
 
 
-def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str, run_id: str | None = None, model_override: dict[str, str] | None = None, cancel_event=None, approval_handler: ApprovalHandler | None = None):
-    """Same as build_agent but threads an ApprovalHandler to the run_command tool."""
+def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str, run_id: str | None = None, model_override: dict[str, str] | None = None, cancel_event=None, approval_handler: ApprovalHandler | None = None, error_logger: ToolErrorLogger | None = None, model_context: list[dict[str, Any]] | None = None):
+    """Same as build_agent but threads an ApprovalHandler to the bash tool."""
     profile = get_task_profile(task_type)
     llm = build_chat_model_for_task(db, task_type, model_override=model_override)
     actual_handler = approval_handler or SilentDenyHandler()
+
+    # Auto-detected: check if the model uses text-based tool calling
+    # (build_chat_model_for_task already decided based on model family + env var)
+    text_tool_mode = getattr(llm, "text_tool_mode", False)
+
+    if text_tool_mode:
+        tool_instructions = _text_tool_prompt(profile)
+    else:
+        tool_instructions = (
+            "TOOLS (use these exactly):\n"
+            "- ls(path?, limit?): list a directory. Returns relative paths; dirs end with '/'.\n"
+            "- read(path, offset?, limit?): read a file. Use offset/limit for large files.\n"
+            "- write(path, content): create or completely overwrite a file.\n"
+            "- edit(path, edits): apply find/replace edits. `edits` is an array of {oldText, newText}.\n"
+            "- grep(pattern, path?, glob?, ignoreCase?, literal?, context?, limit?): search file contents.\n"
+            "- find(pattern, path?, limit?): find files by glob pattern.\n"
+            "- bash(command, timeout?): run a single shell-free command (no &&, |, >, #).\n\n"
+        )
+
     system_prompt = (
-        f"You are Agent Smith working on project: {db.root_path}\n"
+        f"You are Agent Smith, a coding agent working on project: {db.root_path}\n"
         f"Task: {task_type} — {profile.system_role}\n\n"
         "COMPACT PROJECT CONTEXT:\n"
         f"{context_bundle or '(no indexed context yet — explore carefully)'}\n\n"
+        f"{tool_instructions}"
         "CRITICAL RULES:\n"
-        "1. Read a file before editing it (use read_file with offset/limit for large files). Do not blindly guess paths.\n"
-        "2. To change an existing file, first read it with read_file, then:\n"
-        "   - For full rewrites: use write_file(path, content).\n"
-        "   - For surgical edits: use edit_file(path, old_text, new_text) with the EXACT text to replace.\n"
-        "   Do NOT call edit_file without old_text — that will fail. Pick the right tool.\n"
-        "3. Use grep_search to find function definitions, variable references, and patterns. Use find_files to locate files by glob.\n"
-        "4. After write_file returns VERIFIED_WRITE_OK or edit_file returns VERIFIED_EDIT_OK, STOP. Do not re-read or re-edit.\n"
+        "1. Read a file with `read` before editing it. Never guess paths.\n"
+        "2. To change an existing file, use `edit(path, edits=[{oldText, newText}])` with the EXACT text from the file.\n"
+        "   To create or fully replace a file, use `write(path, content)`. Never use placeholder ellipses like '... existing code ...'.\n"
+        "3. Find code with `grep`; locate files with `find`.\n"
+        "4. After `write` returns VERIFIED_WRITE_OK or `edit` returns VERIFIED_EDIT_OK, STOP. Do not re-read or re-edit.\n"
         "5. If a write/edit fails, report the failure. Do not retry blindly.\n"
-        "6. Never loop: if you lack information, ask or give your best answer. Max 8 tool calls per response.\n"
-        "7. After your final tool call, output a brief summary of what you changed. Then STOP — do not call more tools.\n"
-        "8. You have limited context budget. Keep tool outputs relevant.\n"
-        "9. If the task seems done, just report what was accomplished. Do not invent extra work.\n"
+        "6. Never loop. Max 8 tool calls per response. If you lack information, ask.\n"
+        "7. After your final tool call, output a brief summary of what you changed, then STOP.\n"
+        "8. Keep tool outputs relevant — you have a limited context budget.\n"
+        "9. If the task is done, just report what was accomplished. Do not invent extra work.\n"
     )
-    return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event, approval_handler=actual_handler), system_prompt=system_prompt)
+    return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event, approval_handler=actual_handler, error_logger=error_logger, model_context=model_context), system_prompt=system_prompt)
 
 
 def smith_recursion_limit() -> int:
@@ -1018,7 +1271,8 @@ def extract_stream_text(chunk: Any) -> str:
         _tool_error_prefixes = (
             "COMMAND_PARSE_ERROR", "SHELL_SYNTAX_DETECTED", "SHELL_COMMENT_DETECTED",
             "APPROVAL_DENIED", "Command not auto-approved", "No approval handler",
-            "EDIT_NEEDS_REAL_CONTENT", "EDIT_FAILED_VERIFICATION", "EDIT_BLOCKED",
+            "EDIT_NEEDS_REAL_CONTENT", "EDIT_NEEDS_EDITS", "EDIT_NEEDS_OLDTEXT",
+            "EDIT_FAILED", "EDIT_FAILED_VERIFICATION", "EDIT_BLOCKED",
             "EDIT_ERROR", "EDIT_INTERRUPTED", "WRITE_BLOCKED", "WRITE_FAILED_VERIFICATION",
             "WRITE_ERROR", "WRITE_INTERRUPTED", "READ_BLOCKED", "LIST_BLOCKED",
         )
@@ -1205,7 +1459,7 @@ def describe_stream_progress(chunk, seen: set[str]) -> str:
                 "WRITE_INTERRUPTED",
                 "READ_BLOCKED",
                 "LIST_BLOCKED",
-                # run_command errors
+                # bash errors
                 "COMMAND_PARSE_ERROR",
                 "SHELL_SYNTAX_DETECTED",
                 "SHELL_COMMENT_DETECTED",
@@ -1214,16 +1468,18 @@ def describe_stream_progress(chunk, seen: set[str]) -> str:
                 "No approval handler",
                 # edit errors
                 "EDIT_NEEDS_REAL_CONTENT",
+                "EDIT_NEEDS_EDITS",
+                "EDIT_NEEDS_OLDTEXT",
                 "EDIT_FAILED_VERIFICATION",
                 "EDIT_BLOCKED",
                 "EDIT_ERROR",
                 "EDIT_INTERRUPTED",
-                # read errors
-                "read_file error",
-                "list_files error",
-                "grep_search error",
-                "find_files error",
-                "run_command error",
+                # tool errors
+                "read error",
+                "ls error",
+                "grep error",
+                "find error",
+                "bash error",
                 "search error",
             )
             # Also check for any error/denied/blocked/parse prefix dynamically
@@ -1239,12 +1495,12 @@ def describe_stream_progress(chunk, seen: set[str]) -> str:
                 return f"[smith] ⚠ tool result: {name} — {first}\n"
 
             # Safe generic summaries for common tools.
-            if name == "list_files" or "list_files" in str(name):
+            if name == "ls" or "ls" in str(name):
                 entries = [ln for ln in content.splitlines() if ln.strip()]
                 return f"[smith] tool result: {name} — {len(entries)} item(s) in directory\n"
-            if name == "read_file" or "read_file" in str(name):
+            if name == "read" or "read" in str(name):
                 return f"[smith] tool result: {name} — {lines_count} lines, {char_count} chars\n"
-            if name == "write_file" or "write_file" in str(name):
+            if name == "write" or "write" in str(name):
                 # Extract path from the result if present
                 path_hint = ""
                 for line in content.splitlines()[:3]:
@@ -1252,7 +1508,7 @@ def describe_stream_progress(chunk, seen: set[str]) -> str:
                         path_hint = f" — {line[:200]}"
                         break
                 return f"[smith] tool result: {name} — wrote {lines_count} lines, {char_count} chars{path_hint}\n"
-            if name == "run_command" or "run_command" in str(name):
+            if name == "bash" or "bash" in str(name):
                 first_line = content.splitlines()[0][:180] if content else "command completed"
                 return f"[smith] tool result: {name} — {first_line} ({lines_count} lines)\n"
 
@@ -1336,6 +1592,12 @@ def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode
     _tool_call_count = 0
     MAX_TOOL_CALLS = 50  # hard cap to prevent runaway tool loops
 
+    # Tool error logger with model context tracking
+    error_logger = ToolErrorLogger(db)
+    model_context: list[dict[str, Any]] = [
+        {"role": "user", "content": prompt[:2000]}
+    ]
+
     def _yield_and_save(text: str):
         full_transcript_parts.append(text)
         return text
@@ -1352,13 +1614,21 @@ def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode
     limit = smith_recursion_limit()
     yield _yield_and_save(f"[smith] starting model/tool loop...\n")
     yield _yield_and_save(f"[smith] recursion limit: {limit}\n")
-    agent = build_agent_with_handler(db, task_type=task_type, context_bundle=context, run_id=run_id, model_override=model_override, cancel_event=cancel_event, approval_handler=approval_handler)
+    agent = build_agent_with_handler(db, task_type=task_type, context_bundle=context, run_id=run_id, model_override=model_override, cancel_event=cancel_event, approval_handler=approval_handler, error_logger=error_logger, model_context=model_context)
     full = []
     started = False
     seen_progress: set[str] = set()
     try:
         # Build the input once
-        _input = {"messages": [{"role": "user", "content": f"{prompt}\n\nIMPORTANT: Output only the final answer. Do not show your internal reasoning or chain-of-thought."}]}
+        # When in text tool mode, don't suppress reasoning/thinking — the model
+        # needs to "think through" how to call tools.
+        from .providers import _should_use_text_tools as _auto_text_mode, get_project_model_selection as _get_sel
+        _sel = model_override or _get_sel(db, task_type)
+        _text_mode = _auto_text_mode(_sel["model_id"])
+        if _text_mode:
+            _input = {"messages": [{"role": "user", "content": prompt}]}
+        else:
+            _input = {"messages": [{"role": "user", "content": f"{prompt}\n\nIMPORTANT: Output only the final answer. Do not show your internal reasoning or chain-of-thought."}]}
         _config = {"recursion_limit": limit}
         # Yield a "generating" message before blocking on the LLM call
         yield _yield_and_save("[smith] waiting for model response...\n")
@@ -1408,6 +1678,18 @@ def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode
             yield _yield_and_save(text)
 
         final = "".join(full).strip()
+        # Track the assistant response in model context for error debugging
+        if final:
+            model_context.append({"role": "assistant", "content": final[:2000]})
+            # Detect model-side anomalies (raw tool-call text, placeholders, etc.)
+            anomalies = detect_model_anomalies(final)
+            for a in anomalies[:5]:
+                error_logger.record_model_anomaly(
+                    run_id=run_id,
+                    assistant_text=final,
+                    anomaly_type=a["type"],
+                    details=a,
+                )
         if not final:
             final = build_fallback_final_response(db, run_id, task_type)
             yield _yield_and_save("\n[smith] fallback completion summary:\n")

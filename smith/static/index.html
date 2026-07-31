@@ -1875,7 +1875,7 @@ Return only valid JSON in this shape:
       const t = String(text || "").trim();
       if (!t) return "";
 
-      // Tool calls — show tool name + key argument like "🔧 #3 read_file path=src/main.py"
+      // Tool calls — show tool name + key argument like "🔧 #3 read path=src/main.py"
       if (t.includes("🔧 #") || t.includes("tool call:")) {
         const m = t.match(/🔧\s*#?(\d+)?\s*(\w+)/);
         const toolName = m ? m[2] : "tool";
@@ -1885,7 +1885,7 @@ Return only valid JSON in this shape:
         return `🔧 ${num} ${toolName}${detail ? " " + detail : ""}`.trim();
       }
 
-      // Tool results — show name + key stat like "📥 read_file: 42 lines, 1850 chars"
+      // Tool results — show name + key stat like "📥 read: 42 lines, 1850 chars"
       if (t.includes("tool result:") || t.includes("tool result received:")) {
         const m = t.match(/tool result:\s*(\w+)/);
         const name = m ? m[1] : "tool";
@@ -1909,7 +1909,7 @@ Return only valid JSON in this shape:
       if (t.includes("starting run:")) return t.replace("[smith] ", "");
       if (t.includes("recursion limit")) return "🔄 recursion limit set";
 
-      // Live tool generation from tool_call_chunks — shows 🛠 generating read_file...
+      // Live tool generation from tool_call_chunks — shows 🛠 generating read...
       if (t.includes("🛠 generating")) {
         return t.replace("[smith] ", "").trim();
       }

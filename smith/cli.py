@@ -369,7 +369,7 @@ def sandbox_config(
     console.print(f"Workspace root: [bold]{db.root_path}[/bold]")
 
     if current_mode == "docker":
-        console.print("\n[yellow]Note:[/yellow] 'run_command' will execute inside a Docker container.")
+        console.print("\n[yellow]Note:[/yellow] 'bash' will execute inside a Docker container.")
         console.print("File operations (read/write/edit) remain on the host via volume mount.")
 
 
@@ -1206,6 +1206,194 @@ def app_launcher(
         _svr.join()
     except KeyboardInterrupt:
         typer.echo()
+
+
+@app.command("flow-import")
+def flow_import(
+    flow_file: str = typer.Argument(..., help="Path to a JSON file describing tasks to run."),
+    project: str = typer.Argument(".", help="Project root path."),
+    auto_approve: bool = typer.Option(False, "--auto-approve", "-y", help="Auto-approve commands."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed tool error logs after run."),
+):
+    """Import and execute tasks from a flow JSON file.
+
+    The flow JSON file contains an array of task objects. Each task
+    is executed in order by Agent Smith. Results and tool errors
+    are collected and displayed.
+
+    Example flow JSON:
+    [
+      {
+        "prompt": "Find all Python files that import 'os'.",
+        "task_type": "ask",
+        "label": "find-os-imports"
+      },
+      {
+        "prompt": "Create a hello.py file that prints 'Hello, World!'.",
+        "task_type": "implement",
+        "label": "create-hello"
+      }
+    ]
+
+    Each task supports:
+    - prompt (required): The user prompt for the agent.
+    - task_type (optional): "ask", "implement", or "review". Auto-detected if omitted.
+    - review (optional): "auto", "never", or "always". Defaults to "auto".
+    - label (optional): A display label for the task.
+    - model (optional): {"provider_id": "...", "model_id": "..."} to override the model for this task.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    flow_path = _Path(flow_file).expanduser().resolve()
+    if not flow_path.exists():
+        typer.echo(f"[red]Flow file not found: {flow_file}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        tasks = _json.loads(flow_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        typer.echo(f"[red]Failed to parse flow JSON: {exc}[/red]")
+        raise typer.Exit(1)
+
+    if not isinstance(tasks, list):
+        typer.echo("[red]Flow JSON must be an array of task objects.[/red]")
+        raise typer.Exit(1)
+
+    db = project_db(project)
+    from smith.agent import ToolErrorLogger
+    error_logger_global = ToolErrorLogger(db)
+
+    approval_handler: ApprovalHandler = AutoApprovalHandler() if auto_approve else CLIApprovalHandler()
+    if auto_approve:
+        console.print("[yellow]Auto-approve enabled[/yellow]")
+
+    total = len(tasks)
+    results: list[dict] = []
+
+    for i, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            console.print(f"[yellow]Skipping task {i + 1}: not a dict[/yellow]")
+            continue
+
+        prompt = task.get("prompt", "")
+        if not prompt:
+            console.print(f"[yellow]Skipping task {i + 1}: no prompt[/yellow]")
+            continue
+
+        task_type = task.get("task_type")
+        review = task.get("review", "auto")
+        label = task.get("label", f"task-{i + 1}")
+        model_override = task.get("model")
+
+        console.print()
+        console.print(f"[bold]── Flow task {i + 1}/{total}: {label} ──[/bold]")
+        console.print(f"[dim]Type: {task_type or 'auto'} | Review: {review}[/dim]")
+        console.print(f"[dim]Prompt: {prompt[:200]}{'...' if len(prompt) > 200 else ''}[/dim]")
+
+        coord = ProjectCoordinator(project)
+        coord.start_worker()
+        task_error_count_before = len(error_logger_global.get_recent_errors(200))
+
+        try:
+            output_chunks: list[str] = []
+            for token in coord.stream_user_task(
+                prompt,
+                task_type=task_type,
+                review_mode=review,
+                model_override=model_override,
+                approval_handler=approval_handler,
+            ):
+                output_chunks.append(token)
+                if verbose:
+                    console.print(token, end="", highlight=False)
+
+            full_output = "".join(output_chunks)
+            if not verbose:
+                # Show a condensed result
+                for line in full_output.splitlines():
+                    if "[smith]" in line or "VERIFIED" in line or "error" in line.lower() or "ERROR" in line:
+                        console.print(line.strip()[:200])
+
+        except Exception as exc:
+            console.print(f"[red]Task error: {exc}[/red]")
+            results.append({
+                "label": label,
+                "prompt": prompt[:200],
+                "task_type": task_type,
+                "status": "error",
+                "error": str(exc),
+            })
+            continue
+
+        # Collect new errors since this task started
+        task_errors = error_logger_global.get_recent_errors(200)
+        new_errors = task_errors[:max(0, len(task_errors) - task_error_count_before)]
+
+        results.append({
+            "label": label,
+            "prompt": prompt[:200],
+            "task_type": task_type,
+            "status": "completed",
+            "tool_errors": len(new_errors),
+            "error_types": list(set(e.get("error_type", "?") for e in new_errors)),
+        })
+
+        if new_errors:
+            console.print(f"[yellow]  ⚠ {len(new_errors)} tool error(s) detected[/yellow]")
+            for e in new_errors[:5]:
+                console.print(f"[dim]    - [{e.get('error_type', '?')}] {e.get('tool_name', '?')}: {e.get('error_result', '')[:120]}[/dim]")
+
+        # Check for model anomalies from THIS task's errors only
+        # Filter by looking at entries that don't have 'error_type' (tool errors)
+        # and do have 'anomaly_type' (model anomalies)
+        task_anomalies = [e for e in new_errors if "anomaly_type" in e]
+        if task_anomalies:
+            console.print(f"[yellow]  ⚡ {len(task_anomalies)} model anomaly(s) in this task[/yellow]")
+            for a in task_anomalies[:3]:
+                atype = a.get("anomaly_type", "?")
+                snippet = a.get("assistant_text_snippet", "")[:120]
+                console.print(f"[dim]    - [{atype}] {snippet}[/dim]")
+
+    # Final summary
+    console.print()
+    console.print("[bold]══ Flow Results ══[/bold]")
+    table = Table(title="Task Results")
+    table.add_column("Label")
+    table.add_column("Status")
+    table.add_column("Type")
+    table.add_column("Tool Errors")
+    for r in results:
+        status_style = "green" if r["status"] == "completed" else "red"
+        table.add_row(
+            r["label"],
+            f"[{status_style}]{r['status']}[/{status_style}]",
+            r.get("task_type", "auto") or "auto",
+            str(r.get("tool_errors", 0)),
+        )
+    console.print(table)
+
+    # Show global error summary
+    error_summary = error_logger_global.error_summary()
+    if error_summary["total_errors"] > 0:
+        console.print()
+        console.print(f"[bold]Total tool errors across flow: {error_summary['total_errors']}[/bold]")
+        console.print(f"By type: {error_summary['by_type']}")
+        console.print(f"By tool: {error_summary['by_tool']}")
+        console.print(f"Error log: {error_logger_global._jsonl_path}")
+
+    if verbose:
+        console.print()
+        console.print("[bold]Detailed error log:[/bold]")
+        for e in error_logger_global.get_recent_errors(20):
+            console.print(f"  [{e.get('iso_time', '?')}] {e.get('tool_name', '?')}: {e.get('error_type', '?')}")
+            console.print(f"    Args: {e.get('tool_args_summary', '?')}")
+            console.print(f"    Result: {e.get('error_result', '')[:200]}")
+            if e.get("model_messages"):
+                msgs = e["model_messages"]
+                if msgs:
+                    last = msgs[-1]
+                    console.print(f"    Model context: [{last.get('role', '?')}] {last.get('content', '')[:150]}")
 
 
 if __name__ == "__main__":
