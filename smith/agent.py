@@ -583,6 +583,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
     write_counts_by_path: dict[str, int] = {}
     max_writes_per_run = max(1, min(100, int(os.getenv("SMITH_MAX_WRITES_PER_RUN", "30"))))
     max_writes_per_file = max(1, min(30, int(os.getenv("SMITH_MAX_WRITES_PER_FILE", "8"))))
+    max_write_chars = max(500, min(8000, int(os.getenv("SMITH_MAX_WRITE_CHARS", "4000"))))
 
     # Create sandbox backend for isolated command execution
     sandbox = get_sandbox_backend(db)
@@ -625,6 +626,14 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
                 err_msg = (
                     f"WRITE_BLOCKED: per-file write limit reached for {rel_str} ({max_writes_per_file}). "
                     "Stop rewriting this file and return a concise summary."
+                )
+                _log_error("write", {"path": path, "content_chars": len(content)}, err_msg)
+                return err_msg
+            if len(content) > max_write_chars:
+                err_msg = (
+                    f"WRITE_TOO_LARGE: content is {len(content)} chars, max is {max_write_chars}. "
+                    "Split this file into multiple smaller writes, or simplify the content. "
+                    "Write the most important parts first, then add more in subsequent calls."
                 )
                 _log_error("write", {"path": path, "content_chars": len(content)}, err_msg)
                 return err_msg
@@ -1518,7 +1527,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
 def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str, run_id: str | None = None, model_override: dict[str, str] | None = None, cancel_event=None, approval_handler: ApprovalHandler | None = None, error_logger: ToolErrorLogger | None = None, model_context: list[dict[str, Any]] | None = None):
     """Build a LangChain agent with approval handler wired to the bash tool."""
     profile = get_task_profile(task_type)
-    llm = build_chat_model_for_task(db, task_type, model_override=model_override)
+    llm = build_chat_model_for_task(db, task_type, max_tokens=profile.max_tokens, model_override=model_override)
     actual_handler = approval_handler or SilentDenyHandler()
 
     # Auto-detected: check if the model uses text-based tool calling
