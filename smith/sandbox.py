@@ -66,10 +66,18 @@ class DirectSandboxBackend(SandboxBackend):
     def exec(self, command: str, cwd: Path | str | None = None, timeout: int = 60) -> SandboxResult:
         parts = shlex.split(command)
         effective_cwd = cwd or self.root_path
+        # Include common user bin directories in PATH so tools like
+        # locally-installed php, composer, etc. are discoverable.
+        env = os.environ.copy()
+        user_bins = [p / "bin" for p in (Path.home() / ".local", Path.home() / ".cargo", Path.home() / ".npm-global")]
+        extra = [str(b) for b in user_bins if b.is_dir()]
+        if extra:
+            env["PATH"] = ":".join(extra + [env.get("PATH", "")])
         try:
             completed = subprocess.run(
                 parts,
                 cwd=effective_cwd,
+                env=env,
                 text=True,
                 capture_output=True,
                 timeout=max(1, min(int(timeout), 300)),
