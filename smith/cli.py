@@ -1217,23 +1217,20 @@ def flow_import(
 ):
     """Import and execute tasks from a flow JSON file.
 
-    The flow JSON file contains an array of task objects. Each task
-    is executed in order by Agent Smith. Results and tool errors
-    are collected and displayed.
+    The flow JSON file can be either a plain array or an object with
+    optional "flow_context" and "tasks" keys:
 
-    Example flow JSON:
-    [
-      {
-        "prompt": "Find all Python files that import 'os'.",
-        "task_type": "ask",
-        "label": "find-os-imports"
-      },
-      {
-        "prompt": "Create a hello.py file that prints 'Hello, World!'.",
-        "task_type": "implement",
-        "label": "create-hello"
-      }
-    ]
+    {
+      "flow_context": "## Goal\\nBuild a Laravel todo app with auth.",
+      "tasks": [
+        {"prompt": "...", "task_type": "implement", "label": "step-1"},
+        {"prompt": "...", "task_type": "implement", "label": "step-2"}
+      ]
+    }
+
+    The "flow_context" field is injected into every step so the agent
+    knows the overall goal. Completed steps are tracked and shown as
+    progress automatically.
 
     Each task supports:
     - prompt (required): The user prompt for the agent.
@@ -1251,14 +1248,28 @@ def flow_import(
         raise typer.Exit(1)
 
     try:
-        tasks = _json.loads(flow_path.read_text(encoding="utf-8"))
+        raw = _json.loads(flow_path.read_text(encoding="utf-8"))
     except Exception as exc:
         typer.echo(f"[red]Failed to parse flow JSON: {exc}[/red]")
         raise typer.Exit(1)
 
-    if not isinstance(tasks, list):
-        typer.echo("[red]Flow JSON must be an array of task objects.[/red]")
+    # Support both new {"flow_context": ..., "tasks": [...]} and old [...] formats
+    if isinstance(raw, list):
+        flow_context = ""
+        tasks = raw
+    elif isinstance(raw, dict):
+        flow_context = (raw.get("flow_context") or raw.get("context") or "").strip()
+        tasks = raw.get("tasks", [])
+    else:
+        typer.echo("[red]Flow JSON must be an array or an object with 'tasks'.[/red]")
         raise typer.Exit(1)
+
+    if not isinstance(tasks, list) or not tasks:
+        typer.echo("[red]Flow JSON must contain a non-empty 'tasks' array.[/red]")
+        raise typer.Exit(1)
+
+    if flow_context:
+        console.print(f"[dim]Flow context: {flow_context[:120]}{'...' if len(flow_context) > 120 else ''}[/dim]")
 
     db = project_db(project)
     from smith.agent import ToolErrorLogger
@@ -1270,6 +1281,7 @@ def flow_import(
 
     total = len(tasks)
     results: list[dict] = []
+    flow_progress: list[str] = []  # accumulated step summaries
 
     for i, task in enumerate(tasks):
         if not isinstance(task, dict):
@@ -1286,6 +1298,17 @@ def flow_import(
         label = task.get("label", f"task-{i + 1}")
         model_override = task.get("model")
 
+        # ── Build augmented prompt with flow context + progress ──────
+        augmented_prompt = prompt
+        flow_bits: list[str] = []
+        flow_bits.append(f"[FLOW] Step {i + 1}/{total} — {label}")
+        if flow_context:
+            flow_bits.append(f"[FLOW] Overall Goal:\n{flow_context}")
+        if flow_progress:
+            prog = "\n".join(f"  {entry}" for entry in flow_progress[-12:])
+            flow_bits.append(f"[FLOW] Steps completed so far:\n{prog}")
+        augmented_prompt = "\n\n".join(flow_bits) + "\n\n---\n\n" + prompt
+
         console.print()
         console.print(f"[bold]── Flow task {i + 1}/{total}: {label} ──[/bold]")
         console.print(f"[dim]Type: {task_type or 'auto'} | Review: {review}[/dim]")
@@ -1298,7 +1321,7 @@ def flow_import(
         try:
             output_chunks: list[str] = []
             for token in coord.stream_user_task(
-                prompt,
+                augmented_prompt,
                 task_type=task_type,
                 review_mode=review,
                 model_override=model_override,
@@ -1324,7 +1347,12 @@ def flow_import(
                 "status": "error",
                 "error": str(exc),
             })
+            flow_progress.append(f"❌ {label}: {str(exc)[:100]}")
             continue
+
+        # Extract a brief summary from the output for progress tracking
+        step_summary = _extract_flow_step_summary(full_output)
+        flow_progress.append(f"✅ {label}: {step_summary}")
 
         # Collect new errors since this task started
         task_errors = error_logger_global.get_recent_errors(200)
@@ -1394,6 +1422,29 @@ def flow_import(
                 if msgs:
                     last = msgs[-1]
                     console.print(f"    Model context: [{last.get('role', '?')}] {last.get('content', '')[:150]}")
+
+
+def _extract_flow_step_summary(output: str, max_chars: int = 120) -> str:
+    """Extract a brief summary from a completed flow step's output.
+
+    Scans backwards through the output for the last substantial
+    non-status line that looks like a natural-language summary.
+    Falls back to a compacted version of the last line.
+    """
+    lines = output.splitlines()
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Skip status / metadata lines
+        if stripped.startswith(("[smith]", "VERIFIED_WRITE_OK", "VERIFIED_EDIT_OK",
+                                "---", "===", "⏺", "🔧", "🛠", "⚠")):
+            continue
+        if len(stripped) < 15:
+            continue
+        # Good candidate
+        return stripped[:max_chars]
+    return "completed"
 
 
 if __name__ == "__main__":
