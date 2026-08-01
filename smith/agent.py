@@ -100,6 +100,30 @@ def _text_tool_prompt(profile) -> str:
 
     tools_text = "\n".join(tool_lines) if tool_lines else "(no tools available)"
 
+    # Check if this is a Gemma model — they use native <|tool_call> format
+    import os as _prompt_os
+    _model_id = _prompt_os.getenv("SMITH_MODEL", "").lower()
+    _is_gemma = "gemma" in _model_id
+
+    if _is_gemma:
+        return (
+            "TOOL CALLING — You MUST use the <|tool_call> format for every tool call.\n\n"
+            "Format:\n"
+            '<|tool_call>call:FUNC_NAME{param1:<|"|>value1<|"|>, param2:<|"|>value2<|"|>}<tool_call|>\n\n'
+            "Example for writing a file:\n"
+            '<|tool_call>call:write{path:<|"|>hello.py<|"|>, content:<|"|>print(\"hello\")<|"|>}<tool_call|>\n\n'
+            "CRITICAL RULES:\n"
+            '- EVERY tool call MUST start with <|tool_call>call:NAME{ and end with }<tool_call|>.\n'
+            '- Parameters are KEY:<|"|>VALUE<|"|> pairs separated by commas.\n'
+            '- Use <|"|> around EVERY parameter value — this protects special characters.\n'
+            '- For file content, put the ENTIRE file content as the content parameter value, wrapped in <|"|>...<|"|>.\n'
+            '- BATCH INDEPENDENT TOOL CALLS: multiple <|tool_call> blocks in ONE response.\n'
+            '- After tool results come back, you may call more tools or give your final answer.\n'
+            '- DO NOT explain reasoning. Output ONLY tool calls or the final answer.\n\n'
+            "AVAILABLE TOOLS:\n"
+            f"{tools_text}\n\n"
+        )
+
     return (
         "TOOL CALLING FORMAT — You MUST use this EXACT XML syntax for every tool call:\n\n"
         "<function=NAME>\n"

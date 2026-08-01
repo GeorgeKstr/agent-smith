@@ -172,34 +172,22 @@ def _extract_gemini_call_args(body: str) -> dict[str, Any]:
         c = body[pos]
 
         # Case 1: LM Studio special quotes <|"|>...<|"|>
+        # These are supposed to be opaque safe quotes — any character between
+        # the opening and closing <|"|> is part of the value, including commas,
+        # quotes, braces, etc. The ONLY delimiter we respect is the closing <|"|>.
         if body[pos:pos + 5] == '<|"|>':
             pos += 5
             end_close = body.find('<|"|>', pos)
-            end_comma = body.find(',', pos)
-
-            # If a comma appears BEFORE the next <|"|>, that <|"|> is the
-            # START of the next value (model used mixed quotes like
-            # <|"|>value'  or  <|"|>value"). Fall back to quote terminators.
-            if end_comma != -1 and end_close != -1 and end_comma < end_close:
-                end_close = -1  # Force fallback path
 
             if end_close != -1:
-                # Proper closing <|"|> found — use it exclusively.
+                # Found closing <|"|> — everything between is the value.
                 value = body[pos:end_close]
                 pos = end_close + 5
             else:
-                # No proper closing <|"|> — model used mixed/inner quotes.
-                # Fall back to the first comma, single quote, or double quote.
-                end_quote = body.find("'", pos)
-                end_dquote = body.find('"', pos)
-                candidates = [x for x in (end_comma, end_quote, end_dquote) if x != -1]
-                if candidates:
-                    end = min(candidates)
-                    value = body[pos:end].rstrip(",'\"").strip()
-                    pos = end + 1
-                else:
-                    value = body[pos:].strip()
-                    pos = body_len
+                # No closing <|"|> found. The model probably has malformed output.
+                # Consume everything until end of body.
+                value = body[pos:].rstrip("},").strip()
+                pos = body_len
 
         # Case 2: Code block ```...```
         elif body[pos:pos + 3] == '```':
