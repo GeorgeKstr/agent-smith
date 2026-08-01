@@ -1318,37 +1318,62 @@ def flow_import(
         coord.start_worker()
         task_error_count_before = len(error_logger_global.get_recent_errors(200))
 
-        try:
-            output_chunks: list[str] = []
-            for token in coord.stream_user_task(
-                augmented_prompt,
-                task_type=task_type,
-                review_mode=review,
-                model_override=model_override,
-                approval_handler=approval_handler,
-            ):
-                output_chunks.append(token)
-                if verbose:
-                    console.print(token, end="", highlight=False)
+        # ── Run step with one retry on backend crash ──────────────────
+        full_output = ""
+        for attempt in (1, 2):
+            try:
+                output_chunks: list[str] = []
+                for token in coord.stream_user_task(
+                    augmented_prompt,
+                    task_type=task_type,
+                    review_mode=review,
+                    model_override=model_override,
+                    approval_handler=approval_handler,
+                ):
+                    output_chunks.append(token)
+                    if verbose:
+                        console.print(token, end="", highlight=False)
 
-            full_output = "".join(output_chunks)
-            if not verbose:
-                # Show a condensed result
-                for line in full_output.splitlines():
-                    if "[smith]" in line or "VERIFIED" in line or "error" in line.lower() or "ERROR" in line:
-                        console.print(line.strip()[:200])
+                full_output = "".join(output_chunks)
+                if not verbose:
+                    for line in full_output.splitlines():
+                        if "[smith]" in line or "VERIFIED" in line or "error" in line.lower() or "ERROR" in line:
+                            console.print(line.strip()[:200])
+                break  # success
 
-        except Exception as exc:
-            console.print(f"[red]Task error: {exc}[/red]")
-            results.append({
-                "label": label,
-                "prompt": prompt[:200],
-                "task_type": task_type,
-                "status": "error",
-                "error": str(exc),
-            })
-            flow_progress.append(f"❌ {label}: {str(exc)[:100]}")
-            continue
+            except Exception as exc:
+                err = str(exc)
+                # If the backend (LM Studio / llama-server) crashed, restart it and retry
+                is_backend_crash = (
+                    "Engine protocol predict request failed" in err
+                    or "fetch failed" in err
+                    or "Connection error" in err
+                    or "RemoteProtocolError" in err
+                )
+                if is_backend_crash and attempt == 1:
+                    console.print(f"[yellow]  ⚡ Backend crash detected, restarting model...[/yellow]")
+                    _restart_model_backend()
+                    console.print(f"[dim]  Retrying step...[/dim]")
+                    # Fresh coordinator for retry (new DB connection)
+                    coord = ProjectCoordinator(project)
+                    coord.start_worker()
+                    continue
+                # Non-recoverable or retry exhausted
+                console.print(f"[red]Task error: {exc}[/red]")
+                results.append({
+                    "label": label,
+                    "prompt": prompt[:200],
+                    "task_type": task_type,
+                    "status": "error",
+                    "error": str(exc),
+                })
+                flow_progress.append(f"❌ {label}: {str(exc)[:100]}")
+                break
+        else:
+            continue  # skip to next iteration of outer loop if error after retry
+
+        if not full_output:
+            continue  # step failed after retries
 
         # Extract a brief summary from the output for progress tracking
         step_summary = _extract_flow_step_summary(full_output)
@@ -1422,6 +1447,23 @@ def flow_import(
                 if msgs:
                     last = msgs[-1]
                     console.print(f"    Model context: [{last.get('role', '?')}] {last.get('content', '')[:150]}")
+
+
+def _restart_model_backend() -> None:
+    """Restart the LM Studio / llama-server backend after a crash.
+
+    Kills any stuck llama-server processes and triggers LM Studio
+    to reload the model on the next API request.
+    """
+    import subprocess as _sp
+    import time as _time
+    try:
+        # Kill stuck llama-server processes
+        _sp.run(["pkill", "-f", "llama-server"], timeout=5)
+        _time.sleep(1)
+        # Touch LM Studio's API so it knows to reload on next request
+    except Exception:
+        pass
 
 
 def _extract_flow_step_summary(output: str, max_chars: int = 120) -> str:
