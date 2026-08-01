@@ -530,6 +530,109 @@ def project_changes_detailed(limit: int = 30, token: str | None = None):
 
 
 
+@app.get("/api/project/activity")
+def project_activity(limit: int = 200, token: str | None = None):
+    """Return a chronological activity log — tasks, tool calls, file edits,
+    command runs, and summaries — formatted for easy reading/copying."""
+    require_token(token)
+    coord = coordinator()
+    db = coord.db
+    limit = max(1, min(limit, 500))
+    entries: list[dict[str, Any]] = []
+
+    with db.connect() as con:
+        con.row_factory = lambda cursor, row: dict(
+            zip([col[0] for col in cursor.description], row)
+        )
+
+        # ── Runs (tasks) ──────────────────────────────────────────
+        runs = con.execute(
+            """SELECT id, task_type, status, user_prompt, final_summary,
+                      started_at, ended_at
+               FROM runs WHERE project_id=?
+               ORDER BY started_at ASC""",
+            (db.project_id,),
+        ).fetchall()
+
+        for r in runs:
+            entries.append({
+                "ts": r["started_at"] or "",
+                "type": "task_started",
+                "run_id": r["id"],
+                "text": f"Task [{r['task_type']}]: {(r['user_prompt'] or '')[:200]}",
+                "meta": {"task_type": r["task_type"], "status": r["status"]},
+            })
+
+        # ── Tool calls (from events) ──────────────────────────────
+        tool_events = con.execute(
+            """SELECT e.created_at, e.run_id, e.type, e.payload_json
+               FROM events e
+               WHERE e.project_id=?
+                 AND e.type IN ('tool_run_command','tool_write_file','tool_edit_file',
+                                'tool_read_file','tool_list_files','tool_grep_search',
+                                'tool_find_files','tool_fetch','tool_docs')
+               ORDER BY e.id ASC""",
+            (db.project_id,),
+        ).fetchall()
+
+        for ev in tool_events:
+            payload = _json_loads_safe(ev["payload_json"], {})
+            run_id = ev["run_id"]
+            ts = ev["created_at"] or ""
+
+            if ev["type"] == "tool_run_command":
+                cmd = payload.get("command", "?")[:120]
+                exit_code = payload.get("exit_code")
+                entries.append({
+                    "ts": ts, "type": "bash", "run_id": run_id,
+                    "text": f"$ {cmd}" if exit_code == 0 else f"$ {cmd} [exit={exit_code}]",
+                })
+            elif ev["type"] in ("tool_write_file", "tool_edit_file"):
+                path = payload.get("path", "?")
+                is_edit = ev["type"] == "tool_edit_file"
+                edits = payload.get("edits", 1) if is_edit else 1
+                action = f"{edits} surgical edit(s)" if is_edit else "wrote"
+                entries.append({
+                    "ts": ts, "type": "file_write", "run_id": run_id,
+                    "text": f"✏️ {action} → {path}",
+                })
+            elif ev["type"] == "tool_read_file":
+                path = payload.get("path", "?")
+                chars = payload.get("chars", 0)
+                entries.append({
+                    "ts": ts, "type": "file_read", "run_id": run_id,
+                    "text": f"📖 read {path} ({chars} chars)",
+                })
+            elif ev["type"] == "tool_list_files":
+                entries.append({
+                    "ts": ts, "type": "ls", "run_id": run_id,
+                    "text": f"📂 ls {payload.get('path', '.')} ({payload.get('count', 0)} entries)",
+                })
+            else:
+                entries.append({
+                    "ts": ts, "type": ev["type"].replace("tool_", ""), "run_id": run_id,
+                    "text": json.dumps(payload)[:150] if payload else ev["type"],
+                })
+
+        # ── Task completions ──────────────────────────────────────
+        for r in runs:
+            if r["final_summary"] and r["status"] in ("done", "interrupted"):
+                summary = r["final_summary"].strip()[:300]
+                entries.append({
+                    "ts": r["ended_at"] or "",
+                    "type": "task_finished",
+                    "run_id": r["id"],
+                    "text": f"{'✅' if r['status'] == 'done' else '⚠️'} {summary}",
+                    "meta": {"status": r["status"]},
+                })
+
+    # ── Sort chronologically ───────────────────────────────────────
+    entries.sort(key=lambda e: e["ts"])
+    entries = entries[-limit:]
+
+    return {"entries": entries, "total": len(entries)}
+
+
 @app.get("/api/project/runs")
 def project_runs(limit: int = 20, offset: int = 0, token: str | None = None):
     require_token(token)

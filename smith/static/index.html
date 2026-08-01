@@ -1236,6 +1236,38 @@
       min-height:0;
       overflow:hidden;
     }
+    .activity-view {
+      min-height:0;
+      overflow:hidden;
+      display:flex;
+      flex-direction:column;
+    }
+    .activity-toolbar {
+      flex:0 0 auto;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:10px 14px;
+      border-bottom:1px solid var(--border);
+    }
+    .activity-toolbar h3 { margin:0; font-size:15px; }
+    .activity-log {
+      flex:1 1 auto;
+      min-height:0;
+      overflow:auto;
+      margin:0;
+      padding:14px;
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      font-size:12px;
+      line-height:1.6;
+      white-space:pre-wrap;
+      word-break:break-word;
+      color:var(--text);
+      background:var(--bg);
+      border:none;
+      user-select:text;
+      -webkit-user-select:text;
+    }
     .history-tab-shell {
       height:100%;
       min-height:0;
@@ -1296,11 +1328,23 @@
     <main class="main">
       <nav class="tabs">
         <button class="tab active" data-tab="chat">Chat</button>
+        <button class="tab" data-tab="activity">Activity</button>
         <button class="tab" data-tab="history">History</button>
         <button class="tab" data-tab="files">Files</button>
         <button class="tab" data-tab="index">Indexing</button>
         <button class="tab" data-tab="tasks">Tasks <span id="taskBadge" class="task-badge">0</span></button>
       </nav>
+
+      <section id="activityView" class="view activity-view">
+        <div class="activity-toolbar">
+          <h3>Activity Log</h3>
+          <div class="row" style="gap:8px">
+            <button id="copyActivity" class="ghost" title="Copy as text">📋 Copy</button>
+            <button id="refreshActivity" class="ghost">🔄 Refresh</button>
+          </div>
+        </div>
+        <pre id="activityLog" class="activity-log">Loading...</pre>
+      </section>
 
       <section id="historyView" class="view history-view">
         <div class="history-tab-shell">
@@ -2278,6 +2322,35 @@ Return only valid JSON in this shape:
       return d.toLocaleString(undefined, {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
     }
 
+    async function loadActivity() {
+      const pre = $("activityLog");
+      if (!pre) return;
+      pre.textContent = "Loading...";
+      try {
+        const data = await api("/api/project/activity?limit=500");
+        if (!data.entries.length) {
+          pre.textContent = "No activity yet. Run a task in Chat or Tasks to see it here.";
+          return;
+        }
+        const lines = [];
+        let lastDate = "";
+        for (const e of data.entries) {
+          const ts = e.ts ? new Date(e.ts) : null;
+          const time = ts ? ts.toLocaleTimeString(undefined, {hour:"2-digit",minute:"2-digit",second:"2-digit"}) : "--:--:--";
+          const date = ts ? ts.toLocaleDateString(undefined, {month:"short",day:"numeric"}) : "";
+          if (date && date !== lastDate) {
+            lines.push(`\n── ${date} ──`);
+            lastDate = date;
+          }
+          const icon = { task_started: "▶", task_finished: "🏁", bash: "$", file_write: "✏️", file_read: "📖", ls: "📂" }[e.type] || "·";
+          lines.push(` ${time}  ${icon}  ${e.text}`);
+        }
+        pre.textContent = lines.join("\n");
+      } catch (err) {
+        pre.textContent = `Failed to load activity: ${err.message}`;
+      }
+    }
+
     async function deleteRunGroup(runId, event) {
       if (event) event.stopPropagation();
       if (!confirm("Delete this run from history? File changes are not affected.")) return;
@@ -2564,6 +2637,7 @@ Return only valid JSON in this shape:
       $(`${name}View`).classList.add("active");
       if (name === "files") loadFileTree(fileCwd, $("fileSearch").value.trim());
       if (name === "history") loadHistory(true);
+      if (name === "activity") loadActivity();
       if (name === "index") refreshIndexFiles();
       if (name === "tasks") renderTaskSteps();
     }
@@ -3143,6 +3217,15 @@ After making changes, include a section titled ## Implementation Notes at the en
 
     document.querySelectorAll(".tab").forEach(t => t.onclick = () => switchTab(t.dataset.tab));
     $("send").onclick = submitPrompt;
+    // Activity log copy + refresh
+    $("copyActivity").onclick = () => {
+      const text = $("activityLog").textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        $("copyActivity").textContent = "✅ Copied!";
+        setTimeout(() => $("copyActivity").textContent = "📋 Copy", 1500);
+      }).catch(() => alert("Copy failed"));
+    };
+    $("refreshActivity").onclick = () => loadActivity();
     // Chat raw mode toggle
     $("chatRawToggle").onclick = function() {
       chatRawMode = !chatRawMode;
