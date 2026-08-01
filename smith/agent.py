@@ -26,7 +26,7 @@ from .sandbox import get_sandbox_backend
 load_dotenv()
 
 
-def _text_tool_prompt(profile) -> str:
+def _text_tool_prompt(profile, model_id: str = "") -> str:
     """Build text-based tool calling instructions for local models.
 
     When SMITH_TEXT_TOOL_MODE is enabled, the model receives explicit
@@ -101,9 +101,7 @@ def _text_tool_prompt(profile) -> str:
     tools_text = "\n".join(tool_lines) if tool_lines else "(no tools available)"
 
     # Check if this is a Gemma model — they use native <|tool_call> format
-    import os as _prompt_os
-    _model_id = _prompt_os.getenv("SMITH_MODEL", "").lower()
-    _is_gemma = "gemma" in _model_id
+    _is_gemma = "gemma" in (model_id or "").lower()
 
     if _is_gemma:
         return (
@@ -1560,7 +1558,8 @@ def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str,
     text_tool_mode = getattr(llm, "text_tool_mode", False)
 
     if text_tool_mode:
-        tool_instructions = _text_tool_prompt(profile)
+        _model_id = getattr(llm, "model_name", "") or getattr(llm, "model", "")
+        tool_instructions = _text_tool_prompt(profile, model_id=_model_id)
     else:
         tool_instructions = (
             "TOOLS (use these exactly):\n"
