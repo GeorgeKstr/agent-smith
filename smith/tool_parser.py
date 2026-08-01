@@ -172,22 +172,34 @@ def _extract_gemini_call_args(body: str) -> dict[str, Any]:
         c = body[pos]
 
         # Case 1: LM Studio special quotes <|"|>...<|"|>
-        # These are supposed to be opaque safe quotes — any character between
-        # the opening and closing <|"|> is part of the value, including commas,
-        # quotes, braces, etc. The ONLY delimiter we respect is the closing <|"|>.
+        # Find the MATCHING closing <|"|> — the one followed by ',' or '}'
+        # (the end of this parameter). Inner <|"|> markers inside values
+        # (e.g. inside JSON or code) are NOT closers.
         if body[pos:pos + 5] == '<|"|>':
             pos += 5
-            end_close = body.find('<|"|>', pos)
-
-            if end_close != -1:
-                # Found closing <|"|> — everything between is the value.
-                value = body[pos:end_close]
-                pos = end_close + 5
-            else:
-                # No closing <|"|> found. The model probably has malformed output.
-                # Consume everything until end of body.
-                value = body[pos:].rstrip("},").strip()
-                pos = body_len
+            # Search for the closing <|"|>: find each occurrence and check
+            # if it's followed by ',' or '}' (parameter delimiter) or end of string.
+            search_from = pos
+            while True:
+                end_close = body.find('<|"|>', search_from)
+                if end_close == -1:
+                    # No closing quote — consume rest of body
+                    value = body[pos:].rstrip("},").strip()
+                    pos = body_len
+                    break
+                # Check what follows this <|"|>: should be ',' or '}' or end
+                rest = body[end_close + 5:end_close + 15].lstrip()
+                if not rest or rest[0] in (',', '}'):
+                    # This is the closing <|"|> — capture value
+                    value = body[pos:end_close]
+                    pos = end_close + 5
+                    # Skip trailing comma after the closing quote
+                    if pos < body_len and body[pos] in (',', ' '):
+                        while pos < body_len and body[pos] in (',', ' '):
+                            pos += 1
+                    break
+                # This <|"|> is inside the value (nested) — keep searching
+                search_from = end_close + 5
 
         # Case 2: Code block ```...```
         elif body[pos:pos + 3] == '```':

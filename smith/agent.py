@@ -115,6 +115,8 @@ def _text_tool_prompt(profile, model_id: str = "") -> str:
             '- Parameters are KEY:<|"|>VALUE<|"|> pairs separated by commas.\n'
             '- Use <|"|> around EVERY parameter value — this protects special characters.\n'
             '- For file content, put the ENTIRE file content as the content parameter value, wrapped in <|"|>...<|"|>.\n'
+            '- To modify a file, READ it first with read, then use write to replace it COMPLETELY.\n'
+            '  Do NOT use edit — always use write with the full file content.\n'
             '- BATCH INDEPENDENT TOOL CALLS: multiple <|tool_call> blocks in ONE response.\n'
             '- After tool results come back, you may call more tools or give your final answer.\n'
             '- DO NOT explain reasoning. Output ONLY tool calls or the final answer.\n\n'
