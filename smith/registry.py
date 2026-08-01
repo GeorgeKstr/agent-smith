@@ -79,7 +79,16 @@ TASK_PROFILES: dict[str, TaskProfile] = {
         model_profile="reviewer",
         tools=["read", "grep", "bash", "search_project_context", "get_file_summary", "get_run_changes"],
         context_budget_chars=24000,
-        system_role="Review the last implementation. Find correctness, safety, or requirement issues. Do not edit files.",
+        system_role=(
+            "Review the last implementation. Find correctness, safety, or requirement issues. Do not edit files.\n"
+            "CRITICAL: You MUST actively verify the implementation by running relevant commands:\n"
+            "- Run the project's test suite (pytest, npm test, go test, cargo test, etc.)\n"
+            "- Run linters (ruff, eslint, shellcheck, etc.) and type checkers (mypy, tsc, etc.)\n"
+            "- Try to run/build the changed code to catch import/syntax errors\n"
+            "- If the project has no tests, at least check that imports resolve and syntax is valid\n"
+            "Report what you ran, whether it passed, and any issues found. "
+            "Conclude with a clear PASS/FAIL/WARN verdict."
+        ),
         can_write=False,
         can_run_commands=True,
     ),

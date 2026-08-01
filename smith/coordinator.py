@@ -133,7 +133,14 @@ class ProjectCoordinator:
             if review_mode in {"always"} and task_type == "implement":
                 review_prompt = (
                     "Review the most recent Smith changes for correctness, missed requirements, "
-                    "safety issues, and whether checks are sufficient. Return a concise review report."
+                    "safety issues, and whether checks are sufficient.\n\n"
+                    "IMPORTANT: You MUST actively test the changes. Use bash to:\n"
+                    "1. Run the project's test suite (pytest, npm test, go test, cargo test, etc.)\n"
+                    "2. Run linters (ruff, eslint, shellcheck) and type checkers (mypy, tsc)\n"
+                    "3. Try to run or import the changed code to catch syntax/runtime errors\n"
+                    "4. If no tests exist, at minimum check that imports resolve and the code parses\n\n"
+                    "Then return a concise review with: what you ran, results, issues found, "
+                    "and a final PASS/FAIL/WARN verdict."
                 )
                 yield "\n\n--- Review ---\n"
                 yield from stream_agent(
