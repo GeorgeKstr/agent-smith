@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from .db import ProjectDB, sha256_bytes, json_loads
 from .error_logger import ToolErrorLogger, detect_model_anomalies
-from .registry import get_task_profile
+from .registry import get_task_profile, get_model_profile
 from .providers import build_chat_model_for_task
 from .sandbox import get_sandbox_backend
 
@@ -1527,7 +1527,8 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
 def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str, run_id: str | None = None, model_override: dict[str, str] | None = None, cancel_event=None, approval_handler: ApprovalHandler | None = None, error_logger: ToolErrorLogger | None = None, model_context: list[dict[str, Any]] | None = None):
     """Build a LangChain agent with approval handler wired to the bash tool."""
     profile = get_task_profile(task_type)
-    llm = build_chat_model_for_task(db, task_type, max_tokens=profile.max_tokens, model_override=model_override)
+    model_profile = get_model_profile(profile.model_profile)
+    llm = build_chat_model_for_task(db, task_type, max_tokens=model_profile.max_tokens, model_override=model_override)
     actual_handler = approval_handler or SilentDenyHandler()
 
     # Auto-detected: check if the model uses text-based tool calling
