@@ -1560,9 +1560,9 @@ def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str,
     # Auto-detected: check if the model uses text-based tool calling
     # (build_chat_model_for_task already decided based on model family + env var)
     text_tool_mode = getattr(llm, "text_tool_mode", False)
+    _model_id = getattr(llm, "model_name", "") or getattr(llm, "model", "")
 
     if text_tool_mode:
-        _model_id = getattr(llm, "model_name", "") or getattr(llm, "model", "")
         tool_instructions = _text_tool_prompt(profile, model_id=_model_id)
     else:
         tool_instructions = (
@@ -1598,7 +1598,7 @@ def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str,
         "8. After your final tool call, output a brief summary of what you changed, then STOP.\n"
         "9. If the task is done, just report what was accomplished. Do not invent extra work.\n"
     )
-    return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event, approval_handler=actual_handler, error_logger=error_logger, model_context=model_context, model_id=_model_name), system_prompt=system_prompt)
+    return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event, approval_handler=actual_handler, error_logger=error_logger, model_context=model_context, model_id=_model_id), system_prompt=system_prompt)
 
 
 def smith_recursion_limit() -> int:
