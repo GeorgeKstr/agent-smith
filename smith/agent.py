@@ -91,6 +91,12 @@ def _text_tool_prompt(profile) -> str:
                 "Use this to look up API docs, library references, or examples. "
                 "ALWAYS fetch docs before using unfamiliar APIs — NEVER guess."
             )
+        elif tname == "pkg":
+            tool_lines.append(
+                "- pkg(name=\"better-sqlite3\"): Read the README + metadata of an installed npm package. "
+                "This tells you the EXACT API at the installed version. "
+                "ALWAYS call this before using ANY npm package — NEVER guess its API."
+            )
 
     tools_text = "\n".join(tool_lines) if tool_lines else "(no tools available)"
 
@@ -1101,6 +1107,78 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             return err_msg
 
     @tool
+    def pkg(name: str) -> str:
+        """Read the README and metadata of an installed npm package from node_modules.
+
+        Use this to learn the EXACT API of a package at its installed version.
+        This is your primary tool for understanding how to use dependencies.
+        ALWAYS call this before using an npm package — NEVER guess its API.
+
+        Args:
+            name: The npm package name (e.g. "better-sqlite3", "express").
+        """
+        import json as _json
+
+        name = name.strip().replace("..", "").replace("/", "").replace("\\", "")
+        if not name:
+            return "PKG_ERROR: package name required"
+
+        pkg_dir = root / "node_modules" / name
+        if not pkg_dir.is_dir():
+            # Try to find it: some packages are nested
+            return f"PKG_ERROR: package '{name}' not found in node_modules. Is it installed?"
+
+        parts: list[str] = []
+
+        # 1. package.json — version and metadata
+        pkg_json_path = pkg_dir / "package.json"
+        if pkg_json_path.exists():
+            try:
+                pkg_data = _json.loads(pkg_json_path.read_text(encoding="utf-8"))
+                parts.append(f"## {pkg_data.get('name', name)} v{pkg_data.get('version', '?')}")
+                desc = pkg_data.get("description", "")
+                if desc:
+                    parts.append(f"{desc}")
+                main = pkg_data.get("main", "")
+                if main:
+                    parts.append(f"Main: {main}")
+                exports = pkg_data.get("exports", "")
+                if exports:
+                    if isinstance(exports, dict):
+                        exp_keys = [k for k in exports if k.startswith(".")]
+                        if exp_keys:
+                            parts.append(f"Exports: {', '.join(exp_keys[:8])}")
+                    elif isinstance(exports, str):
+                        parts.append(f"Exports: {exports}")
+                types = pkg_data.get("types", "") or pkg_data.get("typings", "")
+                if types:
+                    parts.append(f"Types: {types}")
+            except Exception:
+                pass
+
+        # 2. README — the API docs
+        for readme_name in ("README.md", "README.markdown", "readme.md", "README"):
+            readme_path = pkg_dir / readme_name
+            if readme_path.exists():
+                try:
+                    text = readme_path.read_text(encoding="utf-8", errors="replace")
+                    # Take first ~4000 chars — that's usually the API overview
+                    text = text[:4000]
+                    if len(text) >= 4000:
+                        text = text[:4000] + "\n\n... (truncated)"
+                    parts.append(f"\n## README\n{text}")
+                except Exception:
+                    pass
+                break
+
+        if not parts:
+            return f"PKG_ERROR: no readable metadata found for '{name}'"
+
+        result = "\n".join(parts)
+        db.record_event(run_id, "tool_pkg", {"name": name, "chars": len(result)}, actor="agent")
+        return result
+
+    @tool
     def fetch(url: str, maxChars: int = 6000) -> str:
         """Fetch a web page and return readable text content.
 
@@ -1227,6 +1305,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         "grep": grep,
         "find": find,
         "fetch": fetch,
+        "pkg": pkg,
         "bash": bash,
         "search_project_context": search_project_context,
         "get_file_summary": get_file_summary,
@@ -1252,7 +1331,8 @@ def build_agent(db: ProjectDB, task_type: str, context_bundle: str, run_id: str 
         "- grep(pattern, path?, glob?, ignoreCase?, literal?, context?, limit?): search file contents.\n"
         "- find(pattern, path?, limit?): find files by glob pattern.\n"
         "- bash(command, timeout?): run a single shell-free command (no &&, |, >, #).\n"
-        "- fetch(url, maxChars?): fetch a web page as text. Use to look up API docs. NEVER guess an API — fetch its docs first.\n\n"
+        "- fetch(url, maxChars?): fetch a web page as text. Use to look up docs.\n"
+        "- pkg(name): read the README + metadata of an installed npm package. ALWAYS use this before calling any npm package API — it tells you the EXACT API at the installed version.\n\n"
         "CRITICAL RULES:\n"
         "1. Read a file with `read` before editing it. Never guess paths.\n"
         "2. To change an existing file, use `edit(path, edits=[{oldText, newText}])` with the EXACT text from the file.\n"
@@ -1289,7 +1369,8 @@ def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str,
             "- edit(path, edits): apply find/replace edits. `edits` is an array of {oldText, newText}.\n"
             "- grep(pattern, path?, glob?, ignoreCase?, literal?, context?, limit?): search file contents.\n"
             "- find(pattern, path?, limit?): find files by glob pattern.\n"
-            "- fetch(url, maxChars?): fetch a web page as text. Use to look up API docs.\n"
+            "- fetch(url, maxChars?): fetch a web page as text. Use to look up docs.\n"
+            "- pkg(name): read README + metadata of an installed npm package.\n"
             "- bash(command, timeout?): run a single shell-free command (no &&, |, >, #).\n\n"
         )
 
