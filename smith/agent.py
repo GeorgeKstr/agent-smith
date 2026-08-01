@@ -85,6 +85,12 @@ def _text_tool_prompt(profile) -> str:
             tool_lines.append(
                 "- get_run_changes(limit=20): Show recent file changes."
             )
+        elif tname == "fetch":
+            tool_lines.append(
+                "- fetch(url=\"https://...\", maxChars=6000): Fetch a web page as text. "
+                "Use this to look up API docs, library references, or examples. "
+                "ALWAYS fetch docs before using unfamiliar APIs — NEVER guess."
+            )
 
     tools_text = "\n".join(tool_lines) if tool_lines else "(no tools available)"
 
@@ -1095,6 +1101,79 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             return err_msg
 
     @tool
+    def fetch(url: str, maxChars: int = 6000) -> str:
+        """Fetch a web page and return readable text content.
+
+        Use this to look up API documentation, library references, or any
+        information you need. IMPORTANT: use this whenever you are unsure
+        about a library's API — do NOT guess or hallucinate.
+
+        Args:
+            url: The URL to fetch (must start with http:// or https://).
+            maxChars: Maximum characters to return (default 6000, max 15000).
+        """
+        import re as _re
+        from urllib.request import Request, urlopen
+        from urllib.error import URLError
+
+        url = url.strip()
+        if not url.startswith(("http://", "https://")):
+            return "FETCH_ERROR: URL must start with http:// or https://"
+
+        maxChars = max(500, min(15000, int(maxChars or 6000)))
+
+        try:
+            req = Request(url, headers={"User-Agent": "Agent-Smith/1.0"})
+            with urlopen(req, timeout=15) as resp:
+                # Respect size limits
+                content_type = resp.headers.get("Content-Type", "")
+                raw = resp.read(500 * 1024)  # Max 500KB raw
+
+            # Decode
+            charset = "utf-8"
+            if "charset=" in content_type:
+                match = _re.search(r"charset=([^\s;]+)", content_type)
+                if match:
+                    charset = match.group(1)
+
+            try:
+                text = raw.decode(charset, errors="replace")
+            except (UnicodeDecodeError, LookupError):
+                text = raw.decode("utf-8", errors="replace")
+
+            # Strip HTML tags for HTML content
+            if "text/html" in content_type or text.strip().startswith("<!"):
+                # Remove scripts and styles
+                text = _re.sub(r"<script[^>]*>.*?</script>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
+                text = _re.sub(r"<style[^>]*>.*?</style>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
+                # Remove HTML tags
+                text = _re.sub(r"<[^>]+>", " ", text)
+                # Decode common entities
+                text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+                text = text.replace("&quot;", '"').replace("&#39;", "'").replace("&apos;", "'")
+                text = text.replace("&#x27;", "'").replace("&#x2F;", "/")
+                # Collapse whitespace
+                text = _re.sub(r"[ \t]+", " ", text)
+                text = _re.sub(r"\n{3,}", "\n\n", text)
+                text = text.strip()
+
+            # Truncate
+            if len(text) > maxChars:
+                text = text[:maxChars] + f"\n\n... truncated at {maxChars} chars (original: {len(text)} chars)"
+
+            db.record_event(run_id, "tool_fetch", {"url": url, "chars": len(text)}, actor="agent")
+            return text if text.strip() else "FETCH_RESULT: page returned empty or unreadable content"
+
+        except URLError as exc:
+            err_msg = f"FETCH_ERROR: could not fetch URL: {exc}"
+            _log_error("fetch", {"url": url}, err_msg)
+            return err_msg
+        except Exception as exc:
+            err_msg = f"FETCH_ERROR: {type(exc).__name__}: {exc}"
+            _log_error("fetch", {"url": url}, err_msg)
+            return err_msg
+
+    @tool
     def find(pattern: str, path: str = ".", limit: int = 50) -> str:
         """Find files matching a glob pattern, like the Unix 'find' command.
 
@@ -1147,6 +1226,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         "edit": edit,
         "grep": grep,
         "find": find,
+        "fetch": fetch,
         "bash": bash,
         "search_project_context": search_project_context,
         "get_file_summary": get_file_summary,
@@ -1171,7 +1251,8 @@ def build_agent(db: ProjectDB, task_type: str, context_bundle: str, run_id: str 
         "- edit(path, edits): apply find/replace edits. `edits` is an array of {oldText, newText}.\n"
         "- grep(pattern, path?, glob?, ignoreCase?, literal?, context?, limit?): search file contents.\n"
         "- find(pattern, path?, limit?): find files by glob pattern.\n"
-        "- bash(command, timeout?): run a single shell-free command (no &&, |, >, #).\n\n"
+        "- bash(command, timeout?): run a single shell-free command (no &&, |, >, #).\n"
+        "- fetch(url, maxChars?): fetch a web page as text. Use to look up API docs. NEVER guess an API — fetch its docs first.\n\n"
         "CRITICAL RULES:\n"
         "1. Read a file with `read` before editing it. Never guess paths.\n"
         "2. To change an existing file, use `edit(path, edits=[{oldText, newText}])` with the EXACT text from the file.\n"
@@ -1208,6 +1289,7 @@ def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str,
             "- edit(path, edits): apply find/replace edits. `edits` is an array of {oldText, newText}.\n"
             "- grep(pattern, path?, glob?, ignoreCase?, literal?, context?, limit?): search file contents.\n"
             "- find(pattern, path?, limit?): find files by glob pattern.\n"
+            "- fetch(url, maxChars?): fetch a web page as text. Use to look up API docs.\n"
             "- bash(command, timeout?): run a single shell-free command (no &&, |, >, #).\n\n"
         )
 
