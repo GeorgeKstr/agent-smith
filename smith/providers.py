@@ -160,6 +160,7 @@ def _should_use_text_tools(model_id: str) -> bool:
     _TEXT_MODE_PATTERNS = (
         "gemma",       # Gemma 4 — native tool streaming is broken in langchain, use text parser
         "glm",         # GLM models — uses <function=...> XML format, no native support
+        "qwen",        # Qwen3-Coder — emits <function=...> XML tool calls, no native support
         "deepseek",    # DeepSeek local variants
         "llama",       # Llama 3.1 / Llama 2 / etc. — many local variants lack native support
         "phi",         # Microsoft Phi models

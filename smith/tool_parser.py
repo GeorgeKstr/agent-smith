@@ -395,17 +395,22 @@ def extract_tool_calls_from_text(text: str, available_tool_names: set[str] | Non
                     "type": "tool_call",
                 })
 
-    # Strategy 2b: GLM-style XML (no </function>, uses <arg_key>/<arg_value>)
+    # Strategy 2b: GLM-style XML (no <tool_call> wrapper, may use <arg_key>/<arg_value>
+    # or <parameter=name>value</parameter>)
     if not results:
         for match in _GLM_TOOL_CALL_RE.finditer(text):
             func_name = match.group(1).strip()
             body = match.group(2)
             params: dict[str, Any] = {}
+            # Try <arg_key>/<arg_value> format first
             for arg_match in _GLM_ARG_RE.finditer(body):
                 key = arg_match.group(1).strip()
                 value = _coerce_value(arg_match.group(2).strip())
                 params[key] = value
-            if func_name:
+            # Fall back to <parameter=name>value</parameter> format (used by Qwen, etc.)
+            if not params:
+                params = _extract_xml_params(body)
+            if func_name and params:
                 results.append({
                     "name": func_name,
                     "args": params,
