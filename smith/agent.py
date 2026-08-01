@@ -154,13 +154,16 @@ ALLOWED_COMMANDS = {
 BLOCKED_ARGS = {"install", "add", "remove", "uninstall", "delete", "publish", "deploy", "start", "dev", "serve"}
 
 
-def _split_on_ampersand(parts: list[str]) -> list[list[str]]:
-    """Split a command like ['mkdir', '-p', 'dir', '&&', 'touch', 'file']
-    into [['mkdir', '-p', 'dir'], ['touch', 'file']]."""
+def _split_on_operator(parts: list[str], operator: str) -> list[list[str]]:
+    """Split a command on a shell operator (&&, ||, |, ;).
+
+    Example: ['ps', 'aux', '|', 'grep', 'node'] with '|'
+    returns [['ps', 'aux'], ['grep', 'node']].
+    """
     segments: list[list[str]] = []
     current: list[str] = []
     for part in parts:
-        if part == "&&":
+        if part == operator:
             if current:
                 segments.append(current)
                 current = []
@@ -834,17 +837,28 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         # ── Detect shell metacharacters the model shouldn't use ────────────
         shell_tokens = {"&&", "||", "|", ";"}
         found_shell = [t for t in parts if t in shell_tokens]
-        # Auto-split on && (the most common mistake) — run each segment
-        # separately and combine results. This is safe because each sub-command
-        # still goes through the same approval and sandbox checks.
-        if "&&" in found_shell and all(t not in {"||", "|", ";"} for t in found_shell if t != "&&"):
-            segments = _split_on_ampersand(parts)
+
+        # Auto-split shell operators — run each segment separately and combine
+        # results. Each sub-command still goes through approval and sandbox checks.
+        operator = None
+        if found_shell:
+            for op in ("&&", "||", "|", ";"):
+                if op in found_shell:
+                    # Only auto-handle if only ONE operator type is present
+                    others = [t for t in found_shell if t != op]
+                    if not others:
+                        operator = op
+                        break
+
+        if operator:
+            segments = _split_on_operator(parts, operator)
             if len(segments) > 1:
                 all_outputs = []
                 last_exit = 0
-                for seg_parts in segments:
+                pipe_input: str | None = None
+                for i, seg_parts in enumerate(segments):
                     seg_cmd = " ".join(seg_parts)
-                    seg_result = sandbox.exec(seg_cmd, cwd=root, timeout=timeout)
+                    seg_result = sandbox.exec(seg_cmd, cwd=root, timeout=timeout, stdin_data=pipe_input)
                     out_parts = [f"$ {seg_cmd}", f"exit_code={seg_result.exit_code}"]
                     if seg_result.stdout:
                         out_parts.append("\nSTDOUT:\n" + seg_result.stdout[-8000:])
@@ -852,13 +866,22 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
                         out_parts.append("\nSTDERR:\n" + seg_result.stderr[-8000:])
                     all_outputs.append("\n".join(out_parts))
                     last_exit = seg_result.exit_code
-                db.record_event(run_id, "tool_run_command", {"command": command, "exit_code": last_exit, "auto_split": True}, actor="agent")
+                    # For pipes: feed this segment's stdout as stdin to the next
+                    if operator == "|":
+                        pipe_input = seg_result.stdout
+                    # For &&: stop on first failure
+                    elif operator == "&&" and seg_result.exit_code != 0:
+                        break
+                    # For ||: stop on first success
+                    elif operator == "||" and seg_result.exit_code == 0:
+                        break
+                db.record_event(run_id, "tool_run_command", {"command": command, "exit_code": last_exit, "auto_split": True, "operator": operator}, actor="agent")
                 return "\n---\n".join(all_outputs)
-        if found_shell:
+
+        if found_shell and not operator:
             err_msg = (
                 f"SHELL_SYNTAX_DETECTED: found shell operator(s): {', '.join(found_shell)}.\n"
-                "This tool does NOT use a shell. Run each command as a separate call.\n"
-                "Example: instead of 'cmd1 && cmd2', call bash twice."
+                "This tool does NOT use a shell. Run each command as a separate call."
             )
             _log_error("bash", {"command": command}, err_msg)
             return err_msg

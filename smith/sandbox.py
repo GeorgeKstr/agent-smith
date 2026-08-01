@@ -40,7 +40,7 @@ class SandboxBackend(ABC):
     """Abstract base for sandbox backends."""
 
     @abstractmethod
-    def exec(self, command: str, cwd: Path | str | None = None, timeout: int = 60) -> SandboxResult:
+    def exec(self, command: str, cwd: Path | str | None = None, timeout: int = 60, stdin_data: str | None = None) -> SandboxResult:
         """Execute a command and return the result."""
         ...
 
@@ -63,11 +63,11 @@ class DirectSandboxBackend(SandboxBackend):
     def name(self) -> str:
         return "direct"
 
-    def exec(self, command: str, cwd: Path | str | None = None, timeout: int = 60) -> SandboxResult:
+    def exec(self, command: str, cwd: Path | str | None = None, timeout: int = 60, stdin_data: str | None = None) -> SandboxResult:
         parts = shlex.split(command)
         effective_cwd = cwd or self.root_path
-        # Include common user bin directories in PATH so tools like
-        # locally-installed php, composer, etc. are discoverable.
+        # Include common user bin directories in PATH so locally-installed
+        # tools (php, composer, etc.) are discoverable.
         env = os.environ.copy()
         user_bins = [p / "bin" for p in (Path.home() / ".local", Path.home() / ".cargo", Path.home() / ".npm-global")]
         extra = [str(b) for b in user_bins if b.is_dir()]
@@ -78,6 +78,7 @@ class DirectSandboxBackend(SandboxBackend):
                 parts,
                 cwd=effective_cwd,
                 env=env,
+                input=stdin_data,
                 text=True,
                 capture_output=True,
                 timeout=max(1, min(int(timeout), 300)),
