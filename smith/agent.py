@@ -34,6 +34,7 @@ def _text_tool_prompt(profile, model_id: str = "") -> str:
     tool_parser can reliably extract.
     """
     # Build allowed tools list from profile
+    _is_gemma = "gemma" in (model_id or "").lower()
     tool_lines = []
     for tname in profile.tools:
         if tname == "ls":
@@ -51,10 +52,12 @@ def _text_tool_prompt(profile, model_id: str = "") -> str:
                 "- write(path=\"file.py\", content=\"...\"): Create or overwrite a file."
             )
         elif tname == "edit":
-            tool_lines.append(
-                "- edit(path=\"file.py\", edits=[{oldText: \"exact old\", newText: \"replacement\"}]): "
-                "Surgical find/replace. Read file first to get exact oldText."
-            )
+            # Skip edit for Gemma — it can't format the JSON correctly
+            if not _is_gemma:
+                tool_lines.append(
+                    "- edit(path=\"file.py\", edits=[{oldText: \"exact old\", newText: \"replacement\"}]): "
+                    "Surgical find/replace. Read file first to get exact oldText."
+                )
         elif tname == "grep":
             tool_lines.append(
                 "- grep(pattern=\"regex\", path=\".\", glob=\"*.py\", ignoreCase=False, "
@@ -99,9 +102,6 @@ def _text_tool_prompt(profile, model_id: str = "") -> str:
             )
 
     tools_text = "\n".join(tool_lines) if tool_lines else "(no tools available)"
-
-    # Check if this is a Gemma model — they use native <|tool_call> format
-    _is_gemma = "gemma" in (model_id or "").lower()
 
     if _is_gemma:
         return (
@@ -512,7 +512,7 @@ def _locate_match(haystack: str, needle: str) -> tuple[int, int, bool]:
     return start, actual_len, True
 
 
-def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_event=None, approval_handler: ApprovalHandler | None = None, error_logger: ToolErrorLogger | None = None, model_context: list[dict[str, Any]] | None = None):
+def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_event=None, approval_handler: ApprovalHandler | None = None, error_logger: ToolErrorLogger | None = None, model_context: list[dict[str, Any]] | None = None, model_id: str = ""):
     root = db.root_path
     profile = get_task_profile(task_type)
     if approval_handler is None:
@@ -1545,7 +1545,9 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         "get_related_files": get_related_files,
         "get_run_changes": get_run_changes,
     }
-    return [all_tools[name] for name in profile.tools if name in all_tools]
+    _is_gemma = "gemma" in (model_id or "").lower()
+    _tool_names = [n for n in profile.tools if n in all_tools and not (_is_gemma and n == "edit")]
+    return [all_tools[name] for name in _tool_names]
 
 
 def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str, run_id: str | None = None, model_override: dict[str, str] | None = None, cancel_event=None, approval_handler: ApprovalHandler | None = None, error_logger: ToolErrorLogger | None = None, model_context: list[dict[str, Any]] | None = None):
@@ -1596,7 +1598,7 @@ def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str,
         "8. After your final tool call, output a brief summary of what you changed, then STOP.\n"
         "9. If the task is done, just report what was accomplished. Do not invent extra work.\n"
     )
-    return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event, approval_handler=actual_handler, error_logger=error_logger, model_context=model_context), system_prompt=system_prompt)
+    return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event, approval_handler=actual_handler, error_logger=error_logger, model_context=model_context, model_id=_model_name), system_prompt=system_prompt)
 
 
 def smith_recursion_limit() -> int:
