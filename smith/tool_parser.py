@@ -43,13 +43,14 @@ _XML_TOOL_CALL_BARE_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
-# Pattern 1c: GLM-style XML (no opening <tool_call>, may lack </function>)
+# Pattern 1c: GLM/Qwen-style XML (no opening <tool_call>, may lack </function>)
 # Example: <function=bash<arg_key>command</arg_key><arg_value>ls</arg_value></tool_call>
-# Note: GLM often omits the opening <tool_call> tag entirely
+# Qwen3-Coder often writes <tool_call> (no slash) as the closing marker.
+# Match both </tool_call> and the malformed <tool_call> that follows </function>.
 _GLM_TOOL_CALL_RE = re.compile(
     r"<function\s*=\s*(\w+)\s*"
     r"(.*?)"
-    r"</tool_call>",
+    r"</?tool_call>",
     re.DOTALL | re.IGNORECASE,
 )
 

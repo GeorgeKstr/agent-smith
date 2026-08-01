@@ -26,12 +26,12 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Iterator
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_openai import ChatOpenAI
 
 from .tool_parser import extract_tool_calls_from_text, has_text_tool_calls, clean_tool_call_text
@@ -86,12 +86,18 @@ class LocalModelChatOpenAI(ChatOpenAI):
             elif callable(t) and hasattr(t, "__name__"):
                 tool_names.add(t.__name__)
 
-        # In text_tool_mode, remove tool_choice from kwargs if present — the
-        # agent may pass it, but we want the model to use text, not forced tool calls.
+        # In text_tool_mode, we must NOT pass real tools to super().bind_tools()
+        # because that sets up native OpenAI function-calling schemas which
+        # confuse models like Qwen/Gemma that emit text-based tool calls.
+        # Instead, bind an empty list so the agent graph still gets a proper
+        # RunnableBinding, but the model receives no native tool definitions.
         if self.text_tool_mode:
             kwargs.pop("tool_choice", None)
-
-        result = super().bind_tools(tools, **kwargs)
+            # Bind empty tools — the agent graph needs a RunnableBinding wrapper
+            # but the model should NOT receive OpenAI tool schemas.
+            result = super().bind_tools([], **kwargs)
+        else:
+            result = super().bind_tools(tools, **kwargs)
 
         # super().bind_tools() returns a RunnableBinding (_ChatModelBinding),
         # not a LocalModelChatOpenAI directly. We need to set our attributes
@@ -168,3 +174,84 @@ class LocalModelChatOpenAI(ChatOpenAI):
                 )
 
         return result
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk | AIMessageChunk]:
+        """Stream response, buffering to extract text-based tool calls."""
+        if not self.text_tool_mode:
+            yield from super()._stream(messages, stop, run_manager, **kwargs)
+            return
+
+        kwargs.pop("tools", None)
+        kwargs.pop("tool_choice", None)
+
+        # Collect all chunks first
+        chunks: list = []
+        for chunk in super()._stream(messages, stop, run_manager, **kwargs):
+            chunks.append(chunk)
+
+        if not chunks:
+            return
+
+        # Assemble full content from all chunks
+        parts: list[str] = []
+        for ch in chunks:
+            msg = ch.message if isinstance(ch, ChatGenerationChunk) else ch
+            if hasattr(msg, "content") and msg.content:
+                c = msg.content
+                if isinstance(c, str):
+                    parts.append(c)
+                elif isinstance(c, list):
+                    for block in c:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            parts.append(block.get("text", ""))
+        full_content = "".join(parts)
+
+        if has_text_tool_calls(full_content):
+            text_tool_calls = extract_tool_calls_from_text(
+                full_content,
+                available_tool_names=self._available_tool_names,
+            )
+            if text_tool_calls:
+                cleaned = clean_tool_call_text(full_content)
+                logger.debug(
+                    "Stream extracted %d text tool calls: %s",
+                    len(text_tool_calls),
+                    [tc["name"] for tc in text_tool_calls],
+                )
+                # Yield a single chunk with cleaned content + tool_calls.
+                # The agent graph aggregates chunks; a single-chunk response
+                # with both content and tool_calls works correctly.
+                first = chunks[0]
+                if isinstance(first, ChatGenerationChunk):
+                    msg = first.message
+                else:
+                    msg = first
+                if hasattr(msg, "content"):
+                    msg.content = cleaned
+                if hasattr(msg, "tool_calls"):
+                    msg.tool_calls = text_tool_calls
+                # Also set tool_call_chunks for streaming aggregation compatibility.
+                # The graph aggregates tool_call_chunks into final tool_calls;
+                # args must be a JSON string per LangChain's chunk format.
+                import json as _json
+                if hasattr(msg, "tool_call_chunks"):
+                    msg.tool_call_chunks = [
+                        {
+                            "name": tc["name"],
+                            "args": _json.dumps(tc["args"]),
+                            "id": tc["id"],
+                            "index": i,
+                        }
+                        for i, tc in enumerate(text_tool_calls)
+                    ]
+                yield first
+                return
+
+        # No text tool calls — yield all chunks as-is
+        yield from chunks
