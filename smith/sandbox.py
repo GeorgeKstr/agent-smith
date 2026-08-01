@@ -130,12 +130,13 @@ class DockerSandboxBackend(SandboxBackend):
         cmd.extend(["sh", "-c", command])
         return cmd
 
-    def exec(self, command: str, cwd: Path | str | None = None, timeout: int = 60) -> SandboxResult:
+    def exec(self, command: str, cwd: Path | str | None = None, timeout: int = 60, stdin_data: str | None = None) -> SandboxResult:
         safe_timeout = max(5, min(int(timeout), 300))
         docker_cmd = self._docker_cmd(command, safe_timeout)
         try:
             completed = subprocess.run(
                 docker_cmd,
+                input=stdin_data,
                 capture_output=True,
                 text=True,
                 timeout=safe_timeout + 10,  # extra buffer for Docker overhead

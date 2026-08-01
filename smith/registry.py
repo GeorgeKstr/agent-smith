@@ -185,7 +185,12 @@ def classify_prompt(prompt: str) -> str:
         "/api/v1",
     )
 
-    if any(w in low for w in review_words):
+    # Multi-word phrases need substring matching
+    _review_multi = [w for w in review_words if " " in w]
+    if any(p in low for p in _review_multi):
+        return "review"
+    # Single word "review" must be word-boundary matched (not a substring check)
+    if "review" in low.split():
         return "review"
 
     if any(p in low for p in implement_phrases):

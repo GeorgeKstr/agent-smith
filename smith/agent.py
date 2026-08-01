@@ -126,7 +126,10 @@ def _text_tool_prompt(profile) -> str:
         "- Each parameter is <parameter=name>VALUE</parameter> on separate lines.\n"
         "- Content goes BETWEEN the tags — NO escaping needed for quotes, newlines, or special chars.\n"
         "- Write the EXACT file content directly between <parameter=content> and </parameter>.\n"
-        "- You may include multiple <function=...>...</tool_call> blocks in one response.\n"
+        "- BATCH INDEPENDENT TOOL CALLS: Read multiple files, write multiple files, or run multiple independent commands in ONE response.\n"
+        "  Example: read two files, then write two files — all in one response.\n"
+        "  Good: <function=read>...</tool_call><function=read>...</tool_call><function=write>...</tool_call><function=write>...</tool_call>\n"
+        "  Bad: read one file → wait → read another → wait → write → wait\n"
         "- After tool results come back, you may call more tools or give your final answer.\n"
         "- DO NOT explain your reasoning. Output ONLY tool calls or the final answer.\n\n"
         "AVAILABLE TOOLS:\n"
@@ -172,6 +175,155 @@ def _split_on_operator(parts: list[str], operator: str) -> list[list[str]]:
     if current:
         segments.append(current)
     return segments
+
+
+def _get_allowed_commands(db) -> set[str]:
+    """Resolve allowed commands from DB settings / env / defaults."""
+    allowed_setting = db.get_setting("bash.allowed_commands")
+    if allowed_setting and isinstance(allowed_setting, list) and len(allowed_setting) > 0:
+        return set(allowed_setting)
+    env_val = os.getenv("SMITH_ALLOWED_COMMANDS", ",".join(sorted(ALLOWED_COMMANDS)))
+    return set(c.strip() for c in env_val.split(",") if c.strip())
+
+
+def _get_blocked_args(db) -> set[str]:
+    """Resolve blocked args from DB settings / env / defaults."""
+    blocked_setting = db.get_setting("bash.blocked_args")
+    if blocked_setting and isinstance(blocked_setting, list) and len(blocked_setting) > 0:
+        return set(blocked_setting)
+    env_val = os.getenv("SMITH_BLOCKED_ARGS", ",".join(sorted(BLOCKED_ARGS)))
+    return set(c.strip() for c in env_val.split(",") if c.strip())
+
+
+def _exec_shell_chain(
+    parts: list[str],
+    sandbox,
+    cwd: str,
+    timeout: int,
+    allowed_commands_cache: set[str] | None = None,
+    blocked_args_cache: set[str] | None = None,
+    approval_handler=None,
+    db=None,
+    run_id: str | None = None,
+    error_logger=None,
+    stdin_data: str | None = None,
+) -> dict:
+    """Recursively execute a command list that may contain shell operators.
+
+    Processes operators in shell precedence order:
+      1. ;  (sequence — lowest precedence)
+      2. && / ||  (logical chaining)
+      3. |  (pipe — highest precedence, processed per-segment)
+
+    Each leaf sub-command undergoes the same approval + sandbox checks.
+    Returns {"exit_code": int, "output": str, "operators": list[str]}.
+    """
+    out = []
+    last_exit = 0
+    operators_used: list[str] = []
+
+    # Step 1: split on ; (sequence)
+    seq_segments = _split_on_operator(parts, ";")
+    if len(seq_segments) > 1:
+        for seg in seq_segments:
+            result = _exec_shell_chain(
+                seg, sandbox, cwd, timeout,
+                allowed_commands_cache, blocked_args_cache,
+                approval_handler, db, run_id, error_logger,
+            )
+            out.append(result["output"])
+            last_exit = result["exit_code"]
+            operators_used.extend(result.get("operators", []))
+        if not operators_used:
+            operators_used.append(";")
+        return {"exit_code": last_exit, "output": "\n---\n".join(out), "operators": operators_used}
+
+    # Step 2: split on && (logical AND)
+    and_segments = _split_on_operator(parts, "&&")
+    if len(and_segments) > 1:
+        for seg in and_segments:
+            result = _exec_shell_chain(
+                seg, sandbox, cwd, timeout,
+                allowed_commands_cache, blocked_args_cache,
+                approval_handler, db, run_id, error_logger,
+            )
+            out.append(result["output"])
+            last_exit = result["exit_code"]
+            operators_used.extend(result.get("operators", []))
+            if last_exit != 0:
+                break  # short-circuit on failure
+        if not operators_used:
+            operators_used.append("&&")
+        return {"exit_code": last_exit, "output": "\n---\n".join(out), "operators": operators_used}
+
+    # Step 3: split on || (logical OR)
+    or_segments = _split_on_operator(parts, "||")
+    if len(or_segments) > 1:
+        for seg in or_segments:
+            result = _exec_shell_chain(
+                seg, sandbox, cwd, timeout,
+                allowed_commands_cache, blocked_args_cache,
+                approval_handler, db, run_id, error_logger,
+            )
+            out.append(result["output"])
+            last_exit = result["exit_code"]
+            operators_used.extend(result.get("operators", []))
+            if last_exit == 0:
+                break  # short-circuit on success
+        if not operators_used:
+            operators_used.append("||")
+        return {"exit_code": last_exit, "output": "\n---\n".join(out), "operators": operators_used}
+
+    # Step 4: split on | (pipe)
+    pipe_segments = _split_on_operator(parts, "|")
+    if len(pipe_segments) > 1:
+        pipe_input: str | None = stdin_data
+        for seg in pipe_segments:
+            cmd = " ".join(seg)
+            result = _exec_shell_chain(
+                seg, sandbox, cwd, timeout,
+                allowed_commands_cache, blocked_args_cache,
+                approval_handler, db, run_id, error_logger,
+                stdin_data=pipe_input,
+            )
+            out.append(result["output"])
+            last_exit = result["exit_code"]
+            operators_used.extend(result.get("operators", []))
+            # Pass stdout as stdin to the next pipe segment
+            pipe_input = result.get("stdout", "")
+        if not operators_used:
+            operators_used.append("|")
+        return {"exit_code": last_exit, "output": "\n---\n".join(out), "operators": operators_used}
+
+    # Leaf case: no operators — execute the single command
+    # Strip shell redirect tokens (2>&1, > /dev/null, 2>/dev/null, etc.)
+    # since the sandbox does not use a shell.
+    # For 2>&1 we merge stderr into stdout output.
+    import re as _re
+    _REDIRECT_RE = _re.compile(r"^(\d+)?(>|>>|<|>&|>\|)(/[^\s]*|\S*)?$")
+    clean_parts = [p for p in parts if not _REDIRECT_RE.match(p)]
+    has_merge_stderr = any("2>&1" in p or "2>" in p or "1>&2" in p for p in parts)
+    cmd = " ".join(clean_parts) if clean_parts else cmd
+
+    seg_result = sandbox.exec(cmd, cwd=cwd, timeout=timeout, stdin_data=stdin_data)
+    out_parts = [f"$ {cmd}", f"exit_code={seg_result.exit_code}"]
+    if seg_result.timed_out:
+        out_parts.append(f"\nCommand timed out after {timeout}s")
+    stdout = seg_result.stdout or ""
+    stderr = seg_result.stderr or ""
+    # If 2>&1 was used, merge stderr into stdout for display
+    if has_merge_stderr and stderr:
+        stdout = stdout + "\n" + stderr if stdout else stderr
+    if stdout:
+        out_parts.append("\nSTDOUT:\n" + stdout[-8000:])
+    elif stderr and not has_merge_stderr:
+        out_parts.append("\nSTDERR:\n" + stderr[-8000:])
+    return {
+        "exit_code": seg_result.exit_code,
+        "output": "\n".join(out_parts),
+        "stdout": stdout,
+        "operators": [],
+    }
 
 
 # ── Approval handler protocol ──────────────────────────────────────────────
@@ -819,8 +971,19 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             return err_msg
 
         # ── Parse command safely ───────────────────────────────────────────
+        # Normalize: ensure shell operators have spaces around them so shlex
+        # splits them as separate tokens even when the model writes e.g.
+        # "2>&1;" or "2>&1||echo" without spaces.
+        import re as _norm_re
+        _normalized = command
+        # Insert spaces around ;, &&, ||, | when they touch other chars
+        _OP_SPACER = _norm_re.compile(r"(\&\&|\|\||\;|\|)")
+        _normalized = _OP_SPACER.sub(r" \1 ", _normalized)
+        _normalized = _OP_SPACER.sub(r" \1 ", _normalized)
+        # Cleanup: collapse multiple spaces
+        _normalized = _norm_re.sub(r"\s+", " ", _normalized).strip()
         try:
-            parts = shlex.split(command)
+            parts = shlex.split(_normalized)
         except ValueError as exc:
             err_msg = (
                 f"COMMAND_PARSE_ERROR: could not parse command: {exc}\n"
@@ -834,57 +997,29 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             _log_error("bash", {"command": command}, err_msg)
             return err_msg
 
-        # ── Detect shell metacharacters the model shouldn't use ────────────
+        # ── Detect shell metacharacters and auto-process them ─────────
+        # Many models (especially Qwen, DeepSeek, etc.) habitually use shell
+        # operators like &&, ||, |, ; in bash commands. Instead of returning
+        # an error, we recursively process them in shell precedence order:
+        #   1. ;  (sequence — run all regardless of exit code)
+        #   2. && / ||  (logical chaining — short-circuit)
+        #   3. |  (piping — feed stdout of left to stdin of right)
+        #
+        # Each sub-command still goes through approval and sandbox checks.
         shell_tokens = {"&&", "||", "|", ";"}
         found_shell = [t for t in parts if t in shell_tokens]
 
-        # Auto-split shell operators — run each segment separately and combine
-        # results. Each sub-command still goes through approval and sandbox checks.
-        operator = None
         if found_shell:
-            for op in ("&&", "||", "|", ";"):
-                if op in found_shell:
-                    # Only auto-handle if only ONE operator type is present
-                    others = [t for t in found_shell if t != op]
-                    if not others:
-                        operator = op
-                        break
-
-        if operator:
-            segments = _split_on_operator(parts, operator)
-            if len(segments) > 1:
-                all_outputs = []
-                last_exit = 0
-                pipe_input: str | None = None
-                for i, seg_parts in enumerate(segments):
-                    seg_cmd = " ".join(seg_parts)
-                    seg_result = sandbox.exec(seg_cmd, cwd=root, timeout=timeout, stdin_data=pipe_input)
-                    out_parts = [f"$ {seg_cmd}", f"exit_code={seg_result.exit_code}"]
-                    if seg_result.stdout:
-                        out_parts.append("\nSTDOUT:\n" + seg_result.stdout[-8000:])
-                    if seg_result.stderr:
-                        out_parts.append("\nSTDERR:\n" + seg_result.stderr[-8000:])
-                    all_outputs.append("\n".join(out_parts))
-                    last_exit = seg_result.exit_code
-                    # For pipes: feed this segment's stdout as stdin to the next
-                    if operator == "|":
-                        pipe_input = seg_result.stdout
-                    # For &&: stop on first failure
-                    elif operator == "&&" and seg_result.exit_code != 0:
-                        break
-                    # For ||: stop on first success
-                    elif operator == "||" and seg_result.exit_code == 0:
-                        break
-                db.record_event(run_id, "tool_run_command", {"command": command, "exit_code": last_exit, "auto_split": True, "operator": operator}, actor="agent")
-                return "\n---\n".join(all_outputs)
-
-        if found_shell and not operator:
-            err_msg = (
-                f"SHELL_SYNTAX_DETECTED: found shell operator(s): {', '.join(found_shell)}.\n"
-                "This tool does NOT use a shell. Run each command as a separate call."
+            result = _exec_shell_chain(
+                parts, sandbox, root, timeout,
+                allowed_commands_cache=_get_allowed_commands(db),
+                blocked_args_cache=_get_blocked_args(db),
+                approval_handler=approval_handler,
+                db=db, run_id=run_id, error_logger=error_logger,
             )
-            _log_error("bash", {"command": command}, err_msg)
-            return err_msg
+            db.record_event(run_id, "tool_run_command", {"command": command, "exit_code": result["exit_code"], "auto_split": True, "operators": result.get("operators", [])}, actor="agent")
+            return result["output"]
+
         # Also catch leading comment chars
         if parts[0].startswith("#"):
             err_msg = (
@@ -894,6 +1029,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             _log_error("bash", {"command": command}, err_msg)
             return err_msg
 
+        # ── Single command with no shell operators ──
         try:
 
             # Read allowed commands and blocked args from settings with env/fallback
@@ -1379,41 +1515,8 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
     return [all_tools[name] for name in profile.tools if name in all_tools]
 
 
-def build_agent(db: ProjectDB, task_type: str, context_bundle: str, run_id: str | None = None, model_override: dict[str, str] | None = None, cancel_event=None, error_logger: ToolErrorLogger | None = None, model_context: list[dict[str, Any]] | None = None):
-    profile = get_task_profile(task_type)
-    llm = build_chat_model_for_task(db, task_type, model_override=model_override)
-    system_prompt = (
-        f"You are Agent Smith, a coding agent working on project: {db.root_path}\n"
-        f"Task: {task_type} — {profile.system_role}\n\n"
-        "COMPACT PROJECT CONTEXT:\n"
-        f"{context_bundle or '(no indexed context yet — explore carefully)'}\n\n"
-        "TOOLS (use these exactly):\n"
-        "- ls(path?, limit?): list a directory. Returns relative paths; dirs end with '/'.\n"
-        "- read(path, offset?, limit?): read a file. Use offset/limit for large files.\n"
-        "- write(path, content): create or completely overwrite a file.\n"
-        "- edit(path, edits): apply find/replace edits. `edits` is an array of {oldText, newText}.\n"
-        "- grep(pattern, path?, glob?, ignoreCase?, literal?, context?, limit?): search file contents.\n"
-        "- find(pattern, path?, limit?): find files by glob pattern.\n"
-        "- bash(command, timeout?): run a single shell-free command (no &&, |, >, #).\n"
-        "- fetch(url, maxChars?): fetch a web page as text. Use to look up docs.\n"
-        "- docs(name): read docs + metadata of any installed package (npm, Composer, pip, etc.). ALWAYS use this before calling any package API — NEVER guess.\n\n"
-        "CRITICAL RULES:\n"
-        "1. Read a file with `read` before editing it. Never guess paths.\n"
-        "2. To change an existing file, use `edit(path, edits=[{oldText, newText}])` with the EXACT text from the file.\n"
-        "   To create or fully replace a file, use `write(path, content)`. Never use placeholder ellipses like '... existing code ...'.\n"
-        "3. Find code with `grep`; locate files with `find`.\n"
-        "4. After `write` returns VERIFIED_WRITE_OK or `edit` returns VERIFIED_EDIT_OK, STOP. Do not re-read or re-edit.\n"
-        "5. If a write/edit fails, report the failure. Do not retry blindly.\n"
-        "6. Never loop. Max 8 tool calls per response. If you lack information, ask.\n"
-        "7. After your final tool call, output a brief summary of what you changed, then STOP.\n"
-        "8. Keep tool outputs relevant — you have a limited context budget.\n"
-        "9. If the task is done, just report what was accomplished. Do not invent extra work.\n"
-    )
-    return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event, approval_handler=None, error_logger=error_logger, model_context=model_context), system_prompt=system_prompt)
-
-
 def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str, run_id: str | None = None, model_override: dict[str, str] | None = None, cancel_event=None, approval_handler: ApprovalHandler | None = None, error_logger: ToolErrorLogger | None = None, model_context: list[dict[str, Any]] | None = None):
-    """Same as build_agent but threads an ApprovalHandler to the bash tool."""
+    """Build a LangChain agent with approval handler wired to the bash tool."""
     profile = get_task_profile(task_type)
     llm = build_chat_model_for_task(db, task_type, model_override=model_override)
     actual_handler = approval_handler or SilentDenyHandler()
@@ -1449,11 +1552,13 @@ def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str,
         "2. To change an existing file, use `edit(path, edits=[{oldText, newText}])` with the EXACT text from the file.\n"
         "   To create or fully replace a file, use `write(path, content)`. Never use placeholder ellipses like '... existing code ...'.\n"
         "3. Find code with `grep`; locate files with `find`.\n"
-        "4. After `write` returns VERIFIED_WRITE_OK or `edit` returns VERIFIED_EDIT_OK, STOP. Do not re-read or re-edit.\n"
-        "5. If a write/edit fails, report the failure. Do not retry blindly.\n"
-        "6. Never loop. Max 8 tool calls per response. If you lack information, ask.\n"
-        "7. After your final tool call, output a brief summary of what you changed, then STOP.\n"
-        "8. Keep tool outputs relevant — you have a limited context budget.\n"
+        "4. BATCH INDEPENDENT TOOL CALLS: emit multiple reads, writes, or edits in ONE response when they don't depend on each other.\n"
+        "   Good: read two files in parallel, then write both edited versions.\n"
+        "   Bad: read one file → wait → edit → wait → read another → wait → edit → wait\n"
+        "5. After `write` returns VERIFIED_WRITE_OK or `edit` returns VERIFIED_EDIT_OK, do NOT re-read or re-edit. Move on.\n"
+        "6. If a write/edit fails, report the failure. Do not retry blindly.\n"
+        "7. Never loop. If you lack information, ask or use grep/find first.\n"
+        "8. After your final tool call, output a brief summary of what you changed, then STOP.\n"
         "9. If the task is done, just report what was accomplished. Do not invent extra work.\n"
     )
     return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event, approval_handler=actual_handler, error_logger=error_logger, model_context=model_context), system_prompt=system_prompt)

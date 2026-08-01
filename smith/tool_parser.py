@@ -261,10 +261,12 @@ def _extract_gemini_call_args(body: str) -> dict[str, Any]:
 def _coerce_value(value: str) -> Any:
     """Try to convert string value to appropriate Python type.
 
-    Only coerces booleans, numbers, and null — never JSON objects/arrays.
-    Tool parameters like 'content' or 'path' are always strings, and
-    parsing JSON objects would corrupt file contents.
+    Coerces booleans, numbers, null, and JSON arrays/objects.
+    JSON parsing is attempted only when the value starts with "[" or "{".
+    If JSON parsing fails, falls back to returning the raw string (safe for
+    arbitrary file content in parameters like 'content' or 'path').
     """
+    import json as _json
     v = value.strip()
 
     # Boolean
@@ -284,6 +286,16 @@ def _coerce_value(value: str) -> Any:
     # Null
     if v.lower() in ("null", "none", "nil"):
         return None
+
+    # JSON arrays/objects — try to parse. If it fails, return raw string.
+    # This handles parameters like edits=[{"oldText":..., "newText":...}]
+    # without corrupting file content that happens to start with "[" or "{".
+    if v and (v[0] == "[" or v[0] == "{"):
+        try:
+            parsed = _json.loads(v)
+            return parsed
+        except (_json.JSONDecodeError, ValueError):
+            pass
 
     return v
 

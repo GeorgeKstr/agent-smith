@@ -130,7 +130,7 @@ class ProjectCoordinator:
                 except Exception as exc:
                     # Compaction is best-effort; don't fail the task
                     self.db.record_event(None, "compaction_error", {"error": str(exc)})
-            if review_mode in {"always"} and task_type == "implement":
+            if review_mode in {"auto", "always"} and task_type == "implement":
                 review_prompt = (
                     "Review the most recent Smith changes for correctness, missed requirements, "
                     "safety issues, and whether checks are sufficient.\n\n"
@@ -150,4 +150,5 @@ class ProjectCoordinator:
                     review_mode="never",
                     model_override=review_model_override,
                     cancel_event=cancel_event,
+                    approval_handler=approval_handler,
                 )
