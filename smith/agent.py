@@ -91,11 +91,11 @@ def _text_tool_prompt(profile) -> str:
                 "Use this to look up API docs, library references, or examples. "
                 "ALWAYS fetch docs before using unfamiliar APIs — NEVER guess."
             )
-        elif tname == "pkg":
+        elif tname == "docs":
             tool_lines.append(
-                "- pkg(name=\"better-sqlite3\"): Read the README + metadata of an installed npm package. "
-                "This tells you the EXACT API at the installed version. "
-                "ALWAYS call this before using ANY npm package — NEVER guess its API."
+                "- docs(name=\"better-sqlite3\" or \"laravel/framework\"): Read docs for an installed package. "
+                "Works with npm, Composer, pip — auto-detects ecosystem. "
+                "ALWAYS call this before using ANY package — NEVER guess its API."
             )
 
     tools_text = "\n".join(tool_lines) if tool_lines else "(no tools available)"
@@ -134,10 +134,11 @@ def _text_tool_prompt(profile) -> str:
     )
 
 
-IGNORED_DIRS = {".git", ".agent-smith", "node_modules", "venv", ".venv", "__pycache__", "dist", "build"}
+IGNORED_DIRS = {".git", ".agent-smith", "node_modules", "vendor", "venv", ".venv", "__pycache__", "dist", "build"}
 ALLOWED_COMMANDS = {
     # Runtime / package managers
     "python", "python3", "pytest", "npm", "pnpm", "node", "npx",
+    "php", "composer", "artisan",  # PHP / Laravel
     # Unix read-only / informational
     "ls", "cat", "head", "tail", "wc", "grep", "find", "echo", "which",
     "file", "stat", "du", "df", "sort", "uniq", "cut", "tr", "diff", "xargs",
@@ -1107,75 +1108,115 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             return err_msg
 
     @tool
-    def pkg(name: str) -> str:
-        """Read the README and metadata of an installed npm package from node_modules.
+    def docs(name: str) -> str:
+        """Read documentation for an installed package from the project's package manager.
 
-        Use this to learn the EXACT API of a package at its installed version.
-        This is your primary tool for understanding how to use dependencies.
-        ALWAYS call this before using an npm package — NEVER guess its API.
+        Works across ecosystems: npm (node_modules), Composer (vendor), pip, etc.
+        Auto-detects where to look based on project files. Falls back to fetching
+        from the package registry if not found locally.
+
+        This is your PRIMARY tool for understanding any library API.
+        ALWAYS call this before using a package — NEVER guess its API.
 
         Args:
-            name: The npm package name (e.g. "better-sqlite3", "express").
+            name: The package name (e.g. "better-sqlite3", "laravel/framework", "requests").
         """
         import json as _json
 
-        name = name.strip().replace("..", "").replace("/", "").replace("\\", "")
+        name = name.strip().replace("..", "").replace("\\", "")
         if not name:
-            return "PKG_ERROR: package name required"
-
-        pkg_dir = root / "node_modules" / name
-        if not pkg_dir.is_dir():
-            # Try to find it: some packages are nested
-            return f"PKG_ERROR: package '{name}' not found in node_modules. Is it installed?"
+            return "DOCS_ERROR: package name required"
 
         parts: list[str] = []
+        found = False
 
-        # 1. package.json — version and metadata
-        pkg_json_path = pkg_dir / "package.json"
-        if pkg_json_path.exists():
-            try:
-                pkg_data = _json.loads(pkg_json_path.read_text(encoding="utf-8"))
-                parts.append(f"## {pkg_data.get('name', name)} v{pkg_data.get('version', '?')}")
-                desc = pkg_data.get("description", "")
-                if desc:
-                    parts.append(f"{desc}")
-                main = pkg_data.get("main", "")
-                if main:
-                    parts.append(f"Main: {main}")
-                exports = pkg_data.get("exports", "")
-                if exports:
-                    if isinstance(exports, dict):
-                        exp_keys = [k for k in exports if k.startswith(".")]
-                        if exp_keys:
-                            parts.append(f"Exports: {', '.join(exp_keys[:8])}")
-                    elif isinstance(exports, str):
-                        parts.append(f"Exports: {exports}")
-                types = pkg_data.get("types", "") or pkg_data.get("typings", "")
-                if types:
-                    parts.append(f"Types: {types}")
-            except Exception:
-                pass
-
-        # 2. README — the API docs
-        for readme_name in ("README.md", "README.markdown", "readme.md", "README"):
-            readme_path = pkg_dir / readme_name
-            if readme_path.exists():
-                try:
-                    text = readme_path.read_text(encoding="utf-8", errors="replace")
-                    # Take first ~4000 chars — that's usually the API overview
-                    text = text[:4000]
-                    if len(text) >= 4000:
-                        text = text[:4000] + "\n\n... (truncated)"
-                    parts.append(f"\n## README\n{text}")
-                except Exception:
-                    pass
+        # ── Detect package ecosystem and look for local docs ──────────
+        # npm: node_modules/<name>/package.json + README.md
+        for nm_dir in [root / "node_modules" / name]:
+            if nm_dir.is_dir():
+                found = True
+                pkg_json = nm_dir / "package.json"
+                if pkg_json.exists():
+                    try:
+                        data = _json.loads(pkg_json.read_text(encoding="utf-8"))
+                        parts.append(f"## {data.get('name', name)} v{data.get('version', '?')} (npm)")
+                        if data.get("description"):
+                            parts.append(data["description"])
+                    except Exception:
+                        pass
+                for rm in ("README.md", "README.markdown", "readme.md", "README"):
+                    rp = nm_dir / rm
+                    if rp.exists():
+                        text = rp.read_text(encoding="utf-8", errors="replace")[:4000]
+                        parts.append(f"\n{text}")
+                        break
                 break
 
+        # Composer: vendor/<name>/composer.json + README.md
+        if not found:
+            vendor_dir = root / "vendor" / name
+            if vendor_dir.is_dir():
+                found = True
+                cjson = vendor_dir / "composer.json"
+                if cjson.exists():
+                    try:
+                        data = _json.loads(cjson.read_text(encoding="utf-8"))
+                        parts.append(f"## {data.get('name', name)} v{data.get('version', '?')} (composer)")
+                        if data.get("description"):
+                            parts.append(data["description"])
+                    except Exception:
+                        pass
+                for rm in ("README.md", "README.markdown", "readme.md", "README"):
+                    rp = vendor_dir / rm
+                    if rp.exists():
+                        text = rp.read_text(encoding="utf-8", errors="replace")[:4000]
+                        parts.append(f"\n{text}")
+                        break
+
+        # ── Fallback: fetch from package registry ────────────────────
+        if not found:
+            # Try to guess the registry from the name format
+            if "/" in name:
+                # Looks like a Composer package (vendor/name)
+                url = f"https://repo.packagist.org/p2/{name}.json"
+                label = "packagist"
+            else:
+                # Try npm first (most common)
+                url = f"https://registry.npmjs.org/{name}/latest"
+                label = "npm"
+
+            try:
+                from urllib.request import Request, urlopen
+                req = Request(url, headers={"User-Agent": "Agent-Smith/1.0"})
+                with urlopen(req, timeout=10) as resp:
+                    raw = resp.read(100 * 1024)
+                data = _json.loads(raw.decode("utf-8", errors="replace"))
+
+                if label == "packagist":
+                    pkg_data = data.get("packages", {}).get(name, [{}])[0]
+                    parts.append(f"## {name} v{pkg_data.get('version', '?')} ({label})")
+                    if pkg_data.get("description"):
+                        parts.append(pkg_data["description"])
+                    # Try to also fetch README from GitHub or homepage
+                    source_url = pkg_data.get("source", {}).get("url", "")
+                    if source_url:
+                        parts.append(f"Source: {source_url}")
+                else:
+                    parts.append(f"## {data.get('name', name)} v{data.get('version', '?')} ({label})")
+                    if data.get("description"):
+                        parts.append(data["description"])
+                    readme = data.get("readme", "") or data.get("README", "")
+                    if readme:
+                        parts.append(f"\n{readme[:4000]}")
+            except Exception as exc:
+                parts.append(f"(could not fetch from {label} registry: {exc})")
+                parts.append("Try `fetch` with a direct URL for this package's documentation.")
+
         if not parts:
-            return f"PKG_ERROR: no readable metadata found for '{name}'"
+            return f"DOCS_ERROR: could not find docs for '{name}'. Try `fetch` with a direct URL."
 
         result = "\n".join(parts)
-        db.record_event(run_id, "tool_pkg", {"name": name, "chars": len(result)}, actor="agent")
+        db.record_event(run_id, "tool_docs", {"name": name, "chars": len(result)}, actor="agent")
         return result
 
     @tool
@@ -1305,7 +1346,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         "grep": grep,
         "find": find,
         "fetch": fetch,
-        "pkg": pkg,
+        "docs": docs,
         "bash": bash,
         "search_project_context": search_project_context,
         "get_file_summary": get_file_summary,
@@ -1332,7 +1373,7 @@ def build_agent(db: ProjectDB, task_type: str, context_bundle: str, run_id: str 
         "- find(pattern, path?, limit?): find files by glob pattern.\n"
         "- bash(command, timeout?): run a single shell-free command (no &&, |, >, #).\n"
         "- fetch(url, maxChars?): fetch a web page as text. Use to look up docs.\n"
-        "- pkg(name): read the README + metadata of an installed npm package. ALWAYS use this before calling any npm package API — it tells you the EXACT API at the installed version.\n\n"
+        "- docs(name): read docs + metadata of any installed package (npm, Composer, pip, etc.). ALWAYS use this before calling any package API — NEVER guess.\n\n"
         "CRITICAL RULES:\n"
         "1. Read a file with `read` before editing it. Never guess paths.\n"
         "2. To change an existing file, use `edit(path, edits=[{oldText, newText}])` with the EXACT text from the file.\n"
@@ -1370,7 +1411,7 @@ def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str,
             "- grep(pattern, path?, glob?, ignoreCase?, literal?, context?, limit?): search file contents.\n"
             "- find(pattern, path?, limit?): find files by glob pattern.\n"
             "- fetch(url, maxChars?): fetch a web page as text. Use to look up docs.\n"
-            "- pkg(name): read README + metadata of an installed npm package.\n"
+            "- docs(name): read docs + metadata of any installed package (npm, Composer, pip, etc.).\n"
             "- bash(command, timeout?): run a single shell-free command (no &&, |, >, #).\n\n"
         )
 

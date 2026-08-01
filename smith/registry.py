@@ -50,7 +50,7 @@ TASK_PROFILES: dict[str, TaskProfile] = {
     "ask": TaskProfile(
         name="ask",
         model_profile="fast",
-        tools=["ls", "read", "grep", "find", "fetch", "pkg", "search_project_context", "get_file_summary", "get_related_files"],
+        tools=["ls", "read", "grep", "find", "fetch", "docs", "search_project_context", "get_file_summary", "get_related_files"],
         context_budget_chars=16000,
         system_role="Answer questions about the project. Prefer indexed context before broad file reads.",
     ),
@@ -65,7 +65,7 @@ TASK_PROFILES: dict[str, TaskProfile] = {
             "grep",
             "find",
             "fetch",
-            "pkg",
+            "docs",
             "bash",
             "search_project_context",
             "get_file_summary",
@@ -79,7 +79,7 @@ TASK_PROFILES: dict[str, TaskProfile] = {
     "review": TaskProfile(
         name="review",
         model_profile="reviewer",
-        tools=["read", "grep", "fetch", "pkg", "bash", "search_project_context", "get_file_summary", "get_run_changes"],
+        tools=["read", "grep", "fetch", "docs", "bash", "search_project_context", "get_file_summary", "get_run_changes"],
         context_budget_chars=24000,
         system_role=(
             "Review the last implementation. Find correctness, safety, or requirement issues. Do not edit files.\n"
