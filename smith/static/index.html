@@ -3062,7 +3062,6 @@ Return only valid JSON in this shape:
         const customPrompt = initPrompt ? `${initPrompt}\n\n` : "";
         const defaultInitPrompt = (
           `${customPrompt}Project setup. Do these steps IN ORDER using tools. NEVER delegate to the user.\n\n` +
-          `CRITICAL RULE: NEVER touch, delete, move, or modify the .agent-smith directory or anything inside it — it contains the agent's own database and state. Commands targeting it are blocked anyway.\n\n` +
           `Flow goal: ${(flowGoal || 'See tasks').slice(0, 200)}\n` +
           `Tasks: ${tasksSummary.slice(0, 600)}\n\n` +
           `STEP 1 — call: bash('which php'), bash('which composer'), bash('which node'), bash('which npm')\n` +

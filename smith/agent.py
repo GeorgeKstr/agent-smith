@@ -167,6 +167,9 @@ def _text_tool_prompt(profile, model_id: str = "") -> str:
 
 
 IGNORED_DIRS = {".git", ".agent-smith", "node_modules", "vendor", "venv", ".venv", "__pycache__", "dist", "build"}
+# Directories the write/edit tools refuse. .agent-smith is deliberately NOT
+# here — the agent may write skeletal context / state files inside it.
+WRITE_BLOCKED_DIRS = {".git", "node_modules", "vendor", "venv", ".venv", "__pycache__", "dist", "build"}
 ALLOWED_COMMANDS = {
     # Runtime / package managers
     "python", "python3", "pytest", "pip", "pip3", "npm", "pnpm", "yarn", "node", "npx",
@@ -211,24 +214,22 @@ def _split_on_operator(parts: list[str], operator: str) -> list[list[str]]:
 
 
 def _check_protected_paths(parts: list[str], root: str | Path) -> str | None:
-    """Reject destructive commands that escape the workspace or target Smith's
-    internal .agent-smith directory.
+    """Reject destructive commands whose operands escape the workspace root.
 
     Rules for destructive executables (rm, rmdir, mv, chmod, chown, truncate,
-    dd):
-      1. every operand path must resolve inside the workspace root
-      2. .agent-smith/ (live DB, skeletal context, logs) is always off-limits
+    dd): every operand path must resolve inside the selected project root.
+    Anything inside the project — including .agent-smith — is the agent's to
+    manage; only escapes outside the project are blocked.
 
     Returns an error message if blocked, else None.
     """
     _DESTRUCTIVE = {"rm", "rmdir", "mv", "chmod", "chown", "truncate", "dd"}
     # Find destructive executables anywhere in the token list, so wrapping
-    # commands like `sudo rm -rf .agent-smith` are caught too.
+    # commands like `sudo rm -rf /etc` are caught too.
     idxs = [i for i, p in enumerate(parts) if Path(p).name in _DESTRUCTIVE]
     if not idxs:
         return None
     root_resolved = Path(root).expanduser().resolve()
-    smith_dir = root_resolved / ".agent-smith"
 
     def _path_arg(arg: str) -> str | None:
         """Extract a filesystem path from an argument token.
@@ -267,12 +268,6 @@ def _check_protected_paths(parts: list[str], root: str | Path) -> str | None:
                 target = target.resolve()
             except Exception:
                 continue
-            if target == smith_dir or smith_dir in target.parents:
-                return (
-                    f"BLOCKED: cannot {exe} '{raw}' — .agent-smith/ "
-                    "holds Smith's live database, skeletal context and logs. "
-                    "Deleting or moving it would destroy agent state."
-                )
             if target != root_resolved and root_resolved not in target.parents:
                 return (
                     f"BLOCKED: cannot {exe} '{raw}' — destructive commands are only "
@@ -525,6 +520,11 @@ def is_ignored_rel(path: Path) -> bool:
     return any(part in IGNORED_DIRS for part in path.parts)
 
 
+def is_write_blocked_rel(path: Path) -> bool:
+    """Same as is_ignored_rel but allows .agent-smith (agent state files)."""
+    return any(part in WRITE_BLOCKED_DIRS for part in path.parts)
+
+
 # ── Tool input schema (mirrors the pi agent exactly) ───────────────────────
 # Local models are far more reliable when tool names + parameter names match a
 # schema they have seen in training. These mirror pi's TypeBox schemas 1:1.
@@ -717,7 +717,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             target = safe_path(root, path)
             rel = target.relative_to(root)
             rel_str = str(rel)
-            if is_ignored_rel(rel):
+            if is_write_blocked_rel(rel):
                 err_msg = f"WRITE_BLOCKED: Refusing ignored path: {path}"
                 _log_error("write", {"path": path, "content_chars": len(content)}, err_msg)
                 return err_msg
@@ -898,7 +898,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             target = safe_path(root, path)
             rel = target.relative_to(root)
             rel_str = str(rel)
-            if is_ignored_rel(rel):
+            if is_write_blocked_rel(rel):
                 err_msg = f"EDIT_BLOCKED: Refusing ignored path: {path}"
                 _log_error("edit", {"path": path, "edits_count": len(edits)}, err_msg)
                 return err_msg
