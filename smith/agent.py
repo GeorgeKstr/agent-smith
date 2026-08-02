@@ -210,6 +210,43 @@ def _split_on_operator(parts: list[str], operator: str) -> list[list[str]]:
     return segments
 
 
+def _check_protected_paths(parts: list[str], root: str | Path) -> str | None:
+    """Reject destructive commands that target Smith's internal .agent-smith
+    directory (the live DB, skeletal context, logs). Returns an error message
+    if blocked, else None.
+
+    The model must NEVER be able to delete/move/truncate its own state — that
+    is what previously wiped smith.db mid-flow and broke skeletal context.
+    """
+    _DESTRUCTIVE = {"rm", "rmdir", "mv", "chmod", "chown", "truncate", "dd"}
+    # Find destructive executables anywhere in the token list, so wrapping
+    # commands like `sudo rm -rf .agent-smith` are caught too.
+    idxs = [i for i, p in enumerate(parts) if Path(p).name in _DESTRUCTIVE]
+    if not idxs:
+        return None
+    root_resolved = Path(root).expanduser().resolve()
+    smith_dir = root_resolved / ".agent-smith"
+    for idx in idxs:
+        for arg in parts[idx + 1:]:
+            arg = arg.strip()
+            if not arg or arg.startswith("-"):
+                continue  # flags like -rf, -r, -f, --force are harmless alone
+            target = Path(arg).expanduser()
+            if not target.is_absolute():
+                target = root_resolved / target
+            try:
+                target = target.resolve()
+            except Exception:
+                continue
+            if target == smith_dir or smith_dir in target.parents:
+                return (
+                    f"BLOCKED: cannot {Path(parts[idx]).name} '{arg}' — .agent-smith/ "
+                    "holds Smith's live database, skeletal context and logs. "
+                    "Deleting or moving it would destroy agent state. Use other paths."
+                )
+    return None
+
+
 def _get_allowed_commands(db) -> set[str]:
     """Resolve allowed commands from DB settings / env / defaults."""
     allowed_setting = db.get_setting("bash.allowed_commands")
@@ -333,6 +370,10 @@ def _exec_shell_chain(
     # since the sandbox does not use a shell.
     # For 2>&1 we merge stderr into stdout output.
     import re as _re
+    # Defense in depth: never touch .agent-smith even from nested segments.
+    protected_err = _check_protected_paths(parts, cwd)
+    if protected_err:
+        return {"exit_code": 1, "output": protected_err, "operators": []}
     _REDIRECT_RE = _re.compile(r"^(\d+)?(>|>>|<|>&|>\|)(/[^\s]*|\S*)?$")
     clean_parts = [p for p in parts if not _REDIRECT_RE.match(p)]
     has_merge_stderr = any("2>&1" in p or "2>" in p or "1>&2" in p for p in parts)
@@ -1038,6 +1079,15 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             err_msg = "No command provided."
             _log_error("bash", {"command": command}, err_msg)
             return err_msg
+
+        # ── Protect Smith's internal state ──
+        # Never allow the model to delete/move/truncate .agent-smith (the live
+        # DB, skeletal context, logs). Checked before operator processing so
+        # chained commands like `rm -rf .agent-smith && echo done` are caught.
+        protected_err = _check_protected_paths(parts, root)
+        if protected_err:
+            _log_error("bash", {"command": command}, protected_err)
+            return protected_err
 
         # ── Detect shell metacharacters and auto-process them ─────────
         # Many models (especially Qwen, DeepSeek, etc.) habitually use shell

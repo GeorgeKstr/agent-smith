@@ -519,8 +519,12 @@ def doctor():
 
 def _project_picker_suggestions() -> list[Path]:
     home = Path.home()
+    try:
+        cwd = Path.cwd()
+    except (FileNotFoundError, OSError):
+        cwd = home
     roots = [
-        Path.cwd(),
+        cwd,
         home / "Desktop" / "Projects",
         home / "Projects",
         home / "Desktop",
@@ -615,8 +619,12 @@ def _web_project_picker() -> Path | None:
         return "/?path=" + urllib.parse.quote(path)
 
     def render_page(error: str = "", current_path: str | None = None) -> bytes:
-        preferred = Path.home() / "Desktop" / "Projects"
-        default_path = str(preferred.resolve()) if preferred.exists() else str(Path.cwd().resolve())
+        # Start the picker in the directory where the user ran `smith app`
+        try:
+            default_path = str(Path.cwd().resolve())
+        except (FileNotFoundError, OSError):
+            # CWD was deleted (e.g. temp dir) — fall back to home
+            default_path = str(Path.home())
         current_raw = current_path or default_path
 
         try:

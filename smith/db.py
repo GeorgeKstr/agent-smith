@@ -35,6 +35,8 @@ def json_loads(value: str, default: Any = None) -> Any:
 
 
 class ProjectDB:
+    _schema_text_cache: str | None = None
+
     def __init__(self, root_path: str | Path):
         self.root_path = Path(root_path).expanduser().resolve()
         self.smith_dir = self.root_path / ".agent-smith"
@@ -42,72 +44,196 @@ class ProjectDB:
         self.project_id = hashlib.sha256(str(self.root_path).encode()).hexdigest()[:16]
         self.project_name = self.root_path.name
 
+    @classmethod
+    def _schema_text(cls) -> str:
+        """Read schema.sql once (cached)."""
+        if cls._schema_text_cache is None:
+            schema_path = Path(__file__).with_name("schema.sql")
+            cls._schema_text_cache = schema_path.read_text(encoding="utf-8")
+        return cls._schema_text_cache
+
+    # Minimal fallback DDL used only if the full schema script fails
+    # (e.g. FTS5 unavailable). Mirrors schema.sql column definitions.
+    _critical_ddl = [
+        """CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY, root_path TEXT NOT NULL, name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )""",
+        """CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY, value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )""",
+        """CREATE TABLE IF NOT EXISTS runs (
+            id TEXT PRIMARY KEY, project_id TEXT NOT NULL, task_type TEXT NOT NULL,
+            review_mode TEXT NOT NULL DEFAULT 'auto',
+            started_at TEXT NOT NULL DEFAULT (datetime('now')), ended_at TEXT,
+            status TEXT NOT NULL DEFAULT 'running', user_prompt TEXT NOT NULL,
+            final_response TEXT, final_summary TEXT, model_name TEXT,
+            input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER,
+            error TEXT, full_transcript TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT,
+            project_id TEXT NOT NULL, ts TEXT NOT NULL DEFAULT (datetime('now')),
+            type TEXT NOT NULL, actor TEXT NOT NULL DEFAULT 'system',
+            payload_json TEXT NOT NULL DEFAULT '{}'
+        )""",
+        """CREATE TABLE IF NOT EXISTS tool_calls (
+            id TEXT PRIMARY KEY, run_id TEXT NOT NULL, tool_name TEXT NOT NULL,
+            started_at TEXT NOT NULL DEFAULT (datetime('now')), ended_at TEXT,
+            status TEXT NOT NULL DEFAULT 'running', args_json TEXT NOT NULL DEFAULT '{}',
+            result_text TEXT, error TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS files (
+            path TEXT PRIMARY KEY, project_id TEXT NOT NULL, language TEXT, kind TEXT,
+            size_bytes INTEGER, mtime REAL, sha256 TEXT, importance INTEGER NOT NULL DEFAULT 0,
+            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            is_deleted INTEGER NOT NULL DEFAULT 0
+        )""",
+        """CREATE TABLE IF NOT EXISTS file_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL,
+            project_id TEXT NOT NULL, path TEXT NOT NULL, change_type TEXT NOT NULL,
+            before_sha256 TEXT, after_sha256 TEXT, diff_text TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )""",
+        """CREATE TABLE IF NOT EXISTS context_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL,
+            kind TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active', priority INTEGER NOT NULL DEFAULT 0,
+            source_run_id TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            metadata_json TEXT NOT NULL DEFAULT '{}'
+        )""",
+        """CREATE TABLE IF NOT EXISTS index_state (
+            project_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'idle',
+            mode TEXT, paused INTEGER NOT NULL DEFAULT 0, current_job_id TEXT,
+            last_scan_at TEXT, last_full_reindex_at TEXT, files_total INTEGER DEFAULT 0,
+            files_done INTEGER DEFAULT 0, files_dirty INTEGER DEFAULT 0, message TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS file_index_status (
+            project_id TEXT NOT NULL, path TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'unknown', last_hash TEXT,
+            last_indexed_hash TEXT, last_seen_at TEXT, last_indexed_at TEXT, error TEXT,
+            priority INTEGER NOT NULL DEFAULT 100, PRIMARY KEY (project_id, path)
+        )""",
+        """CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY, project_id TEXT NOT NULL, kind TEXT NOT NULL,
+            priority INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'queued',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')), started_at TEXT,
+            ended_at TEXT, error TEXT, progress_current INTEGER DEFAULT 0,
+            progress_total INTEGER DEFAULT 0
+        )""",
+        """CREATE TABLE IF NOT EXISTS approvals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL,
+            project_id TEXT NOT NULL, request_type TEXT NOT NULL,
+            request_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+            decided_at TEXT, decision_note TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS compaction_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL,
+            project_id TEXT NOT NULL, summary TEXT NOT NULL,
+            token_count INTEGER NOT NULL DEFAULT 0, message_count INTEGER NOT NULL DEFAULT 0,
+            files_changed_json TEXT NOT NULL DEFAULT '[]',
+            commands_run_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )""",
+        """CREATE TABLE IF NOT EXISTS run_change_decisions (
+            run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', decided_at TEXT, note TEXT
+        )""",
+    ]
+
+    def _ensure_schema(self, con) -> bool:
+        """Idempotent: make sure all tables exist. Returns True if runs is queryable."""
+        try:
+            con.executescript(self._schema_text())
+        except Exception:
+            # Full script failed (e.g. FTS5 unavailable) — build core tables manually.
+            for ddl in self._critical_ddl:
+                try:
+                    con.execute(ddl)
+                except Exception:
+                    pass
+        try:
+            con.execute("SELECT 1 FROM runs LIMIT 1")
+            return True
+        except Exception:
+            return False
+
+    def _seed_project(self, con) -> None:
+        """Idempotent project + index_state rows."""
+        con.execute(
+            """INSERT INTO projects(id, root_path, name, created_at, updated_at)
+               VALUES (?, ?, ?, datetime('now'), datetime('now'))
+               ON CONFLICT(id) DO UPDATE SET
+                 root_path=excluded.root_path, name=excluded.name,
+                 updated_at=datetime('now')""",
+            (self.project_id, str(self.root_path), self.project_name),
+        )
+        con.execute(
+            "INSERT INTO index_state(project_id, status, message) VALUES (?,'idle','Ready') ON CONFLICT(project_id) DO NOTHING",
+            (self.project_id,),
+        )
+
     def init(self) -> None:
-        self.smith_dir.mkdir(parents=True, exist_ok=True)
-        schema_path = Path(__file__).with_name("schema.sql")
-        schema = schema_path.read_text(encoding="utf-8")
+        """Bootstrap the DB. connect() also self-heals on every use, so this is
+        only needed for migrations — a missing/corrupt DB file is rebuilt
+        automatically on first access."""
         with self.connect() as con:
-            con.executescript(schema)
             # Migration: add full_transcript column to runs
             try:
                 con.execute("ALTER TABLE runs ADD COLUMN full_transcript TEXT")
             except Exception:
                 pass  # column already exists
-            # Migration: compaction_entries table (created by compaction module)
-            try:
-                con.executescript("""
-                    CREATE TABLE IF NOT EXISTS compaction_entries (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        run_id TEXT NOT NULL,
-                        project_id TEXT NOT NULL,
-                        summary TEXT NOT NULL,
-                        token_count INTEGER NOT NULL DEFAULT 0,
-                        message_count INTEGER NOT NULL DEFAULT 0,
-                        files_changed_json TEXT NOT NULL DEFAULT '[]',
-                        commands_run_json TEXT NOT NULL DEFAULT '[]',
-                        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_compaction_project
-                        ON compaction_entries(project_id, created_at DESC);
-                """)
-            except Exception:
-                pass
-            con.execute(
-                """
-                INSERT INTO projects(id, root_path, name, updated_at)
-                VALUES (?, ?, ?, datetime('now'))
-                ON CONFLICT(id) DO UPDATE SET
-                  root_path=excluded.root_path,
-                  name=excluded.name,
-                  updated_at=datetime('now')
-                """,
-                (self.project_id, str(self.root_path), self.project_name),
-            )
-            con.execute(
-                """
-                INSERT INTO index_state(project_id, status, message)
-                VALUES (?, 'idle', 'Ready')
-                ON CONFLICT(project_id) DO NOTHING
-                """,
-                (self.project_id,),
-            )
 
     @contextmanager
     def connect(self):
+        """Open a connection and guarantee the schema exists — even if the DB
+        file was deleted, truncated, or corrupted since the last open. This is
+        the single entry point for all DB access, so the agent never relies on
+        a pre-existing database."""
         self.smith_dir.mkdir(parents=True, exist_ok=True)
-        con = sqlite3.connect(self.db_path, timeout=30)
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA journal_mode=WAL")
-        con.execute("PRAGMA foreign_keys=ON")
-        con.execute("PRAGMA busy_timeout=5000")
+
+        def _open():
+            con = sqlite3.connect(self.db_path, timeout=30)
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA journal_mode=WAL")
+            con.execute("PRAGMA foreign_keys=ON")
+            con.execute("PRAGMA busy_timeout=5000")
+            return con
+
+        con = _open()
         try:
+            if not self._ensure_schema(con):
+                # DB file exists but can't hold the schema (corrupt) — nuke and rebuild.
+                try:
+                    con.close()
+                except Exception:
+                    pass
+                for p in (
+                    self.db_path,
+                    self.db_path.with_name(self.db_path.name + "-wal"),
+                    self.db_path.with_name(self.db_path.name + "-shm"),
+                ):
+                    try:
+                        p.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                con = _open()
+                self._ensure_schema(con)
+            self._seed_project(con)
             yield con
             con.commit()
         except Exception:
             con.rollback()
             raise
         finally:
-            con.close()
+            try:
+                con.close()
+            except Exception:
+                pass
 
     def start_run(self, prompt: str, task_type: str, review_mode: str = "auto") -> str:
         run_id = now_id("run_")

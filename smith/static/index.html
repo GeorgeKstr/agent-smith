@@ -3062,6 +3062,7 @@ Return only valid JSON in this shape:
         const customPrompt = initPrompt ? `${initPrompt}\n\n` : "";
         const defaultInitPrompt = (
           `${customPrompt}Project setup. Do these steps IN ORDER using tools. NEVER delegate to the user.\n\n` +
+          `CRITICAL RULE: NEVER touch, delete, move, or modify the .agent-smith directory or anything inside it — it contains the agent's own database and state. Commands targeting it are blocked anyway.\n\n` +
           `Flow goal: ${(flowGoal || 'See tasks').slice(0, 200)}\n` +
           `Tasks: ${tasksSummary.slice(0, 600)}\n\n` +
           `STEP 1 — call: bash('which php'), bash('which composer'), bash('which node'), bash('which npm')\n` +
@@ -3206,12 +3207,23 @@ Return only valid JSON in this shape:
           $("taskStatus").textContent = `${label} (${elapsed}s)`;
         }
       };
+      // Throttled render: use rAF for guaranteed paint during streaming
+      let _renderPending = false;
+      function throttledRender() {
+        if (_renderPending) return;
+        _renderPending = true;
+        requestAnimationFrame(() => {
+          _renderPending = false;
+          outEl.innerHTML = renderOut(raw);
+          $("taskOutput").scrollTop = $("taskOutput").scrollHeight;
+        });
+      }
+
       // Patch onToken wrappers to track token recency and store raw text
       function wrapOnToken(fn) {
         return (txt) => {
           _lastTokenTime = Date.now();
           $("taskStatus").textContent = $("taskStatus").textContent.replace(/\s*\(\d+\.?\d*s\)$/, '');
-          // Store raw text on the output element for raw/md toggle
           outEl.dataset.raw = (outEl.dataset.raw || "") + txt;
           fn(txt);
         };
@@ -3232,10 +3244,13 @@ Return only valid JSON in this shape:
         const augmentedPrompt = flowHeader + step.prompt;
         await runSmithPrompt(augmentedPrompt + implSystemNote, step, wrapOnToken((txt) => {
           raw += txt;
-          outEl.innerHTML = taskFlow.rawMode ? `<pre style="white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:#05080b;border-radius:6px;padding:8px">${escapeHtml(raw)}</pre>` : renderMarkdown(raw);
-          $("taskOutput").scrollTop = $("taskOutput").scrollHeight;
+          throttledRender();
         }), showElapsed("⏳ generating..."));
         checkSkip();
+        // Final render
+        _renderPending = false;
+        outEl.innerHTML = renderOut(raw);
+        $("taskOutput").scrollTop = $("taskOutput").scrollHeight;
 
         // Capture run ID for potential revert
         try {
@@ -3290,10 +3305,10 @@ After your verdict, include a section titled ## Review Notes at the end of your 
             }, wrapOnToken((txt) => {
               reviewText += txt;
               raw += txt;
-              outEl.innerHTML = renderOut(raw);
-              $("taskOutput").scrollTop = $("taskOutput").scrollHeight;
+              throttledRender();
             }), showElapsed("⏳ reviewing..."));
             checkSkip();
+            _renderPending = false; outEl.innerHTML = renderOut(raw);
 
             // Deduplicate: if the review text has repeated "SATISFACTORY:" blocks, keep only the first
             function deduplicateReview(text) {
@@ -3360,10 +3375,10 @@ After making changes, include a section titled ## Implementation Notes at the en
               model_id: step.model_id
             }, wrapOnToken((txt) => {
               raw += txt;
-              outEl.innerHTML = renderOut(raw);
-              $("taskOutput").scrollTop = $("taskOutput").scrollHeight;
+              throttledRender();
             }), showElapsed("⏳ re-implementing..."));
             checkSkip();
+            _renderPending = false; outEl.innerHTML = renderOut(raw);
 
             // Capture implementation notes from this retry for the next iteration
             implNotes = extractNotes(raw, "Implementation Notes");
