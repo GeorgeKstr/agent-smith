@@ -356,31 +356,43 @@ def _get_saved_context_length(model_id: str) -> int | None:
     return None
 
 
+_MAX_OUTPUT_TOKENS = 4096  # hard cap on a single model response (tool call + prose)
+
+
 def _resolve_max_tokens(provider_id: str, model_id: str, fallback: int | None = None) -> int:
-    """Resolve max_tokens: prefer saved LM Studio config, then model max, then env, then fallback."""
-    # 1. LM Studio saved per-model config (user's optimized setting)
+    """Resolve max_tokens: prefer saved LM Studio config, then model max, then env, then fallback.
+
+    The saved LM Studio value is the model's CONTEXT WINDOW (input budget), NOT
+    an output budget — using it as max_tokens let small models ramble to 46k
+    tokens in one response. The returned value is therefore capped to the
+    caller's fallback (task profile output budget) or _MAX_OUTPUT_TOKENS.
+    """
+    # 1. LM Studio saved per-model config (the model's input context window)
     saved_ctx = _get_saved_context_length(model_id)
     if saved_ctx:
-        return saved_ctx
-
-    # 2. Model's maximum context_length from server metadata
-    meta = _fetch_model_meta(provider_id, model_id)
-    if meta and isinstance(meta, dict):
-        ctx = meta.get("max_context_length") or meta.get("context_length") or meta.get("context_window")
-        if isinstance(ctx, (int, float)) and ctx > 0:
-            return int(ctx)
+        resolved = saved_ctx
+    else:
+        # 2. Model's maximum context_length from server metadata
+        meta = _fetch_model_meta(provider_id, model_id)
+        if meta and isinstance(meta, dict):
+            ctx = meta.get("max_context_length") or meta.get("context_length") or meta.get("context_window")
+            if isinstance(ctx, (int, float)) and ctx > 0:
+                resolved = int(ctx)
+            else:
+                resolved = 0
+        else:
+            resolved = 0
 
     # 3. Env override
     env_val = os.getenv("SMITH_MAX_TOKENS", "").strip()
     if env_val.isdigit():
-        return int(env_val)
+        resolved = int(env_val)
 
-    # 4. Caller-provided fallback
-    if fallback:
-        return fallback
-
-    # 5. Hard default
-    return 4096
+    # 4. Caller-provided output budget, clamped to the hard cap
+    budget = fallback if (fallback and 0 < fallback <= _MAX_OUTPUT_TOKENS) else _MAX_OUTPUT_TOKENS
+    if resolved <= 0:
+        return budget
+    return min(resolved, budget)
 
 
 def build_chat_model_for_task(

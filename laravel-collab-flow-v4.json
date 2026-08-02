@@ -322,6 +322,15 @@
             "items.update",
             "lists.collaborators.store"
           ]
+        },
+        {
+          "name": "auth-routes",
+          "file": "routes/web.php",
+          "contains": [
+            "name('login')",
+            "name('register')",
+            "name('logout')"
+          ]
         }
       ]
     },
