@@ -41,7 +41,8 @@
         {
           "name": "app-tmp-removed",
           "file": "app_tmp",
-          "not_exists": true
+          "not_exists": true,
+          "hint": "run bash('rm -rf app_tmp')"
         },
         {
           "name": "env-sqlite",
@@ -52,11 +53,13 @@
           "not_contains": [
             "DB_HOST",
             "DB_DATABASE"
-          ]
+          ],
+          "hint": "use write to set DB_CONNECTION=sqlite and DELETE the DB_HOST/DB_PORT/DB_DATABASE/DB_USERNAME/DB_PASSWORD lines"
         },
         {
           "name": "sqlite-file",
-          "file": "database/database.sqlite"
+          "file": "database/database.sqlite",
+          "hint": "run bash('touch database/database.sqlite')"
         },
         {
           "name": "phpunit-sqlite",
@@ -64,7 +67,8 @@
           "contains": [
             ":memory:",
             "sqlite"
-          ]
+          ],
+          "hint": "uncomment the sqlite :memory: phpunit environment block"
         }
       ]
     },

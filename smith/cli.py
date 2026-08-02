@@ -1837,6 +1837,8 @@ def _render_acceptance_checks(checks: list) -> str:
             if c.get("expect"):
                 s += f" — output must contain `{c['expect']}`"
             s += " (must exit 0)"
+            if c.get("hint"):
+                s += f" — FIX: {c['hint']}"
         elif "file" in c:
             s = f"- file `{c['file']}`"
             if c.get("not_exists"):
@@ -1892,6 +1894,8 @@ def _run_acceptance_checks(project: str, checks: list) -> list[dict]:
                 else:
                     ok = proc.returncode == 0
                     detail = f"exit={proc.returncode}" if ok else f"exit={proc.returncode} — output tail: {out[-200:]!r}"
+                if not ok and c.get("hint"):
+                    detail += f" — FIX: {c['hint']}"
             except Exception as exc:
                 ok, detail = False, f"could not run: {exc}"
         elif "file" in c:
@@ -1923,6 +1927,8 @@ def _run_acceptance_checks(project: str, checks: list) -> list[dict]:
                     detail = " | ".join(
                         [f"missing {s!r}" for s in fails] + [f"found banned {s!r}" for s in bad]
                     )
+                    if c.get("hint"):
+                        detail += f" — FIX: {c['hint']}"
                 else:
                     ok, detail = True, f"ok ({len(text)} chars)"
         else:
