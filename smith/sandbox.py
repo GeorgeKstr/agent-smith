@@ -66,11 +66,31 @@ class DirectSandboxBackend(SandboxBackend):
     def exec(self, command: str, cwd: Path | str | None = None, timeout: int = 60, stdin_data: str | None = None) -> SandboxResult:
         parts = shlex.split(command)
         effective_cwd = cwd or self.root_path
-        # Include common user bin directories in PATH so locally-installed
-        # tools (php, composer, etc.) are discoverable.
+        # Pipe sudo password if configured and command uses sudo
+        sudo_pw = os.getenv("SMITH_SUDO_PASSWORD", "").strip()
+        if sudo_pw and parts[0] == "sudo" and not stdin_data:
+            # sudo needs -S to read password from stdin (not /dev/tty)
+            if "-S" not in parts:
+                parts.insert(1, "-S")
+            stdin_data = sudo_pw + "\n"
+        # Include common bin directories in PATH so locally-installed
+        # tools (php, composer, node, go, cargo, etc.) are discoverable.
         env = os.environ.copy()
-        user_bins = [p / "bin" for p in (Path.home() / ".local", Path.home() / ".cargo", Path.home() / ".npm-global")]
+        user_bins = [
+            p / "bin"
+            for p in (
+                Path.home() / ".local",
+                Path.home() / ".cargo",
+                Path.home() / ".npm-global",
+                Path.home() / ".composer" / "vendor" / "bin",
+                Path.home() / ".lmstudio" / "bin",
+            )
+        ]
         extra = [str(b) for b in user_bins if b.is_dir()]
+        # Also check common system tool paths
+        for sys_dir in ("/usr/local/bin", "/opt/homebrew/bin", "/usr/local/sbin"):
+            if os.path.isdir(sys_dir) and sys_dir not in env.get("PATH", ""):
+                extra.append(sys_dir)
         if extra:
             env["PATH"] = ":".join(extra + [env.get("PATH", "")])
         try:

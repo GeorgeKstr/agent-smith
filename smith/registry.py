@@ -50,9 +50,9 @@ TASK_PROFILES: dict[str, TaskProfile] = {
     "ask": TaskProfile(
         name="ask",
         model_profile="fast",
-        tools=["ls", "read", "grep", "find", "fetch", "docs", "search_project_context", "get_file_summary", "get_related_files", "note"],
+        tools=["ls", "read", "grep", "find", "fetch", "docs", "search_project_context", "get_file_summary", "get_related_files", "note", "read_skeletal_context"],
         context_budget_chars=16000,
-        system_role="Answer questions about the project. Prefer indexed context before broad file reads.",
+        system_role="Answer questions about the project. Prefer indexed context before broad file reads. Use read_skeletal_context to see the project plan.",
     ),
     "implement": TaskProfile(
         name="implement",
@@ -71,25 +71,28 @@ TASK_PROFILES: dict[str, TaskProfile] = {
             "get_file_summary",
             "get_related_files",
             "note",
+            "read_skeletal_context",
+            "edit_skeletal_context",
         ],
         context_budget_chars=30000,
-        system_role="Implement the user's requested code change with small targeted edits. When done, use the note tool to document setup instructions for the developer.",
+        system_role="Implement the user's requested code change with small targeted edits. Read the skeletal context for the project plan. When done, update the skeletal context with progress and use the note tool for setup instructions.",
         can_write=True,
         can_run_commands=True,
     ),
     "review": TaskProfile(
         name="review",
         model_profile="reviewer",
-        tools=["read", "grep", "fetch", "docs", "bash", "search_project_context", "get_file_summary", "get_run_changes"],
+        tools=["read", "grep", "fetch", "docs", "bash", "search_project_context", "get_file_summary", "get_run_changes", "read_skeletal_context"],
         context_budget_chars=24000,
         system_role=(
-            "Review the last implementation. Find correctness, safety, or requirement issues. Do not edit files.\n"
+            "Review the last implementation against the skeletal context plan. Find correctness, safety, or requirement issues. Do not edit files.\n"
             "CRITICAL: You MUST actively verify the implementation by running relevant commands:\n"
             "- Run the project's test suite (pytest, npm test, go test, cargo test, etc.)\n"
             "- Run linters (ruff, eslint, shellcheck, etc.) and type checkers (mypy, tsc, etc.)\n"
             "- Try to run/build the changed code to catch import/syntax errors\n"
             "- If the project has no tests, at least check that imports resolve and syntax is valid\n"
             "Report what you ran, whether it passed, and any issues found. "
+            "Check the skeletal context to ensure the implementation matches the plan. "
             "Conclude with a clear PASS/FAIL/WARN verdict."
         ),
         can_write=False,

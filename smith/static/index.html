@@ -32,16 +32,12 @@
     button.danger:hover { border-color: var(--danger); }
     input, select { min-width: 0; }
     input:focus, select:focus, textarea:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 1px var(--accent); }
-    .app { display: grid; grid-template-columns: 0px minmax(0, 1fr) 0px; height: calc(100vh - 42px); }
-    .app.history-open { grid-template-columns: 280px minmax(0, 1fr) 0px; }
-    .app.changes-open { grid-template-columns: 0px minmax(0, 1fr) 320px; }
-    .app.history-open.changes-open { grid-template-columns: 280px minmax(0, 1fr) 320px; }
+    .app { display: grid; grid-template-columns: minmax(0, 1fr) 0px; height: calc(100vh - 42px); }
+    .app.changes-open { grid-template-columns: minmax(0, 1fr) 320px; }
     .sidebar { display: none; }
     .inspector { display: none; }
-    .app.history-open .sidebar { display: flex; }
     .app.changes-open .inspector { display: flex; }
     .sidebar, .main, .inspector { min-width: 0; overflow: hidden; }
-    .sidebar { border-right: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; }
     .inspector { border-left: 1px solid var(--border); background: var(--panel); flex-direction: column; }
     .main { display: flex; flex-direction: column; min-width: 0; }
     .section { padding: 8px; border-bottom: 1px solid var(--border); }
@@ -724,9 +720,10 @@
       .app:not(.changes-open),
       .app:not(.history-open):not(.changes-open) {
         height:calc(100vh - 54px) !important;
+        grid-template-columns: 1fr !important;
       }
       .sidebar, .inspector {
-        display:none;
+        display:none !important;
       }
       .main {
         min-height:0;
@@ -839,6 +836,36 @@
       min-height:0;
       height:100%;
     }
+    .skeletal-panel {
+      border-bottom:1px solid var(--border);
+      padding-bottom:4px;
+    }
+    .skeletal-panel summary {
+      cursor:pointer;
+      font-size:13px;
+      font-weight:600;
+      color:var(--accent-2);
+      padding:4px 0;
+      user-select:none;
+    }
+    .skeletal-panel summary:hover { color:var(--accent); }
+    .skeletal-body {
+      max-height:45vh;
+      overflow:auto;
+      font-size:11px;
+      line-height:1.5;
+      padding:8px;
+      margin-top:4px;
+      background:var(--bg);
+      border-radius:8px;
+      border:1px solid var(--border);
+    }
+    .skeletal-body h1, .skeletal-body h2, .skeletal-body h3 {
+      font-size:12px;
+      margin:8px 0 4px;
+    }
+    .skeletal-body pre { font-size:10px; padding:6px; }
+    .skeletal-body code { font-size:10px; }
     #changes {
       overflow:auto;
       min-height:0;
@@ -1220,17 +1247,9 @@
     }
 
 
-    /* ── History is a tab, not a side panel ─────────────────── */
-    .app,
-    .app:not(.history-open),
-    .app:not(.history-open):not(.changes-open) {
+    /* ── Inspector column — only visible when changes-open ── */
+    .app.changes-open {
       grid-template-columns: minmax(0, 1fr) 380px;
-    }
-    .app:not(.changes-open) {
-      grid-template-columns: minmax(0, 1fr) 42px;
-    }
-    .sidebar {
-      display: none;
     }
     .history-view {
       min-height:0;
@@ -1239,7 +1258,6 @@
     .activity-view {
       min-height:0;
       overflow:hidden;
-      display:flex;
       flex-direction:column;
     }
     .activity-toolbar {
@@ -1305,6 +1323,7 @@
     <span id="projectTitle" class="pill header-info" style="flex:1;min-width:0">loading...</span>
     <input id="token" class="header-action" placeholder="token" style="width:90px" />
     <button id="refresh" class="header-action" title="Refresh status">⟳</button>
+    <button id="toggleInspector" class="header-action" title="Toggle project panel (Ctrl+\`)" style="font-size:16px;padding:4px 8px">◨</button>
     <button id="newThread" class="ghost header-action">+ New</button>
   </header>
 
@@ -1333,6 +1352,7 @@
         <button class="tab" data-tab="files">Files</button>
         <button class="tab" data-tab="index">Indexing</button>
         <button class="tab" data-tab="tasks">Tasks <span id="taskBadge" class="task-badge">0</span></button>
+        <button class="tab" data-tab="logs">Logs</button>
       </nav>
 
       <section id="activityView" class="view activity-view">
@@ -1469,6 +1489,16 @@
         <div id="indexList" class="index-list"></div>
       </section>
 
+      <section id="logsView" class="view">
+        <div class="activity-toolbar">
+          <h3>Agent Logs &amp; Summaries</h3>
+          <div class="row" style="gap:8px">
+            <button id="refreshLogs" class="ghost">🔄 Refresh</button>
+          </div>
+        </div>
+        <pre id="logsContent" class="activity-log" style="flex:1;margin:0;white-space:pre-wrap;word-break:break-word;overflow:auto;padding:14px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.6;background:var(--bg);border:none;color:var(--text);user-select:text">Loading...</pre>
+      </section>
+
       <section id="tasksView" class="view tasks-view">
         <div class="task-layout">
           <div class="task-builder">
@@ -1523,6 +1553,25 @@ Return only valid JSON in this shape:
               </select>
             </div>
 
+            <details id="projectInitCard" style="margin-top:8px">
+              <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--accent-2);padding:2px 0">⚙ Project Init</summary>
+              <div style="margin-top:8px">
+                <label style="font-size:11px;color:var(--muted);margin-bottom:2px;display:block">Setup prompt — analyzes the flow and builds a skeletal context:</label>
+                <textarea id="initPrompt" rows="3" placeholder="Auto-generated. Edit to customize." style="width:100%;font-size:12px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px;resize:vertical"></textarea>
+                <div class="row" style="margin-top:4px;gap:4px">
+                  <div class="model-group" style="flex:1">
+                    <select id="initProvider" style="font-size:11px;padding:4px 6px"></select>
+                    <select id="initModel" style="font-size:11px;padding:4px 6px"></select>
+                  </div>
+                  <input id="sudoPassword" type="password" placeholder="sudo password (optional)" style="width:150px;font-size:11px;padding:4px 8px;border-radius:6px" />
+                </div>
+                <div class="row" style="margin-top:4px">
+                  <span id="initStatus" class="muted" style="font-size:11px">Will run as first step of ▶ Run</span>
+                  <button id="forceReinit" class="ghost" style="display:none;font-size:10px;padding:2px 8px;border-radius:4px" title="Force re-initialization">↻ Re-init</button>
+                </div>
+              </div>
+            </details>
+
             <details open>
               <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text);padding:2px 0">Steps</summary>
               <div style="margin-top:8px">
@@ -1531,6 +1580,20 @@ Return only valid JSON in this shape:
               </div>
               <div id="taskSteps" style="margin-top:4px"></div>
               <button id="addTaskStepBottom" class="bottom-add-step">＋ Add step</button>
+            </details>
+
+            <details id="flowReviewCard" style="margin-top:8px">
+              <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text);padding:2px 0">🔍 Flow Review</summary>
+              <div style="margin-top:8px">
+                <label class="review-toggle" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px">
+                  <input id="flowReviewEnabled" type="checkbox" checked /> Run a summary review after all steps complete
+                </label>
+                <div id="flowReviewModels" class="model-group">
+                  <label>Review model</label>
+                  <select id="flowReviewProvider" style="font-size:11px;padding:4px 6px"></select>
+                  <select id="flowReviewModel" style="font-size:11px;padding:4px 6px"></select>
+                </div>
+              </div>
             </details>
           </div>
 
@@ -1546,15 +1609,20 @@ Return only valid JSON in this shape:
     </main>
 
     <aside class="inspector">
-      <button id="openChanges" class="panel-rail" title="Open recent changes">Changes</button>
+      <button id="openChanges" class="panel-rail" title="Open project context &amp; changes">☰</button>
       <div class="inspector-content">
-        <div class="section">
-          <div class="panel-head">
-            <h3>Recent Changes</h3>
-            <button id="closeChanges" class="panel-close" title="Close changes">×</button>
-          </div>
-          <div id="changes" class="muted"></div>
+        <div class="panel-head" style="padding:6px 8px;border-bottom:1px solid var(--border);flex-shrink:0">
+          <h3 style="margin:0">Project Panel</h3>
+          <button id="closeChanges" class="panel-close" title="Close panel">×</button>
         </div>
+        <details id="skeletalPanel" class="skeletal-panel" style="border-bottom:1px solid var(--border)">
+          <summary>🧠 Skeletal Context</summary>
+          <div id="skeletalContent" class="skeletal-body md muted">Loading...</div>
+        </details>
+        <details id="changesPanel" class="skeletal-panel" style="flex:1;min-height:0;display:flex;flex-direction:column">
+          <summary>📝 Recent Changes</summary>
+          <div id="changes" class="muted" style="overflow:auto;min-height:0;flex:1"></div>
+        </details>
       </div>
     </aside>
   </div>
@@ -2186,6 +2254,7 @@ Return only valid JSON in this shape:
       $("idxMessage").textContent = data.index.message || "";
       await refreshChanges();
       await refreshIndexFiles();
+      loadSkeletalContext().catch(() => {});
     }
 
     function resetChatSession({clearMessages = true, threadId = null} = {}) {
@@ -2355,6 +2424,68 @@ Return only valid JSON in this shape:
       }
     }
 
+    async function loadLogs() {
+      const pre = $("logsContent");
+      if (!pre) return;
+      pre.textContent = "Loading...";
+      try {
+        const [activity, runs, errors] = await Promise.all([
+          api("/api/project/activity?limit=500").catch(() => ({entries:[]})),
+          api("/api/project/runs?limit=30").catch(() => []),
+          api("/api/project/errors?limit=100").catch(() => [])
+        ]);
+        const lines = [];
+
+        // ── Run summaries ────────────────────────────────
+        if (runs.length) {
+          lines.push("═══ Recent Runs ═══");
+          for (const r of runs.slice(0, 20)) {
+            const ts = r.created_at ? new Date(r.created_at).toLocaleString() : "?";
+            const promptPreview = (r.prompt || "").replace(/\\n/g, " ").slice(0, 120);
+            const taskType = r.task_type || "?";
+            const status = r.status || "?";
+            const tokens = r.total_tokens ? `(${r.total_tokens}t)` : "";
+            lines.push(`[${ts}] ${taskType}/${status} ${tokens}`);
+            lines.push(`  ${promptPreview}`);
+            if (r.compaction_entry) {
+              const c = r.compaction_entry;
+              lines.push(`  📦 compacted: ${c.token_count || 0}t saved`);
+            }
+            lines.push("");
+          }
+        }
+
+        // ── Activity timeline ────────────────────────────
+        if (activity.entries && activity.entries.length) {
+          lines.push("═══ Activity Timeline ═══");
+          let lastDate = "";
+          for (const e of activity.entries) {
+            const ts = e.ts ? new Date(e.ts) : null;
+            const time = ts ? ts.toLocaleTimeString(undefined, {hour:"2-digit",minute:"2-digit",second:"2-digit"}) : "--:--:--";
+            const date = ts ? ts.toLocaleDateString(undefined, {month:"short",day:"numeric"}) : "";
+            if (date && date !== lastDate) { lines.push(`── ${date} ──`); lastDate = date; }
+            const icon = { task_started: "▶", task_finished: "🏁", bash: "$", file_write: "✏️", file_read: "📖", ls: "📂" }[e.type] || "·";
+            lines.push(` ${time}  ${icon}  ${e.text}`);
+          }
+        }
+
+        // ── Error summaries ──────────────────────────────
+        if (errors && errors.length) {
+          lines.push("");
+          lines.push("═══ Recent Errors ═══");
+          for (const err of errors.slice(0, 20)) {
+            const ts = err.ts ? new Date(err.ts).toLocaleString() : "?";
+            lines.push(`[${ts}] ${err.error || err.message || String(err).slice(0, 200)}`);
+          }
+        }
+
+        if (!lines.length) lines.push("No logs yet. Run a task in Chat or Tasks to populate agent logs.");
+        pre.textContent = lines.join("\n");
+      } catch (err) {
+        pre.textContent = `Failed to load logs: ${err.message}`;
+      }
+    }
+
     async function deleteRunGroup(runId, event) {
       if (event) event.stopPropagation();
       if (!confirm("Delete this run from history? File changes are not affected.")) return;
@@ -2364,7 +2495,8 @@ Return only valid JSON in this shape:
 
     async function refreshChanges() {
       const groups = await api("/api/project/changes/detailed?limit=60");
-      if (!groups.length) { $("changes").innerHTML = '<div class="muted" style="padding:12px;text-align:center">No changes yet. Run a task to see file edits here.</div>'; return; }
+      if (!groups.length) { $("changes").innerHTML = '<div class="muted" style="padding:12px;text-align:center">No changes yet. Run a task to see file edits here.</div>'; if ($("changesPanel")) $("changesPanel").open = false; return; }
+      if ($("changesPanel")) $("changesPanel").open = true;
       // Preserve which run groups + file diffs are open so re-renders don't collapse them
       const openFiles = new Set();
       $("changes").querySelectorAll(".changes-run").forEach(el => {
@@ -2448,6 +2580,36 @@ Return only valid JSON in this shape:
       addMessage("system", `[smith] revert result:\n${JSON.stringify(result, null, 2)}`);
       await refreshStatus();
       if (selectedPath) await openFile(selectedPath);
+    }
+
+    async function loadSkeletalContext() {
+      const panel = $("skeletalPanel");
+      const content = $("skeletalContent");
+      const railBtn = $("openChanges");
+      const initStatus = $("initStatus");
+      if (!panel || !content) return;
+      try {
+        const data = await api("/api/project/skeletal-context");
+        if (data.exists && data.content) {
+          content.innerHTML = renderMarkdown(data.content);
+          panel.open = true;
+          if (railBtn) railBtn.textContent = "🧠";
+          if (initStatus) {
+            initStatus.textContent = "✅ Already initialized — will be skipped";
+            if ($("forceReinit")) $("forceReinit").style.display = "inline-block";
+          }
+        } else {
+          content.innerHTML = '<span class="muted">No skeletal context yet. Run a flow with a setup step first.</span>';
+          panel.open = false;
+          if (railBtn) railBtn.textContent = "☰";
+          if (initStatus) {
+            initStatus.textContent = "Will run as first step of ▶ Run";
+            if ($("forceReinit")) $("forceReinit").style.display = "none";
+          }
+        }
+      } catch (err) {
+        content.textContent = `Failed to load: ${err.message}`;
+      }
     }
 
     async function fillProviderSelect(sel, selected) {
@@ -2644,6 +2806,7 @@ Return only valid JSON in this shape:
       if (name === "activity") loadActivity();
       if (name === "index") refreshIndexFiles();
       if (name === "tasks") renderTaskSteps();
+      if (name === "logs") loadLogs();
     }
 
     function submitPrompt() {
@@ -2762,15 +2925,21 @@ Return only valid JSON in this shape:
         </div>
       `;
       container.appendChild(el);
+      // Support both flat {provider_id, model_id} and nested {model: {provider_id, model_id}}
+      const stepProviderId = step.provider_id || (step.model && step.model.provider_id) || $("providerSelect").value;
+      const stepModelId = step.model_id || (step.model && step.model.model_id) || $("modelSelect").value;
+      const stepReviewProviderId = step.review_provider_id || (step.review_model && step.review_model.provider_id) || $("reviewProviderSelect").value;
+      const stepReviewModelId = step.review_model_id || (step.review_model && step.review_model.model_id) || $("reviewModelSelect").value;
+
       el.querySelector(".step-prompt").value = step.prompt || "";
       el.querySelector(".step-type").value = step.task_type || step.taskType || "implement";
       el.querySelector(".step-approval").value = step.approval || "";
       el.querySelector(".step-review-enabled").checked = step.review_enabled !== false;
       el.querySelector(".step-review-iterations").value = Math.max(1, Math.min(10, step.review_iterations ?? step.reviewIterations ?? 1));
-      await fillProviderSelect(el.querySelector(".step-provider"), step.provider_id || $("providerSelect").value);
-      await fillProviderSelect(el.querySelector(".step-review-provider"), step.review_provider_id || $("reviewProviderSelect").value);
-      await fillModelSelect(el.querySelector(".step-provider").value, el.querySelector(".step-model"), step.model_id || $("modelSelect").value);
-      await fillReviewModelSelect(el.querySelector(".step-review-provider").value, el.querySelector(".step-review-model"), step.review_model_id || $("reviewModelSelect").value);
+      await fillProviderSelect(el.querySelector(".step-provider"), stepProviderId);
+      await fillProviderSelect(el.querySelector(".step-review-provider"), stepReviewProviderId);
+      await fillModelSelect(el.querySelector(".step-provider").value, el.querySelector(".step-model"), stepModelId);
+      await fillReviewModelSelect(el.querySelector(".step-review-provider").value, el.querySelector(".step-review-model"), stepReviewModelId);
       el.querySelector(".step-review-enabled").onchange = () => { updateStepReviewVisibility(el); updateFlowJsonPreview(); };
       el.querySelector(".remove-step").onclick = () => { el.remove(); updateFlowJsonPreview(); };
       el.querySelector(".step-restart").onclick = () => restartFlowFrom(el);
@@ -2795,7 +2964,16 @@ Return only valid JSON in this shape:
     }
 
     function setStepStatus(i, status) {
-      const el = document.querySelectorAll(".task-step")[i];
+      // If init step is prepended, offset DOM index by -1
+      const domIdx = (taskFlow.hasInit && i > 0) ? i - 1 : i;
+      // Init step (i=0 with hasInit) has no DOM card — update init card instead
+      if (taskFlow.hasInit && i === 0) {
+        if (status === "running") $("initStatus").textContent = "⚙ Running...";
+        else if (status === "done") $("initStatus").textContent = "✅ Init complete";
+        else if (status === "error") $("initStatus").textContent = "❌ Init failed";
+        return;
+      }
+      const el = document.querySelectorAll(".task-step")[domIdx];
       if (!el) return;
       const badge = el.querySelector(".badge");
       badge.className = `badge ${status}`;
@@ -2864,10 +3042,53 @@ Return only valid JSON in this shape:
       });
       const flowGoal = ($("flowGoal").value || "").trim();
       const flowProgress = [];
-      taskFlow = { running: true, stopped: false, paused: false, skipRequested: false, index: 0, steps, flowGoal, flowProgress };
+
+      // ── Set sudo password if provided ──────────────────────
+      const sudoPw = ($("sudoPassword").value || "").trim();
+      if (sudoPw) {
+        await api("/api/project/sudo-password", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({password: sudoPw})});
+      }
+
+      // ── Prepend init step if not already done ──
+      const initPrompt = ($("initPrompt").value || "").trim();
+      let allSteps = [...steps];
+      let initDone = false;
+      try {
+        const sc = await api("/api/project/skeletal-context");
+        initDone = sc.exists;
+      } catch {}
+      if (!initDone) {
+        const tasksSummary = steps.map((s, i) => `  ${i+1}. [${s.task_type}] ${s.label || 'step-'+(i+1)}: ${(s.prompt||'').slice(0,160)}`).join("\n");
+        const customPrompt = initPrompt ? `${initPrompt}\n\n` : "";
+        const defaultInitPrompt = (
+          `${customPrompt}Project setup. Do these steps IN ORDER using tools. NEVER delegate to the user.\n\n` +
+          `Flow goal: ${(flowGoal || 'See tasks').slice(0, 200)}\n` +
+          `Tasks: ${tasksSummary.slice(0, 600)}\n\n` +
+          `STEP 1 — call: bash('which php'), bash('which composer'), bash('which node'), bash('which npm')\n` +
+          `STEP 2 — INSTALL every missing tool. Do NOT ask the user. Just do it:\n` +
+          `  Fedora: bash('sudo dnf install -y php-cli php-xml php-mbstring php-pdo sqlite composer nodejs npm')\n` +
+          `  Ubuntu: bash('sudo apt-get update && sudo apt-get install -y php-cli php-xml php-mbstring php-sqlite3 composer nodejs npm')\n` +
+          `  If a single command fails, try splitting into individual installs. NEVER give up and tell the user.\n` +
+          `STEP 3 — call: bash() to scaffold the project (composer create-project, npm install, etc.)\n` +
+          `STEP 4 — call: edit_skeletal_context() with a markdown doc containing:\n` +
+          `  ## Architecture, ## Component Graph, ## Prerequisites, ## Implementation Plan, ## Progress Tracker\n` +
+          `CRITICAL: You MUST call edit_skeletal_context(). After calling it, output INIT COMPLETE.`
+        );
+        allSteps = [{
+          prompt: defaultInitPrompt,
+          task_type: "implement",
+          approval: "auto",
+          label: "project-init",
+          provider_id: $("initProvider").value || "lmstudio",
+          model_id: $("initModel").value || "qwen3.6-35b-a3b-mtp",
+            review: "never"
+          }, ...steps];
+      }
+
+      const total = allSteps.length;
+      const hasInit = allSteps.length > steps.length;
+      taskFlow = { running: true, stopped: false, paused: false, skipRequested: false, index: 0, steps: allSteps, flowGoal, flowProgress, hasInit };
       $("taskOutput").innerHTML = `<div style="margin-bottom:8px;display:flex;align-items:center;gap:8px"><span style="font-weight:700;font-size:12px">Task Output</span><button id="taskOutputMode" class="ghost" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--border)">raw</button><button id="skipStepBtn" class="ghost" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--border);margin-left:auto;display:none" title="Skip current step and continue with next">skip step</button></div>`;
-      $("taskStatus").textContent = `Running ${steps.length} step(s)...`;
-      updateTaskBadge("running", steps.length);
       $("taskOutputMode").onclick = function() {
         taskFlow.rawMode = !taskFlow.rawMode;
         this.textContent = taskFlow.rawMode ? "rendered" : "raw";
@@ -2875,12 +3096,12 @@ Return only valid JSON in this shape:
       };
       $("skipStepBtn").onclick = function() {
         if (!taskFlow.running || taskFlow.paused) return;
-        // Set flag so the normal flow handler knows to skip instead of rendering
         taskFlow.skipRequested = true;
-        if (activeRun) {
-          interruptActiveRun("skipped by user");
-        }
+        if (activeRun) { interruptActiveRun("skipped by user"); }
       };
+
+      $("taskStatus").textContent = `Running ${total} step(s)...`;
+      updateTaskBadge("running", total);
       await runNextTaskStep();
     }
 
@@ -2895,6 +3116,44 @@ Return only valid JSON in this shape:
         updateTaskBadge(null, 0);
         taskFlow.running = false;
         await refreshStatus();
+
+        // ── Optional flow review ─────────────────────────
+        if ($("flowReviewEnabled")?.checked) {
+          const reviewProvider = $("flowReviewProvider")?.value || $("reviewProviderSelect").value;
+          const reviewModel = $("flowReviewModel")?.value || $("reviewModelSelect").value;
+          const goalText = (taskFlow.flowGoal || "the overall goal").slice(0, 400);
+          const progressList = (taskFlow.flowProgress || []).slice(-20).map(e => "  " + e).join("\n");
+          const reviewPrompt = `You are reviewing the COMPLETE output of a multi-step task flow.\n\nOverall goal: ${goalText}\n\nSteps completed (in order):\n${progressList || "  (no progress captured)"}\n\nPlease provide a concise but thorough flow review with these sections:\n\n## Summary\nBriefly summarize what was accomplished across all steps.\n\n## Issues Found\nList any bugs, regressions, incomplete work, or quality concerns you can detect from the code and test output. Use the files/read tool and bash to inspect the codebase and run tests if needed.\n\n## Suggestions\nAny recommendations for improvement, refactoring, or follow-up work.\n\n## Run & Test Instructions\nGive the user clear, step-by-step instructions to run, test, and verify the completed work (commands to serve, migrate, seed, test, lint, etc.).\n\nBe actionable and specific.`;
+
+          $("taskStatus").textContent = "Running flow review...";
+          updateTaskBadge("running", "R");
+          let reviewRaw = "";
+          try {
+            $("taskOutput").innerHTML += `
+              <details class="task-output-details" open>
+                <summary>🔍 Flow Review</summary>
+                <div id="flowReviewOut" class="task-output-inner md"></div>
+              </details>`;
+            const reviewEl = $("flowReviewOut");
+            await runSmithPrompt(reviewPrompt, {
+              task_type: "review",
+              review: "never",
+              provider_id: reviewProvider,
+              model_id: reviewModel
+            }, (txt) => {
+              reviewRaw += txt;
+              reviewEl.innerHTML = taskFlow.rawMode
+                ? `<pre style="white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:#05080b;border-radius:6px;padding:8px">${escapeHtml(reviewRaw)}</pre>`
+                : renderMarkdown(reviewRaw);
+            }, (elapsed) => {});
+            $("taskStatus").textContent = "Flow review complete.";
+            updateTaskBadge(null, 0);
+          } catch (err) {
+            reviewEl.innerHTML = `<div class="muted" style="padding:8px;font-style:italic">Flow review failed: ${escapeHtml(err.message)}</div>`;
+            $("taskStatus").textContent = "Flow review failed.";
+            updateTaskBadge("error", "!");
+          }
+        }
         return;
       }
 
@@ -2905,11 +3164,14 @@ Return only valid JSON in this shape:
       const step = taskFlow.steps[i];
       taskFlow.skipRequested = false;
       setStepStatus(i, "running");
-      $("taskStatus").textContent = `Running step ${i + 1}/${taskFlow.steps.length}: ${step.task_type}`;
+      if (step.label === 'project-init') $("projectInitCard").open = true;
+      $("taskStatus").textContent = step.label === 'project-init'
+        ? `⚙ Project Init`
+        : `Running step ${taskFlow.hasInit ? i : i + 1}/${taskFlow.steps.length - (taskFlow.hasInit ? 1 : 0)}: ${step.task_type}`;
       $("skipStepBtn").style.display = "inline-block";
       $("taskOutput").innerHTML += `
         <details class="task-output-details" open>
-          <summary>Step ${i + 1}: ${escapeHtml(step.task_type)} — ${escapeHtml(step.prompt.slice(0, 90))} <button class="raw-toggle ghost" data-target="taskOut${i}" style="font-size:10px;margin-left:8px;padding:1px 6px;border-radius:3px">raw</button></summary>
+          <summary>${step.label === 'project-init' ? '⚙ Project Init' : `Step ${i + 1}: ${escapeHtml(step.task_type)}`} — ${escapeHtml(step.prompt.slice(0, 90))} <button class="raw-toggle ghost" data-target="taskOut${i}" style="font-size:10px;margin-left:8px;padding:1px 6px;border-radius:3px">raw</button></summary>
           <div id="taskOut${i}" class="task-output-inner md"></div>
         </details>`;
       let raw = "";
@@ -2968,13 +3230,32 @@ Return only valid JSON in this shape:
           flowHeader += "\n---\n\n";
         }
         const augmentedPrompt = flowHeader + step.prompt;
+        await runSmithPrompt(augmentedPrompt + implSystemNote, step, wrapOnToken((txt) => {
           raw += txt;
           outEl.innerHTML = taskFlow.rawMode ? `<pre style="white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:#05080b;border-radius:6px;padding:8px">${escapeHtml(raw)}</pre>` : renderMarkdown(raw);
           $("taskOutput").scrollTop = $("taskOutput").scrollHeight;
         }), showElapsed("⏳ generating..."));
         checkSkip();
 
+        // Capture run ID for potential revert
+        try {
+          const runs = await api("/api/project/runs?limit=1");
+          if (runs.length) step._lastRunId = runs[0].id;
+        } catch {}
+
         let implNotes = extractNotes(raw, "Implementation Notes");
+
+        // Skip review if impl failed due to missing system prerequisites
+        const isPrereqFailure = /(?:php|composer|node|npm|python|pip|go|cargo|rustc|gcc|make)\b.*(?:not (?:found|installed)|command not found|missing tool|no such file)/i.test(raw);
+        if (isPrereqFailure) {
+          raw += `\n\n[smith] prerequisite missing — skipping review for this step\n`;
+          outEl.innerHTML = renderOut(raw);
+          setStepStatus(i, "error");
+          taskFlow.index += 1;
+          $("taskStatus").textContent = `Prerequisite missing on step ${i + 1}. Install the required tools and restart the flow from this step.`;
+          updateTaskBadge("error", "!");
+          return;
+        }
 
         if (step.review_enabled && step.review_model_id && step.task_type === "implement") {
           const maxRetries = Math.max(0, Math.min(10, parseInt(step.review_iterations || "0", 10)));
@@ -3044,10 +3325,21 @@ After your verdict, include a section titled ## Review Notes at the end of your 
               break;
             }
 
+            // ── Revert failed implementation before retry ──────
+            raw += `\n\n[smith] reverting changes from failed attempt...\n`;
+            outEl.innerHTML = renderOut(raw);
+            try {
+              const revertResult = await api(`/api/project/runs/${step._lastRunId || ''}/revert`, {method: "POST"});
+              raw += `[smith] reverted: ${JSON.stringify(revertResult)}\n`;
+            } catch (e) {
+              raw += `[smith] revert failed: ${e.message}\n`;
+            }
+            outEl.innerHTML = renderOut(raw);
+
             const notesBlock = implNotes
               ? `\n\nImplementation notes from previous attempt:\n${implNotes}`
               : "";
-            const fixPrompt = `The review found the previous result unsatisfactory. Re-implement only the fixes requested by the review.${notesBlock}
+            const fixPrompt = `The review found the previous result unsatisfactory. The previous changes have been reverted. Re-implement the task from scratch.${notesBlock}
 
 After making changes, output a final summary of what you did. Do NOT call additional tools after your summary — stop immediately.
 
@@ -3155,12 +3447,37 @@ After making changes, include a section titled ## Implementation Notes at the en
 
     async function loadFlowJson() {
       const parsed = JSON.parse($("flowJson").value);
-      const steps = Array.isArray(parsed) ? parsed : parsed.steps;
-      if (!Array.isArray(steps)) throw new Error("JSON must be an array or contain a steps array.");
+      // Accept both "steps" (UI) and "tasks" (CLI) keys
+      const steps = Array.isArray(parsed) ? parsed : (parsed.steps || parsed.tasks);
+      if (!Array.isArray(steps)) throw new Error("JSON must be an array or contain a steps/tasks array.");
       $("taskSteps").innerHTML = "";
       if (!Array.isArray(parsed)) {
         if (parsed.approval) $("taskFlowApproval").value = parsed.approval;
-        // Reviews are now configured per step using review_model_id and review_iterations.
+        // Read flow_context into the flowGoal textarea
+        const ctx = parsed.flow_context || parsed.context || "";
+        if (ctx && $("flowGoal")) $("flowGoal").value = ctx;
+        // Read flow_review_model into the review selectors
+        const frm = parsed.flow_review_model;
+        if (frm && $("flowReviewProvider") && $("flowReviewModel")) {
+          if (frm.provider_id) {
+            $("flowReviewProvider").value = frm.provider_id;
+            await fillReviewModelSelect(frm.provider_id, $("flowReviewModel"), frm.model_id);
+          }
+        }
+        // Populate Project Init fields from setup config
+        const setupCfg = parsed.setup;
+        if (setupCfg) {
+          if (setupCfg.prompt && $("initPrompt")) $("initPrompt").value = setupCfg.prompt;
+          if (setupCfg.model) {
+            if (setupCfg.model.provider_id && $("initProvider")) {
+              $("initProvider").value = setupCfg.model.provider_id;
+              await fillModelSelect(setupCfg.model.provider_id, $("initModel"), setupCfg.model.model_id);
+            }
+          }
+          $("projectInitCard").open = true;
+        }
+        // Store setup step config for the flow runner
+        window._flowSetup = parsed.setup || null;
       }
       for (const raw of steps) {
         const step = typeof raw === "string" ? {prompt: raw} : raw;
@@ -3175,9 +3492,20 @@ After making changes, include a section titled ## Implementation Notes at the en
         return;
       }
       const data = {
+        flow_context: ($("flowGoal").value || "").trim(),
         approval: $("taskFlowApproval").value,
         steps
       };
+      // Include flow review model if set
+      const frProvider = $("flowReviewProvider")?.value;
+      const frModel = $("flowReviewModel")?.value;
+      if (frProvider && frModel) {
+        data.flow_review_model = { provider_id: frProvider, model_id: frModel };
+      }
+      // Preserve setup config across exports
+      if (window._flowSetup) {
+        data.setup = window._flowSetup;
+      }
       $("flowJson").value = JSON.stringify(data, null, 2);
     }
 
@@ -3245,6 +3573,7 @@ After making changes, include a section titled ## Implementation Notes at the en
       }).catch(() => alert("Copy failed"));
     };
     $("refreshActivity").onclick = () => loadActivity();
+    $("refreshLogs").onclick = () => loadLogs();
     // Chat raw mode toggle
     $("chatRawToggle").onclick = function() {
       chatRawMode = !chatRawMode;
@@ -3289,6 +3618,7 @@ After making changes, include a section titled ## Implementation Notes at the en
     $("newThread").onclick = startNewThread;
     $("closeChanges").onclick = () => { $("app").classList.remove("changes-open"); document.body.classList.remove("mobile-panel-changes"); };
     $("openChanges").onclick = () => $("app").classList.add("changes-open");
+    $("toggleInspector").onclick = () => $("app").classList.toggle("changes-open");
     $("mobileMenuButton").onclick = openMobileMenu;
     $("closeMobileMenu").onclick = closeMobileMenu;
     $("mobileMenuBackdrop").onclick = () => { closeMobileMenu(); closeMobilePanels(); };
@@ -3383,6 +3713,31 @@ After making changes, include a section titled ## Implementation Notes at the en
     $("loadFlowJson").onclick = () => loadFlowJson().catch(err => alert(err.message));
     $("exportFlowJson").onclick = exportFlowJson;
     $("taskFlowApproval").onchange = updateFlowJsonPreview;
+
+    // Project Init model selectors
+    (async () => {
+      if (!providersCache.length) providersCache = await api("/api/providers").catch(() => []);
+      await fillProviderSelect($("initProvider"), "lmstudio");
+      await fillModelSelect($("initProvider").value || "lmstudio", $("initModel"), "qwen3.6-35b-a3b-mtp");
+      $("initProvider").onchange = () => fillModelSelect($("initProvider").value, $("initModel"), $("initModel").value);
+    })().catch(() => {});
+
+    // Force re-init button
+    $("forceReinit").onclick = async function() {
+      try { await api("/api/project/skeletal-context/delete", {method: "POST"}); } catch {}
+      $("initStatus").textContent = "Will re-initialize on next ▶ Run";
+      $("forceReinit").style.display = "none";
+      if ($("skeletalPanel")) $("skeletalPanel").open = false;
+      if ($("skeletalContent")) $("skeletalContent").innerHTML = '<span class="muted">Will be recreated on next run.</span>';
+    };
+
+    // Flow review model selectors
+    (async () => {
+      if (!providersCache.length) providersCache = await api("/api/providers").catch(() => []);
+      await fillProviderSelect($("flowReviewProvider"), $("reviewProviderSelect").value);
+      await fillReviewModelSelect($("flowReviewProvider").value, $("flowReviewModel"), $("reviewModelSelect").value);
+      $("flowReviewProvider").onchange = () => fillReviewModelSelect($("flowReviewProvider").value, $("flowReviewModel"), $("flowReviewModel").value);
+    })().catch(() => {});
 
     async function boot() {
       try {

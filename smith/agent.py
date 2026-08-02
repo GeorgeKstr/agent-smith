@@ -169,21 +169,25 @@ def _text_tool_prompt(profile, model_id: str = "") -> str:
 IGNORED_DIRS = {".git", ".agent-smith", "node_modules", "vendor", "venv", ".venv", "__pycache__", "dist", "build"}
 ALLOWED_COMMANDS = {
     # Runtime / package managers
-    "python", "python3", "pytest", "npm", "pnpm", "node", "npx",
+    "python", "python3", "pytest", "pip", "pip3", "npm", "pnpm", "yarn", "node", "npx",
     "php", "composer", "artisan",  # PHP / Laravel
+    "go", "cargo", "rustup", "rustc",  # Go / Rust
+    "dnf", "apt-get", "apt", "brew", "pacman", "zypper",  # Package managers
+    "sudo", "su",  # Privilege elevation
+    "systemctl", "service",  # Service management
     # Unix read-only / informational
     "ls", "cat", "head", "tail", "wc", "grep", "find", "echo", "which",
     "file", "stat", "du", "df", "sort", "uniq", "cut", "tr", "diff", "xargs",
     # Unix safe writes
-    "mkdir", "touch", "cp", "mv",
+    "mkdir", "touch", "cp", "mv", "rm", "chmod", "chown",
     # Editors (--no-wait modes are safe)
-    "code",
+    "code", "nano", "vim",
     # SCM
     "git",
     # Fetch
     "curl", "wget",
 }
-BLOCKED_ARGS = {"install", "add", "remove", "uninstall", "delete", "publish", "deploy", "start", "dev", "serve"}
+BLOCKED_ARGS = {"delete", "publish", "deploy", "start", "dev", "serve"}
 
 
 def _split_on_operator(parts: list[str], operator: str) -> list[list[str]]:
@@ -1197,7 +1201,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         content = content.strip()[:4000]
         if not title or not content:
             return "NOTE_ERROR: title and content are required"
-        db.upsert_context_item(
+        item_id = db.upsert_context_item(
             f"note_{sha256_bytes(content.encode())}",
             title,
             content,
@@ -1205,6 +1209,39 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             source_run_id=run_id,
         )
         db.record_event(run_id, "tool_note", {"title": title, "chars": len(content)}, actor="agent")
+        return f"NOTE_SAVED id={item_id} title='{title}'"
+
+    @tool
+    def read_skeletal_context() -> str:
+        """Read the project's skeletal context graph — a structured guide showing
+        architecture, component relationships, and progress markers. Use this
+        before implementing or reviewing to understand the project plan."""
+        items = db.list_context_items(kinds=["skeletal_context"], limit=1)
+        if items:
+            return items[0]["content"]
+        return "(no skeletal context yet — run the flow setup step first)"
+
+    @tool
+    def edit_skeletal_context(content: str) -> str:
+        """Update the project's skeletal context graph. This is a markdown document
+        that guides the entire project. Each step should update relevant sections
+        with progress, findings, and architectural decisions.
+
+        Args:
+            content: The full updated content for the skeletal context.
+        """
+        content = content.strip()[:12000]
+        if not content:
+            return "EDIT_SKELETAL_ERROR: content is required"
+        db.upsert_context_item(
+            "skeletal_context",
+            "Project Skeletal Context",
+            content,
+            priority=15,
+            source_run_id=run_id,
+        )
+        db.record_event(run_id, "tool_edit_skeletal", {"chars": len(content)}, actor="agent")
+        return "SKELETAL_CONTEXT_UPDATED"
         return f"NOTE_SAVED: '{title}' ({len(content)} chars). This note is now in the project context and visible to the developer."
 
     @tool
@@ -1576,6 +1613,8 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         "get_related_files": get_related_files,
         "get_run_changes": get_run_changes,
         "note": note,
+        "read_skeletal_context": read_skeletal_context,
+        "edit_skeletal_context": edit_skeletal_context,
     }
     _is_gemma = "gemma" in (model_id or "").lower()
     _tool_names = [n for n in profile.tools if n in all_tools and not (_is_gemma and n == "edit")]
@@ -1617,6 +1656,12 @@ def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str,
         f"{context_bundle or '(no indexed context yet — explore carefully)'}\n\n"
         f"{tool_instructions}"
         "CRITICAL RULES:\n"
+        "0. NEVER delegate system setup to the user. You have sudo access via the bash tool.\n"
+        "   If a tool is missing, INSTALL IT YOURSELF immediately:\n"
+        "   - Fedora: `bash('sudo dnf install -y <packages>')`\n"
+        "   - Ubuntu: `bash('sudo apt-get install -y <packages>')`\n"
+        "   - macOS: `bash('brew install <packages>')`\n"
+        "   Do NOT output install instructions for the user. Do NOT ask. Just install.\n"
         "1. Read a file with `read` before editing it. Never guess paths.\n"
         "2. To change an existing file, use `edit(path, edits=[{oldText, newText}])` with the EXACT text from the file.\n"
         "   To create or fully replace a file, use `write(path, content)`. Never use placeholder ellipses like '... existing code ...'.\n"
@@ -2022,6 +2067,14 @@ def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode
 
     yield _yield_and_save("[smith] building context...\n")
     context, snapshot_id = db.build_context_bundle(prompt, budget_chars=profile.context_budget_chars, run_id=run_id)
+    # Inject skeletal context if available
+    skeletal_items = db.list_context_items(kinds=["skeletal_context"], limit=1)
+    if skeletal_items:
+        skel = skeletal_items[0]["content"]
+        skel_budget = max(2000, profile.context_budget_chars // 5)
+        if len(skel) > skel_budget:
+            skel = skel[:skel_budget] + "\n...(truncated — use read_skeletal_context for full content)"
+        context = f"SKELETAL PROJECT CONTEXT (plan & progress):\n{skel}\n\n{context}"
     db.record_event(run_id, "context_built", {"snapshot_id": snapshot_id, "chars": len(context)})
     yield _yield_and_save(f"[smith] context ready: {len(context)} chars\n")
 

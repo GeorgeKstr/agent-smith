@@ -1,0 +1,108 @@
+{
+  "flow_context": "## Goal\nBuild a full-featured Laravel todo app with user authentication, task CRUD, categories, search, and tests.",
+  "approval": "auto",
+  "setup": {
+    "prompt": "Set up the project environment and scaffold the Laravel todo app.",
+    "model": {
+      "provider_id": "lmstudio",
+      "model_id": "omnicoder-9b"
+    }
+  },
+  "flow_review_model": {
+    "provider_id": "lmstudio",
+    "model_id": "qwen3.6-35b-a3b-mtp"
+  },
+  "steps": [
+    {
+      "label": "task-model-migration",
+      "task_type": "implement",
+      "prompt": "Create a Task model with migration. Fields:\n- title (string, required)\n- description (text, nullable)\n- completed (boolean, default false)\n- due_date (date, nullable)\n- category_id (foreignId, nullable)\n- user_id (foreignId, constrained to users)\n\nCreate a Category model with migration:\n- name (string, required)\n- color (string, nullable, hex color)\n- user_id (foreignId, constrained to users)\n\nSet up the relationships: Task belongsTo User and Category. Category belongsTo User and hasMany Tasks.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "omnicoder-9b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 1
+    },
+    {
+      "label": "task-controller-crud",
+      "task_type": "implement",
+      "prompt": "Create a TaskController with full CRUD:\n- index: list tasks for the authenticated user, with optional search by title and filter by category/completion status\n- create: show create form with category dropdown\n- store: validate and create\n- edit: show edit form\n- update: validate and update\n- destroy: delete with confirmation\n\nAlso create a CategoryController:\n- index: list user's categories\n- store: create category (name, color)\n- update: update category\n- destroy: delete category (with check that no tasks reference it)\n\nAll controllers should be resourceful and use FormRequest validation.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "omnicoder-9b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 1
+    },
+    {
+      "label": "task-routes",
+      "task_type": "implement",
+      "prompt": "Add routes for the task and category controllers in routes/web.php:\n- Group under 'auth' middleware\n- Prefix tasks under /tasks\n- Prefix categories under /categories\n- Add a dashboard route at /dashboard that shows task summary stats (total, completed, overdue counts)\n\nUse Route::resource where appropriate.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "omnicoder-9b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 1
+    },
+    {
+      "label": "task-views",
+      "task_type": "implement",
+      "prompt": "Create Blade views for the task management UI extending Breeze layouts:\n\ntasks/index.blade.php:\n- Search bar filtering by title\n- Filter dropdowns for category and status (all/pending/completed)\n- Table listing tasks with title, category badge (colored), due date, status toggle\n- Each row has edit/delete buttons\n- Responsive design\n\ntasks/create.blade.php and tasks/edit.blade.php:\n- Form with title, description (textarea), due_date (date picker), category dropdown\n- Validation errors displayed inline\n\ntasks/_form.blade.php:\n- Shared form partial\n\ncategories/index.blade.php:\n- List categories as colored badges/cards\n- Inline edit form for name and color (use a color picker input)\n- Delete button with confirmation modal\n\ndashboard.blade.php:\n- Stats cards: total tasks, completed, overdue, by category\n- Recent tasks list (last 5)\n\nUse Tailwind CSS classes consistent with Breeze's styling.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "omnicoder-9b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 1
+    },
+    {
+      "label": "task-category-policy",
+      "task_type": "implement",
+      "prompt": "Create a TaskPolicy and CategoryPolicy that scopes all operations to the authenticated user. Register them in AuthServiceProvider. Use the policies in the controllers.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "omnicoder-9b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 1
+    },
+    {
+      "label": "tests",
+      "task_type": "implement",
+      "prompt": "Create feature tests for the todo app:\n- TaskCreationTest: auth user can create task, validation errors show, guest is redirected\n- TaskCompletionTest: toggle task completion status\n- TaskFilterTest: search by title, filter by category and status\n- CategoryTest: CRUD categories, cannot delete category with tasks\n- DashboardTest: stats show correct counts\n\nUse Laravel's built-in test helpers. Run tests and fix any failures.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "omnicoder-9b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 2
+    },
+    {
+      "label": "seeders",
+      "task_type": "implement",
+      "prompt": "Create a database seeder that:\n- Creates a demo user (demo@example.com / password)\n- Creates 3-4 sample categories with colors\n- Creates 10-15 sample tasks, some completed, some overdue, across categories\n\nRun php artisan db:seed and verify data appears.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "omnicoder-9b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 1
+    }
+  ]
+}

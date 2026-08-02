@@ -638,6 +638,77 @@ def project_activity(limit: int = 200, token: str | None = None):
     return {"entries": entries, "total": len(entries)}
 
 
+@app.get("/api/project/errors")
+def project_errors(limit: int = 50, token: str | None = None):
+    """Return recent tool-level errors."""
+    require_token(token)
+    coord = coordinator()
+    db = coord.db
+    limit = max(1, min(limit, 200))
+
+    with db.connect() as con:
+        con.row_factory = lambda cursor, row: dict(
+            zip([col[0] for col in cursor.description], row)
+        )
+        rows = con.execute(
+            """SELECT ts, type, payload_json
+               FROM events WHERE project_id=? AND type LIKE '%error%'
+               ORDER BY id DESC LIMIT ?""",
+            (db.project_id, limit),
+        ).fetchall()
+
+    results = []
+    for r in rows:
+        payload = _json_loads_safe(r.get("payload_json") or "{}", {})
+        results.append({
+            "ts": r["ts"] or "",
+            "type": r["type"],
+            "error": payload.get("error") or payload.get("message") or str(payload)[:300],
+        })
+    return results
+
+
+@app.get("/api/project/skeletal-context")
+def skeletal_context(token: str | None = None):
+    """Return the project's skeletal context graph."""
+    require_token(token)
+    coord = coordinator()
+    items = coord.db.list_context_items(kinds=["skeletal_context"], limit=1)
+    if items:
+        item = items[0]
+        return {
+            "exists": True,
+            "content": item["content"],
+            "updated_at": item.get("updated_at") or item.get("created_at"),
+        }
+    return {"exists": False, "content": ""}
+
+
+@app.post("/api/project/sudo-password")
+def set_sudo_password(data: dict[str, Any], token: str | None = None):
+    """Set the sudo password for the current server session."""
+    require_token(token)
+    pw = (data.get("password") or "").strip()
+    if pw:
+        os.environ["SMITH_SUDO_PASSWORD"] = pw
+        return {"ok": True}
+    os.environ.pop("SMITH_SUDO_PASSWORD", None)
+    return {"ok": True, "cleared": True}
+
+
+@app.post("/api/project/skeletal-context/delete")
+def skeletal_context_delete(token: str | None = None):
+    """Delete the project's skeletal context so it can be regenerated."""
+    require_token(token)
+    coord = coordinator()
+    items = coord.db.list_context_items(kinds=["skeletal_context"], limit=1)
+    if items:
+        with coord.db.connect() as con:
+            con.execute("DELETE FROM context_items WHERE id=?", (items[0]["id"],))
+        return {"deleted": True}
+    return {"deleted": False}
+
+
 @app.get("/api/project/runs")
 def project_runs(limit: int = 20, offset: int = 0, token: str | None = None):
     require_token(token)

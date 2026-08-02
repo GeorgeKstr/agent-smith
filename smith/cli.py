@@ -1271,6 +1271,8 @@ def flow_import(
     if flow_context:
         console.print(f"[dim]Flow context: {flow_context[:120]}{'...' if len(flow_context) > 120 else ''}[/dim]")
 
+    setup_step = raw.get("setup") if isinstance(raw, dict) else None
+
     db = project_db(project)
     from smith.agent import ToolErrorLogger
     error_logger_global = ToolErrorLogger(db)
@@ -1278,6 +1280,66 @@ def flow_import(
     approval_handler: ApprovalHandler = AutoApprovalHandler() if auto_approve else CLIApprovalHandler()
     if auto_approve:
         console.print("[yellow]Auto-approve enabled[/yellow]")
+
+    # ── Flow setup step: analyze flow + build skeletal context ──────
+    if setup_step and isinstance(setup_step, dict):
+        setup_prompt = setup_step.get("prompt", "")
+        setup_model = setup_step.get("model")
+        if setup_prompt:
+            console.print()
+            console.print("[bold cyan]── Flow Setup ──[/bold cyan]")
+            console.print(f"[dim]Model: {setup_model or 'default'}[/dim]")
+
+            # Build a comprehensive setup prompt
+            tasks_summary = "\n".join(
+                f"  {i+1}. [{t.get('task_type', 'implement')}] {t.get('label', 'step-'+str(i+1))}: {t.get('prompt', '')[:200]}"
+                for i, t in enumerate(tasks) if isinstance(t, dict)
+            )
+            full_setup_prompt = (
+                f"{setup_prompt}\n\n"
+                f"## Flow Goal\n{flow_context or 'See tasks below.'}\n\n"
+                f"## Tasks ({len(tasks)} steps)\n{tasks_summary}\n\n"
+                f"## Instructions\n"
+                f"Analyze the flow above and create a skeletal project context document.\n"
+                f"This document will be visible to every implementation and review step.\n\n"
+                f"Your response MUST be a structured markdown document with these sections:\n\n"
+                f"## Architecture Overview\n"
+                f"High-level architecture: framework, language, key design decisions.\n\n"
+                f"## Component Graph\n"
+                f"Mermaid or ASCII graph showing components and their relationships.\n"
+                f"For each component note: files to create, dependencies, data flow.\n\n"
+                f"## Prerequisites\n"
+                f"What tools/packages must be installed. Check them with `bash('which ...')`.\n\n"
+                f"## Step-by-Step Implementation Plan\n"
+                f"For each task step, list: what to build, files to touch, edge cases to handle.\n\n"
+                f"## Progress Tracker\n"
+                f"A checklist of all steps with `[ ]` markers for tracking.\n\n"
+                f"Output ONLY the skeletal context document. Do not add conversation text.\n"
+                f"Use `edit_skeletal_context(content)` to save the document.\n"
+                f"Then output 'SETUP COMPLETE' and nothing else."
+            )
+
+            coord = ProjectCoordinator(project)
+            coord.start_worker()
+            output_chunks: list[str] = []
+            try:
+                for token in coord.stream_user_task(
+                    full_setup_prompt,
+                    task_type="implement",
+                    review_mode="never",
+                    model_override=setup_model,
+                    approval_handler=approval_handler,
+                ):
+                    output_chunks.append(token)
+                full_output = "".join(output_chunks)
+                # Check if skeletal context was created
+                items = db.list_context_items(kinds=["skeletal_context"], limit=1)
+                if items:
+                    console.print("[green]  ✓ Skeletal context created[/green]")
+                else:
+                    console.print("[yellow]  ⚠ Setup ran but no skeletal context saved[/yellow]")
+            except Exception as exc:
+                console.print(f"[red]  ✗ Setup failed: {exc}[/red]")
 
     total = len(tasks)
     results: list[dict] = []
