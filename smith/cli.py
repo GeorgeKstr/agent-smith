@@ -1873,7 +1873,7 @@ def _run_acceptance_checks(project: str, checks: list) -> list[dict]:
     Supported check shapes:
       {"cmd": "...", "expect": "substr"}          run via subprocess (cwd=project), must exit 0
       {"cmd": "..."}                                must exit 0
-      {"file": "path", "contains": [...], "not_contains": [...]}
+      {"file": "path", "contains": [...], "contains_any": [...], "not_contains": [...]}
       {"file": "path", "not_exists": true}
     'path' may contain glob patterns (e.g. database/migrations/*todo_lists*).
     Returns [{"name", "ok", "detail"}].
@@ -1933,6 +1933,16 @@ def _run_acceptance_checks(project: str, checks: list) -> list[dict]:
                             pass
                 text_l = text.lower()
                 fails = [s for s in (c.get("contains") or []) if s.lower() not in text_l]
+                # contains_any: at least ONE of the listed substrings must appear.
+                # Lets models express equivalent idioms (e.g. '/login' vs
+                # route('login')) without false-failing correct code.
+                any_fails = True
+                for s in (c.get("contains_any") or []):
+                    if s.lower() in text_l:
+                        any_fails = False
+                        break
+                if (c.get("contains_any")) and any_fails:
+                    fails.append(f"any-of {c['contains_any']}")
                 bad = []
                 for s in (c.get("not_contains") or []):
                     # Word-boundary match so 'list_id' does NOT match inside
