@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 import webbrowser
 import time
@@ -1931,7 +1932,12 @@ def _run_acceptance_checks(project: str, checks: list) -> list[dict]:
                         except Exception:
                             pass
                 fails = [s for s in (c.get("contains") or []) if s not in text]
-                bad = [s for s in (c.get("not_contains") or []) if s in text]
+                bad = []
+                for s in (c.get("not_contains") or []):
+                    # Word-boundary match so 'list_id' does NOT match inside
+                    # 'todo_list_id' (underscore is a word char).
+                    if re.search(r"\b" + re.escape(s) + r"\b", text):
+                        bad.append(s)
                 if fails or bad:
                     ok = False
                     detail = " | ".join(
