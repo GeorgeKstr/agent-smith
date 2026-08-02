@@ -88,6 +88,11 @@ def _text_tool_prompt(profile, model_id: str = "") -> str:
             tool_lines.append(
                 "- get_run_changes(limit=20): Show recent file changes."
             )
+        elif tname == "note":
+            tool_lines.append(
+                "- note(title=\"Setup\", content=\"...\"): Save a developer-facing note (setup instructions, API docs, known issues). "
+                "These notes persist in the project and are visible to the developer."
+            )
         elif tname == "fetch":
             tool_lines.append(
                 "- fetch(url=\"https://...\", maxChars=6000): Fetch a web page as text. "
@@ -1177,6 +1182,32 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         return "\n".join(f"{r['source_path']} --{r['relationship_type']}--> {r['target_path']}" for r in rows)
 
     @tool
+    def note(title: str, content: str) -> str:
+        """Save a developer-facing note to the project context.
+
+        Use this to document setup instructions, API usage, known issues,
+        or anything the developer should know about the changes you made.
+        These notes are searchable and visible in the Web UI.
+
+        Args:
+            title: A short title like "Setup Instructions" or "API Endpoints".
+            content: The note content — write clear, actionable information.
+        """
+        title = title.strip()[:200]
+        content = content.strip()[:4000]
+        if not title or not content:
+            return "NOTE_ERROR: title and content are required"
+        db.upsert_context_item(
+            f"note_{sha256_bytes(content.encode())}",
+            title,
+            content,
+            priority=9,
+            source_run_id=run_id,
+        )
+        db.record_event(run_id, "tool_note", {"title": title, "chars": len(content)}, actor="agent")
+        return f"NOTE_SAVED: '{title}' ({len(content)} chars). This note is now in the project context and visible to the developer."
+
+    @tool
     def get_run_changes(limit: int = 20) -> str:
         """Show recent file changes made by Smith."""
         with db.connect() as con:
@@ -1544,6 +1575,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         "get_file_summary": get_file_summary,
         "get_related_files": get_related_files,
         "get_run_changes": get_run_changes,
+        "note": note,
     }
     _is_gemma = "gemma" in (model_id or "").lower()
     _tool_names = [n for n in profile.tools if n in all_tools and not (_is_gemma and n == "edit")]

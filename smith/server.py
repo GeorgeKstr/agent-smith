@@ -570,7 +570,7 @@ def project_activity(limit: int = 200, token: str | None = None):
                WHERE e.project_id=?
                  AND e.type IN ('tool_run_command','tool_write_file','tool_edit_file',
                                 'tool_read_file','tool_list_files','tool_grep_search',
-                                'tool_find_files','tool_fetch','tool_docs')
+                                'tool_find_files','tool_fetch','tool_docs','tool_note')
                ORDER BY e.id ASC""",
             (db.project_id,),
         ).fetchall()
@@ -607,6 +607,11 @@ def project_activity(limit: int = 200, token: str | None = None):
                 entries.append({
                     "ts": ts, "type": "ls", "run_id": run_id,
                     "text": f"📂 ls {payload.get('path', '.')} ({payload.get('count', 0)} entries)",
+                })
+            elif ev["type"] == "tool_note":
+                entries.append({
+                    "ts": ts, "type": "note", "run_id": run_id,
+                    "text": f"📝 note: {payload.get('title', '?')} ({payload.get('chars', 0)} chars)",
                 })
             else:
                 entries.append({
