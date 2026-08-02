@@ -5,20 +5,20 @@ Local-first AI coding agent with surgical editing, configurable command executio
 ## Quick Install
 
 ```bash
-pip install git+https://github.com/<your-username>/agent-smith-v2.git
+curl -fsSL https://raw.githubusercontent.com/GeorgeKstr/agent-smith/main/install.sh | bash
 ```
 
-Then run from anywhere:
-
+Then run:
 ```bash
-smith2
+smith2          # Web UI at http://localhost:8080
+smith2 app      # Full app with project picker
 ```
 
-Or for a development install (live edits):
+Or manual install:
 
 ```bash
-git clone https://github.com/<your-username>/agent-smith-v2.git
-cd agent-smith-v2
+git clone https://github.com/GeorgeKstr/agent-smith.git
+cd agent-smith
 pip install -e .
 smith2
 ```
