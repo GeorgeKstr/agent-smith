@@ -2205,7 +2205,7 @@ def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode
         _sel = model_override or _get_sel(db, task_type)
         _text_mode = _auto_text_mode(_sel["model_id"])
         if _text_mode:
-            _input = {"messages": [{"role": "user", "content": prompt}]}
+            _input = {"messages": [{"role": "user", "content": f"{prompt}\n\nIMPORTANT: When your tool calls are done, output a final plain-text summary of what you did. The summary must NOT contain any XML tool-call syntax."}]}
         else:
             _input = {"messages": [{"role": "user", "content": f"{prompt}\n\nIMPORTANT: Output only the final answer. Do not show your internal reasoning or chain-of-thought."}]}
         _config = {"recursion_limit": limit}

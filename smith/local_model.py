@@ -28,11 +28,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Iterator
 
+import openai
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_openai import ChatOpenAI
+from langchain_openai.chat_models.base import _handle_openai_api_error, _handle_openai_bad_request
 
 from .tool_parser import extract_tool_calls_from_text, has_text_tool_calls, clean_tool_call_text
 
@@ -190,27 +192,48 @@ class LocalModelChatOpenAI(ChatOpenAI):
         kwargs.pop("tools", None)
         kwargs.pop("tool_choice", None)
 
-        # Collect all chunks first
-        chunks: list = []
-        for chunk in super()._stream(messages, stop, run_manager, **kwargs):
-            chunks.append(chunk)
+        # Manual streaming through the raw OpenAI client. LangChain's
+        # ChatOpenAI drops `reasoning_content` from streamed chunks before our
+        # wrapper sees them, and qwen-family models (omnicoder-9b, Qwen3-Coder)
+        # sometimes place their <function=...> XML tool call inside the
+        # reasoning stream. So we parse the SSE chunks ourselves and scan BOTH
+        # `content` and `reasoning_content` for text tool calls.
+        self._ensure_sync_client_available()
+        payload = self._get_request_payload(messages, stop=stop, **kwargs)
+        payload["stream"] = True
 
-        if not chunks:
+        raw_dicts: list[dict] = []
+        parts: list[str] = []
+        reasoning_parts: list[str] = []
+        try:
+            response = self.client.create(**payload)
+            with response as stream:
+                for chunk in stream:
+                    d = chunk.model_dump() if not isinstance(chunk, dict) else chunk
+                    raw_dicts.append(d)
+                    try:
+                        delta = d["choices"][0]["delta"]
+                    except (KeyError, IndexError, TypeError):
+                        continue
+                    c = delta.get("content")
+                    if c:
+                        parts.append(c)
+                    rc = delta.get("reasoning_content")
+                    if rc:
+                        reasoning_parts.append(rc)
+        except openai.BadRequestError as e:
+            _handle_openai_bad_request(e)
+        except openai.APIError as e:
+            _handle_openai_api_error(e)
+
+        if not raw_dicts:
             return
 
-        # Assemble full content from all chunks
-        parts: list[str] = []
-        for ch in chunks:
-            msg = ch.message if isinstance(ch, ChatGenerationChunk) else ch
-            if hasattr(msg, "content") and msg.content:
-                c = msg.content
-                if isinstance(c, str):
-                    parts.append(c)
-                elif isinstance(c, list):
-                    for block in c:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            parts.append(block.get("text", ""))
+        # Scan visible content first; fall back to reasoning content.
         full_content = "".join(parts)
+        reasoning_text = "".join(reasoning_parts)
+        if not has_text_tool_calls(full_content) and reasoning_text:
+            full_content = full_content + "\n" + reasoning_text
 
         if has_text_tool_calls(full_content):
             text_tool_calls = extract_tool_calls_from_text(
@@ -218,7 +241,7 @@ class LocalModelChatOpenAI(ChatOpenAI):
                 available_tool_names=self._available_tool_names,
             )
             if text_tool_calls:
-                cleaned = clean_tool_call_text(full_content)
+                cleaned = clean_tool_call_text("".join(parts))
                 logger.debug(
                     "Stream extracted %d text tool calls: %s",
                     len(text_tool_calls),
@@ -227,18 +250,8 @@ class LocalModelChatOpenAI(ChatOpenAI):
                 # Yield a single chunk with cleaned content + tool_calls.
                 # The agent graph aggregates chunks; a single-chunk response
                 # with both content and tool_calls works correctly.
-                first = chunks[0]
-                if isinstance(first, ChatGenerationChunk):
-                    msg = first.message
-                else:
-                    msg = first
-                if hasattr(msg, "content"):
-                    msg.content = cleaned
-                if hasattr(msg, "tool_calls"):
-                    msg.tool_calls = text_tool_calls
-                # Also set tool_call_chunks for streaming aggregation compatibility.
-                # The graph aggregates tool_call_chunks into final tool_calls;
-                # args must be a JSON string per LangChain's chunk format.
+                msg = AIMessageChunk(content=cleaned)
+                msg.tool_calls = text_tool_calls
                 import json as _json
                 if hasattr(msg, "tool_call_chunks"):
                     msg.tool_call_chunks = [
@@ -250,8 +263,17 @@ class LocalModelChatOpenAI(ChatOpenAI):
                         }
                         for i, tc in enumerate(text_tool_calls)
                     ]
-                yield first
+                yield ChatGenerationChunk(message=msg)
                 return
 
-        # No text tool calls — yield all chunks as-is
-        yield from chunks
+        # No text tool calls — replay raw chunks through LangChain's converter
+        # so the graph sees normal streaming content chunks.
+        for d in raw_dicts:
+            gen_chunk = self._convert_chunk_to_generation_chunk(
+                d, AIMessageChunk, {}
+            )
+            if gen_chunk is None:
+                continue
+            if run_manager is not None and gen_chunk.text:
+                run_manager.on_llm_new_token(gen_chunk.text, chunk=gen_chunk)
+            yield gen_chunk

@@ -1367,6 +1367,12 @@ def flow_import(
         review = task.get("review", "auto")
         label = task.get("label", f"task-{i + 1}")
         model_override = task.get("model")
+        review_model_override = None
+        if task.get("review_provider_id") and task.get("review_model_id"):
+            review_model_override = {
+                "provider_id": task["review_provider_id"],
+                "model_id": task["review_model_id"],
+            }
 
         # ── Build augmented prompt with flow context + progress ──────
         augmented_prompt = prompt
@@ -1398,6 +1404,7 @@ def flow_import(
                     task_type=task_type,
                     review_mode=review,
                     model_override=model_override,
+                    review_model_override=review_model_override,
                     approval_handler=approval_handler,
                 ):
                     output_chunks.append(token)

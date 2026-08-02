@@ -5,7 +5,7 @@
     "prompt": "Set up the project environment and scaffold the Laravel todo app.",
     "model": {
       "provider_id": "lmstudio",
-      "model_id": "omnicoder-9b"
+      "model_id": "gemma-4-12b"
     }
   },
   "flow_review_model": {
@@ -19,7 +19,7 @@
       "prompt": "Create a Task model with migration. Fields:\n- title (string, required)\n- description (text, nullable)\n- completed (boolean, default false)\n- due_date (date, nullable)\n- category_id (foreignId, nullable)\n- user_id (foreignId, constrained to users)\n\nCreate a Category model with migration:\n- name (string, required)\n- color (string, nullable, hex color)\n- user_id (foreignId, constrained to users)\n\nSet up the relationships: Task belongsTo User and Category. Category belongsTo User and hasMany Tasks.",
       "model": {
         "provider_id": "lmstudio",
-        "model_id": "omnicoder-9b"
+        "model_id": "gemma-4-12b"
       },
       "review_enabled": true,
       "review_provider_id": "lmstudio",
@@ -32,7 +32,7 @@
       "prompt": "Create a TaskController with full CRUD:\n- index: list tasks for the authenticated user, with optional search by title and filter by category/completion status\n- create: show create form with category dropdown\n- store: validate and create\n- edit: show edit form\n- update: validate and update\n- destroy: delete with confirmation\n\nAlso create a CategoryController:\n- index: list user's categories\n- store: create category (name, color)\n- update: update category\n- destroy: delete category (with check that no tasks reference it)\n\nAll controllers should be resourceful and use FormRequest validation.",
       "model": {
         "provider_id": "lmstudio",
-        "model_id": "omnicoder-9b"
+        "model_id": "gemma-4-12b"
       },
       "review_enabled": true,
       "review_provider_id": "lmstudio",
