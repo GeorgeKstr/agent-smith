@@ -85,6 +85,7 @@ class ProjectCoordinator:
         review_mode: str = "auto",
         model_override: dict[str, str] | None = None,
         review_model_override: dict[str, str] | None = None,
+        review_extra_context: str | None = None,
         cancel_event: threading.Event | None = None,
         approval_handler: ApprovalHandler | None = None,
     ) -> Generator[str, None, None]:
@@ -123,17 +124,28 @@ class ProjectCoordinator:
                 review_prompt = (
                     "Review the most recent Smith changes for correctness, missed requirements, "
                     "safety issues, and whether checks are sufficient.\n\n"
-                    "STEP 1 — VERIFY FILES EXIST: list the project files with ls/find and "
-                    "confirm every file the task required was ACTUALLY created on disk. "
-                    "If a required file is missing, empty, or a stub, the step FAILS — do not "
-                    "assume it exists from the summary.\n\n"
-                    "IMPORTANT: You MUST actively test the changes. Use bash to:\n"
-                    "1. Run the project's test suite (pytest, npm test, go test, cargo test, etc.)\n"
-                    "2. Run linters (ruff, eslint, shellcheck) and type checkers (mypy, tsc)\n"
-                    "3. Try to run or import the changed code to catch syntax/runtime errors\n"
-                    "4. If no tests exist, at minimum check that imports resolve and the code parses\n\n"
+                    "VERIFICATION RULES:\n"
+                    "1. NEVER run 'ls -R' or any recursive directory listing. On a real project "
+                    "that floods your context with thousands of vendor/ lines and hides the "
+                    "actual state. Always use TARGETED checks: 'ls <specific path>', "
+                    "'test -f <path>', 'grep -rn \"symbol\" <path>', 'php artisan route:list'.\n"
+                    "2. Verify every file the task required was ACTUALLY created on disk with a "
+                    "targeted ls/test -f. A missing, empty, or stub file means the step FAILS — "
+                    "never assume it exists from the summary.\n"
+                    "3. Actively run the project's tests and linters (php artisan test / pytest / "
+                    "npm test / go test ...). If tests fail, the step FAILS.\n"
+                    "4. Check wiring (routes, config, migrations) where relevant.\n\n"
+                )
+                if review_extra_context:
+                    review_prompt += (
+                        f"REQUIRED ACCEPTANCE CHECKS FOR THIS STEP — every one of these must "
+                        f"pass or the step FAILS:\n{review_extra_context}\n\n"
+                    )
+                review_prompt += (
                     "Then return a concise review with: what you ran, results, issues found, "
-                    "and a final PASS/FAIL/WARN verdict. A FAIL verdict means the step must be fixed."
+                    "and a final verdict on its own line, e.g. 'Verdict: PASS', "
+                    "'Verdict: FAIL', or 'Verdict: WARN'. A FAIL or WARN verdict means the "
+                    "step must be fixed before continuing."
                 )
                 yield "\n\n--- Review ---\n"
                 yield from stream_agent(

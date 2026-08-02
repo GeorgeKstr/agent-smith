@@ -1250,6 +1250,26 @@ def flow_import(
       ]
     }
 
+    The top-level "spec" field is the project's source of truth. On import
+    it is written to SPEC.md at the project root and seeded into the
+    skeletal_context item, which build_context_bundle injects into EVERY
+    run (setup, steps, reviews, final review) as "PROJECT SPEC". Only
+    seeds if absent, so re-imports never clobber model progress. The
+    read_skeletal_context / edit_skeletal_context tools operate on the
+    same document (SPEC.md on disk, mirrored to the DB for the Web UI).
+
+    VERIFICATION GATE: a step is not "completed" until its mechanical
+    acceptance checks pass AND (if review is enabled) the model review
+    returns PASS. Per-step "acceptance" is a list of deterministic checks:
+      {"cmd": "php artisan test", "expect": "PASS", "timeout": 300}
+      {"file": "app/Models/TodoList.php", "contains": ["owner_id"],
+       "not_contains": ["'user_id'"]}
+      {"file": "app_tmp", "not_exists": true}
+    globs allowed in file paths (database/migrations/*todo_lists*).
+    Failures inject the defect list into the step prompt and retry up to
+    "review_iterations" (top-level default, per-step override; 0 = no
+    retries). Steps still failing after the budget are marked FAILED.
+
     The "flow_context" field is injected into every step so the agent
     knows the overall goal. Completed steps are tracked and shown as
     progress automatically.
@@ -1358,6 +1378,16 @@ def flow_import(
                 console.print(
                     f"[dim]Flow review model: {mid} ({pid})[/dim]"
                 )
+
+    # ── Retry budget: how many fix-retries per failing step (default 0) ────
+    # Each step may override with its own "review_iterations". Retries inject
+    # the acceptance defects + review verdict into the step prompt.
+    flow_review_iterations = 0
+    if isinstance(raw, dict):
+        try:
+            flow_review_iterations = max(0, int(raw.get("review_iterations", 0)))
+        except (TypeError, ValueError):
+            flow_review_iterations = 0
 
     # ── Flow setup step: analyze flow + build skeletal context ──────
     if setup_step and isinstance(setup_step, dict):
@@ -1487,6 +1517,15 @@ def flow_import(
         if flow_progress:
             prog = "\n".join(f"  {entry}" for entry in flow_progress[-12:])
             flow_bits.append(f"[FLOW] Steps completed so far:\n{prog}")
+        acceptance_checks = task.get("acceptance")
+        acceptance_text = ""
+        if isinstance(acceptance_checks, list) and acceptance_checks:
+            acceptance_text = _render_acceptance_checks(acceptance_checks)
+            if acceptance_text:
+                flow_bits.append(
+                    f"[FLOW] ACCEPTANCE — the harness verifies these automatically when you "
+                    f"finish; self-check before finishing:\n{acceptance_text}"
+                )
         augmented_prompt = "\n\n".join(flow_bits) + "\n\n---\n\n" + prompt
 
         console.print()
@@ -1498,63 +1537,139 @@ def flow_import(
         coord.start_worker()
         task_error_count_before = len(error_logger_global.get_recent_errors(200))
 
-        # ── Run step with one retry on backend crash ──────────────────
+        # ── Run step: implement + verification gate (acceptance + review) ──
+        # A step is not "completed" until the mechanical acceptance checks pass
+        # AND the model review (if enabled) returns PASS. Failures inject the
+        # defect list into a retry, up to `review_iterations` retries.
+        retries = 0
+        try:
+            retries = max(0, int(task.get("review_iterations", flow_review_iterations) or 0))
+        except (TypeError, ValueError):
+            retries = 0
+        max_attempts = retries + 1
         full_output = ""
-        for attempt in (1, 2):
-            try:
-                output_chunks: list[str] = []
-                for token in coord.stream_user_task(
-                    augmented_prompt,
-                    task_type=task_type,
-                    review_mode=review,
-                    model_override=model_override,
-                    review_model_override=review_model_override,
-                    approval_handler=approval_handler,
-                ):
-                    output_chunks.append(token)
-                    if verbose:
-                        console.print(token, end="", highlight=False)
-
-                full_output = "".join(output_chunks)
-                if not verbose:
-                    for line in full_output.splitlines():
-                        if "[smith]" in line or "VERIFIED" in line or "error" in line.lower() or "ERROR" in line:
-                            console.print(line.strip()[:200])
-                break  # success
-
-            except Exception as exc:
-                err = str(exc)
-                # If the backend (LM Studio / llama-server) crashed, restart it and retry
-                is_backend_crash = (
-                    "Engine protocol predict request failed" in err
-                    or "fetch failed" in err
-                    or "Connection error" in err
-                    or "RemoteProtocolError" in err
+        step_failures: list[str] = []
+        step_errored = False
+        for attempt in range(1, max_attempts + 1):
+            run_prompt = augmented_prompt
+            if attempt > 1:
+                console.print(f"[yellow]  ⚡ Verification failed — retrying ({attempt - 1}/{retries}) with defects injected[/yellow]")
+                run_prompt = (
+                    augmented_prompt
+                    + "\n\n---\n\n[FLOW] RETRY — your previous attempt FAILED verification. "
+                    "Fix EVERY issue below, then re-verify (run the acceptance checks "
+                    "yourself) before finishing:\n"
+                    + "\n".join(f"  - {d}" for d in step_failures)
                 )
-                if is_backend_crash and attempt == 1:
-                    console.print(f"[yellow]  ⚡ Backend crash detected, restarting model...[/yellow]")
-                    _restart_model_backend()
-                    console.print(f"[dim]  Retrying step...[/dim]")
-                    # Fresh coordinator for retry (new DB connection)
-                    coord = ProjectCoordinator(project)
-                    coord.start_worker()
-                    continue
-                # Non-recoverable or retry exhausted
-                console.print(f"[red]Task error: {exc}[/red]")
-                results.append({
-                    "label": label,
-                    "prompt": prompt[:200],
-                    "task_type": task_type,
-                    "status": "error",
-                    "error": str(exc),
-                })
-                flow_progress.append(f"❌ {label}: {str(exc)[:100]}")
-                break
-        else:
-            continue  # skip to next iteration of outer loop if error after retry
 
-        if not full_output:
-            continue  # step failed after retries
+            # ── Run attempt (one backend-crash retry) ─────────────────────
+            attempt_output = ""
+            for crash_attempt in (1, 2):
+                try:
+                    output_chunks: list[str] = []
+                    for token in coord.stream_user_task(
+                        run_prompt,
+                        task_type=task_type,
+                        review_mode=review,
+                        model_override=model_override,
+                        review_model_override=review_model_override,
+                        review_extra_context=acceptance_text or None,
+                        approval_handler=approval_handler,
+                    ):
+                        output_chunks.append(token)
+                        if verbose:
+                            console.print(token, end="", highlight=False)
+
+                    attempt_output = "".join(output_chunks)
+                    if not verbose:
+                        for line in attempt_output.splitlines():
+                            if "[smith]" in line or "VERIFIED" in line or "error" in line.lower() or "ERROR" in line:
+                                console.print(line.strip()[:200])
+                    break  # success
+
+                except Exception as exc:
+                    err = str(exc)
+                    # If the backend (LM Studio / llama-server) crashed, restart it and retry
+                    is_backend_crash = (
+                        "Engine protocol predict request failed" in err
+                        or "fetch failed" in err
+                        or "Connection error" in err
+                        or "RemoteProtocolError" in err
+                    )
+                    if is_backend_crash and crash_attempt == 1:
+                        console.print(f"[yellow]  ⚡ Backend crash detected, restarting model...[/yellow]")
+                        _restart_model_backend()
+                        console.print(f"[dim]  Retrying step...[/dim]")
+                        # Fresh coordinator for retry (new DB connection)
+                        coord = ProjectCoordinator(project)
+                        coord.start_worker()
+                        continue
+                    # Non-recoverable or retry exhausted
+                    console.print(f"[red]Task error: {exc}[/red]")
+                    results.append({
+                        "label": label,
+                        "prompt": prompt[:200],
+                        "task_type": task_type,
+                        "status": "error",
+                        "error": str(exc),
+                    })
+                    flow_progress.append(f"❌ {label}: {str(exc)[:100]}")
+                    step_errored = True
+                    break
+            if step_errored:
+                break
+            if not attempt_output:
+                step_failures.append("(empty model output)")
+                continue
+
+            full_output = attempt_output
+
+            # ── VERIFICATION GATE: mechanical acceptance + model review ──
+            step_failures = []
+            known_review_ids = {
+                r["id"] for r in db.recent_runs(limit=6) if r.get("task_type") == "review"
+            }
+            review_text = _fetch_latest_review(db, exclude_ids=known_review_ids)
+            verdict, review_text = _extract_review_verdict(review_text)
+            if verdict in ("FAIL", "WARN"):
+                step_failures.append(f"Review {verdict}: {review_text[:500]}")
+                console.print(f"  [yellow]⚠ Review verdict: {verdict}[/yellow]")
+            elif verdict == "PASS":
+                console.print(f"  [green]✓ Review verdict: PASS[/green]")
+            else:
+                console.print(f"  [dim]· no review verdict (reviews off or inconclusive)[/dim]")
+
+            acc_results = _run_acceptance_checks(project, acceptance_checks)
+            for r in acc_results:
+                mark = "✓" if r["ok"] else "✗"
+                style = "green" if r["ok"] else "red"
+                console.print(f"  [{style}]{mark} acceptance {r['name']}[/{style}]: {r['detail']}")
+            for r in acc_results:
+                if not r["ok"]:
+                    step_failures.append(f"Acceptance {r['name']}: {r['detail']}")
+
+            if not step_failures:
+                break  # verification passed
+
+        if step_errored:
+            continue  # error already recorded
+
+        if step_failures:
+            # Verification never passed within the retry budget
+            console.print(f"[red]  ✗ Step failed verification after {max_attempts} attempt(s)[/red]")
+            for d in step_failures[:5]:
+                console.print(f"[dim]    - {d[:160]}[/dim]")
+            results.append({
+                "label": label,
+                "prompt": prompt[:200],
+                "task_type": task_type,
+                "status": "failed",
+                "tool_errors": 0,
+                "error_types": [],
+                "defects": step_failures,
+            })
+            flow_progress.append(f"❌ {label}: verification failed — {step_failures[0][:100]}")
+            continue  # next task
 
         # Extract a brief summary from the output for progress tracking
         step_summary = _extract_flow_step_summary(full_output)
@@ -1708,6 +1823,144 @@ def _extract_flow_step_summary(output: str, max_chars: int = 120) -> str:
         # Good candidate
         return stripped[:max_chars]
     return "completed"
+
+
+def _render_acceptance_checks(checks: list) -> str:
+    """Render acceptance checks as human-readable lines for prompts."""
+    lines: list[str] = []
+    for c in checks or []:
+        if not isinstance(c, dict):
+            continue
+        label = c.get("name") or c.get("label")
+        if "cmd" in c:
+            s = f"- run `{c['cmd']}`"
+            if c.get("expect"):
+                s += f" — output must contain `{c['expect']}`"
+            s += " (must exit 0)"
+        elif "file" in c:
+            s = f"- file `{c['file']}`"
+            if c.get("not_exists"):
+                s += " must NOT exist"
+            else:
+                s += " must exist"
+                if c.get("contains"):
+                    s += f", contain {c['contains']}"
+                if c.get("not_contains"):
+                    s += f", must NOT contain {c['not_contains']}"
+        else:
+            continue
+        lines.append(f"{label + ': ' if label else ''}{s}")
+    return "\n".join(lines)
+
+
+def _run_acceptance_checks(project: str, checks: list) -> list[dict]:
+    """Run mechanical acceptance checks against the project. Deterministic and
+    model-free — this is the harness's structural floor for spec adherence.
+
+    Supported check shapes:
+      {"cmd": "...", "expect": "substr"}          run via subprocess (cwd=project), must exit 0
+      {"cmd": "..."}                                must exit 0
+      {"file": "path", "contains": [...], "not_contains": [...]}
+      {"file": "path", "not_exists": true}
+    'path' may contain glob patterns (e.g. database/migrations/*todo_lists*).
+    Returns [{"name", "ok", "detail"}].
+    """
+    import glob as _glob
+    import shlex as _shlex
+    import subprocess as _sp
+
+    results: list[dict] = []
+    for c in checks or []:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name") or c.get("label") or (c.get("cmd") or c.get("file") or "?")
+        if "cmd" in c:
+            cmd = c["cmd"]
+            try:
+                proc = _sp.run(
+                    _shlex.split(cmd), cwd=project, capture_output=True, text=True,
+                    timeout=int(c.get("timeout", 120)),
+                )
+                out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+                expect = c.get("expect")
+                if expect:
+                    ok = expect in out
+                    detail = (
+                        f"exit={proc.returncode}, found {expect!r}"
+                        if ok else f"exit={proc.returncode}, MISSING {expect!r} — output tail: {out[-200:]!r}"
+                    )
+                else:
+                    ok = proc.returncode == 0
+                    detail = f"exit={proc.returncode}" if ok else f"exit={proc.returncode} — output tail: {out[-200:]!r}"
+            except Exception as exc:
+                ok, detail = False, f"could not run: {exc}"
+        elif "file" in c:
+            rel = str(c["file"])
+            if "*" in rel or "?" in rel:
+                matches = _glob.glob(os.path.join(project, rel))
+                paths = matches
+                if not paths:
+                    paths = [os.path.join(project, rel)]  # record as missing below
+            else:
+                paths = [os.path.join(project, rel)]
+            if c.get("not_exists"):
+                missing_all = all(not os.path.exists(p) for p in paths)
+                ok, detail = missing_all, "file(s) absent — good" if missing_all else f"exists: {rel}"
+            elif not any(os.path.exists(p) for p in paths):
+                ok, detail = False, f"missing file: {rel}"
+            else:
+                text = ""
+                for p in paths:
+                    if os.path.exists(p):
+                        try:
+                            text += open(p, encoding="utf-8", errors="replace").read()
+                        except Exception:
+                            pass
+                fails = [s for s in (c.get("contains") or []) if s not in text]
+                bad = [s for s in (c.get("not_contains") or []) if s in text]
+                if fails or bad:
+                    ok = False
+                    detail = " | ".join(
+                        [f"missing {s!r}" for s in fails] + [f"found banned {s!r}" for s in bad]
+                    )
+                else:
+                    ok, detail = True, f"ok ({len(text)} chars)"
+        else:
+            ok, detail = False, "unknown check (use cmd: or file:)"
+        results.append({"name": name, "ok": bool(ok), "detail": str(detail)})
+    return results
+
+
+_VERDICT_ANNOT_RE = __import__("re").compile(r"\b(?:Verdict|VERDICT|verdict)\s*[:：\-–]?\s*(PASS|FAIL|WARN)\b")
+
+
+def _extract_review_verdict(text: str) -> tuple[str, str]:
+    """Return (verdict, review_text). Verdict in {PASS, FAIL, WARN, UNKNOWN}.
+    Prefers an explicit 'Verdict: X' annotation; falls back to the last
+    standalone PASS/FAIL/WARN word in the review text."""
+    text = text or ""
+    m = _VERDICT_ANNOT_RE.search(text)
+    if m:
+        return m.group(1).upper(), text
+    m = __import__("re").search(r"\bfinal\s+(PASS|FAIL|WARN)\b", text)
+    if m:
+        return m.group(1).upper(), text
+    words = __import__("re").findall(r"\b(PASS|FAIL|WARN)\b", text)
+    if words:
+        return words[-1], text
+    return "UNKNOWN", text
+
+
+def _fetch_latest_review(db, exclude_ids: set | None = None) -> str:
+    """Fetch the most recent review run's final text from the DB, excluding
+    runs seen before the current attempt started (avoids stale verdicts)."""
+    try:
+        for r in db.recent_runs(limit=6):
+            if r.get("task_type") == "review" and (not exclude_ids or r["id"] not in exclude_ids):
+                return r.get("final_response") or r.get("final_summary") or ""
+    except Exception:
+        pass
+    return ""
 
 
 if __name__ == "__main__":
