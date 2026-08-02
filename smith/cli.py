@@ -1540,7 +1540,10 @@ def flow_import(
         # ── Run step: implement + verification gate (acceptance + review) ──
         # A step is not "completed" until the mechanical acceptance checks pass
         # AND the model review (if enabled) returns PASS. Failures inject the
-        # defect list into a retry, up to `review_iterations` retries.
+        # defect list into a retry, up to `review_iterations` retries. Retries
+        # after the first attempt are CORRECTION PASSES: the implementation on
+        # disk is KEPT and only the failing defects are fixed minimally — never
+        # a full re-run that could regress working files.
         retries = 0
         try:
             retries = max(0, int(task.get("review_iterations", flow_review_iterations) or 0))
@@ -1548,18 +1551,24 @@ def flow_import(
             retries = 0
         max_attempts = retries + 1
         full_output = ""
+        corrections_used = 0
         step_failures: list[str] = []
         step_errored = False
         for attempt in range(1, max_attempts + 1):
             run_prompt = augmented_prompt
             if attempt > 1:
-                console.print(f"[yellow]  ⚡ Verification failed — retrying ({attempt - 1}/{retries}) with defects injected[/yellow]")
+                corrections_used = attempt - 1
+                console.print(f"[yellow]  ⚡ Verification failed — correction pass ({attempt - 1}/{retries})[/yellow]")
                 run_prompt = (
                     augmented_prompt
-                    + "\n\n---\n\n[FLOW] RETRY — your previous attempt FAILED verification. "
-                    "Fix EVERY issue below, then re-verify (run the acceptance checks "
-                    "yourself) before finishing:\n"
+                    + "\n\n---\n\n[FLOW] CORRECTION PASS — your implementation from the previous "
+                    "attempt is still on disk and is being KEPT. Only the defects below remain. "
+                    "Apply MINIMAL targeted fixes: edit/write ONLY the files involved in these "
+                    "defects; do NOT rewrite, re-scaffold, or regenerate anything that already "
+                    "satisfies the checks. If a required file is missing, create just that file. "
+                    "Defects to fix:\n"
                     + "\n".join(f"  - {d}" for d in step_failures)
+                    + "\n\nAfter fixing, re-run the acceptance checks yourself to confirm."
                 )
 
             # ── Run attempt (one backend-crash retry) ─────────────────────
@@ -1686,6 +1695,7 @@ def flow_import(
             "status": "completed",
             "tool_errors": len(new_errors),
             "error_types": list(set(e.get("error_type", "?") for e in new_errors)),
+            "corrections": corrections_used,
         })
 
         if new_errors:
