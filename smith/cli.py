@@ -1897,10 +1897,10 @@ def _run_acceptance_checks(project: str, checks: list) -> list[dict]:
                 out = (proc.stdout or "") + "\n" + (proc.stderr or "")
                 expect = c.get("expect")
                 if expect:
-                    ok = expect in out
+                    ok = expect in out and proc.returncode == 0
                     detail = (
                         f"exit={proc.returncode}, found {expect!r}"
-                        if ok else f"exit={proc.returncode}, MISSING {expect!r} — output tail: {out[-200:]!r}"
+                        if ok else f"exit={proc.returncode}, MISSING {expect!r} or non-zero exit — output tail: {out[-200:]!r}"
                     )
                 else:
                     ok = proc.returncode == 0
