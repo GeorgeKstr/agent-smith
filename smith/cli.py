@@ -1930,25 +1930,33 @@ def flow_import(
                 + "\n\nEnd with 'Verdict: PASS/FAIL/WARN' on its own line. PASS = the code is correct "
                 "as-is (the check may be too strict); FAIL = real defects remain."
             )
-            try:
-                rev_coord = ProjectCoordinator(project)
-                rev_coord.start_worker()
-                rev_chunks: list[str] = []
-                for tok in rev_coord.stream_user_task(
-                    rev_prompt,
-                    task_type="review",
-                    review_mode="never",
-                    model_override=flow_remediation_model,
-                    approval_handler=approval_handler,
-                    recursion_limit=160,
-                ):
-                    rev_chunks.append(tok)
-                    if verbose:
-                        console.print(tok, end="", highlight=False)
-                rev_text = "".join(rev_chunks)
-            except Exception as exc:
-                console.print(f"[red]  ✗ Remediation review failed: {exc}[/red]")
-                rev_text = ""
+            rev_text = ""
+            for crash_attempt in (1, 2):
+                try:
+                    rev_coord = ProjectCoordinator(project)
+                    rev_coord.start_worker()
+                    rev_chunks: list[str] = []
+                    for tok in rev_coord.stream_user_task(
+                        rev_prompt,
+                        task_type="review",
+                        review_mode="never",
+                        model_override=flow_remediation_model,
+                        approval_handler=approval_handler,
+                        recursion_limit=160,
+                    ):
+                        rev_chunks.append(tok)
+                        if verbose:
+                            console.print(tok, end="", highlight=False)
+                    rev_text = "".join(rev_chunks)
+                    break
+                except Exception as exc:
+                    err = str(exc)
+                    if _is_backend_crash(err) and crash_attempt == 1:
+                        console.print("[yellow]  ⚡ Backend crash during remediation review, restarting model...[/yellow]")
+                        _restart_model_backend()
+                        continue
+                    console.print(f"[red]  ✗ Remediation review failed: {exc}[/red]")
+                    break
             verdict, rev_body = _extract_review_verdict(rev_text)
             console.print(f"  [yellow]Remediation review verdict: {verdict}[/yellow]")
             if verdict == "PASS":
