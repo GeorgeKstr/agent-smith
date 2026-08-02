@@ -1525,6 +1525,10 @@ Return only valid JSON in this shape:
 
             <details open>
               <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text);padding:2px 0">Steps</summary>
+              <div style="margin-top:8px">
+                <label style="font-size:11px;color:var(--muted);margin-bottom:2px;display:block">Flow goal (injected into every step):</label>
+                <textarea id="flowGoal" rows="2" placeholder="e.g. Build a Laravel todo app with auth, Livewire, and collaborators." style="width:100%;font-size:12px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px;resize:vertical"></textarea>
+              </div>
               <div id="taskSteps" style="margin-top:4px"></div>
               <button id="addTaskStepBottom" class="bottom-add-step">＋ Add step</button>
             </details>
@@ -2858,7 +2862,9 @@ Return only valid JSON in this shape:
         badge.className = "badge pending";
         badge.textContent = "◌";
       });
-      taskFlow = { running: true, stopped: false, paused: false, skipRequested: false, index: 0, steps };
+      const flowGoal = ($("flowGoal").value || "").trim();
+      const flowProgress = [];
+      taskFlow = { running: true, stopped: false, paused: false, skipRequested: false, index: 0, steps, flowGoal, flowProgress };
       $("taskOutput").innerHTML = `<div style="margin-bottom:8px;display:flex;align-items:center;gap:8px"><span style="font-weight:700;font-size:12px">Task Output</span><button id="taskOutputMode" class="ghost" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--border)">raw</button><button id="skipStepBtn" class="ghost" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--border);margin-left:auto;display:none" title="Skip current step and continue with next">skip step</button></div>`;
       $("taskStatus").textContent = `Running ${steps.length} step(s)...`;
       updateTaskBadge("running", steps.length);
@@ -2952,7 +2958,16 @@ Return only valid JSON in this shape:
       try {
         // First implementation run — ask for implementation notes
         const implSystemNote = `\n\nWhen you finish, include a section titled ## Implementation Notes at the end of your response. In those notes, briefly describe:\n- What changes you made and why\n- Any trade-offs or design decisions\n- Any areas you're unsure about or that need careful review\n\nDo NOT skip the implementation notes — they are essential for the reviewer.`;
-        await runSmithPrompt(step.prompt + implSystemNote, step, wrapOnToken((txt) => {
+        let flowHeader = "";
+        if (taskFlow.flowGoal || taskFlow.flowProgress.length) {
+          flowHeader = `[FLOW] Step ${taskFlow.index + 1}/${taskFlow.steps.length} — ${step.task_type}\n`;
+          if (taskFlow.flowGoal) flowHeader += `[FLOW] Goal: ${taskFlow.flowGoal}\n`;
+          if (taskFlow.flowProgress.length) {
+            flowHeader += `[FLOW] Completed so far:\n${taskFlow.flowProgress.slice(-12).map(e => "  " + e).join("\n")}\n`;
+          }
+          flowHeader += "\n---\n\n";
+        }
+        const augmentedPrompt = flowHeader + step.prompt;
           raw += txt;
           outEl.innerHTML = taskFlow.rawMode ? `<pre style="white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:#05080b;border-radius:6px;padding:8px">${escapeHtml(raw)}</pre>` : renderMarkdown(raw);
           $("taskOutput").scrollTop = $("taskOutput").scrollHeight;
@@ -3073,6 +3088,10 @@ After making changes, include a section titled ## Implementation Notes at the en
           return;
         }
 
+        // Track progress for flow context
+        const stepLabel = step.label || `Step ${taskFlow.index + 1}`;
+        const stepSummary = raw.replace(/\[smith\].*/g, "").split("\n").filter(l => l.trim().length > 20).slice(-1)[0] || "completed";
+        taskFlow.flowProgress.push(`✅ ${stepLabel}: ${stepSummary.substring(0, 120)}`);
         setStepStatus(i, "done");
         taskFlow.index += 1;
         const approval = step.approval || $("taskFlowApproval").value;
