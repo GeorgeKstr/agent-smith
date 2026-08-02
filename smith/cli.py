@@ -1639,12 +1639,7 @@ def flow_import(
                 except Exception as exc:
                     err = str(exc)
                     # If the backend (LM Studio / llama-server) crashed, restart it and retry
-                    is_backend_crash = (
-                        "Engine protocol predict request failed" in err
-                        or "fetch failed" in err
-                        or "Connection error" in err
-                        or "RemoteProtocolError" in err
-                    )
+                    is_backend_crash = _is_backend_crash(err)
                     if is_backend_crash and crash_attempt == 1:
                         console.print(f"[yellow]  ⚡ Backend crash detected, restarting model...[/yellow]")
                         _restart_model_backend()
@@ -1867,26 +1862,38 @@ def flow_import(
                     _render_acceptance_checks(r.get("acceptance") or []) for r in pending
                 )
             )
-            try:
-                rem_coord = ProjectCoordinator(project)
-                rem_coord.start_worker()
-                rem_chunks: list[str] = []
-                for tok in rem_coord.stream_user_task(
-                    rem_prompt,
-                    task_type="implement",
-                    review_mode="never",
-                    model_override=flow_remediation_model,
-                    approval_handler=approval_handler,
-                    recursion_limit=160,
-                ):
-                    rem_chunks.append(tok)
-                    if verbose:
-                        console.print(tok, end="", highlight=False)
-                if not verbose:
-                    console.print(f"[dim]  fix attempt finished ({len(''.join(rem_chunks))} chars)[/dim]")
-            except Exception as exc:
-                console.print(f"[red]  ✗ Remediation fix failed: {exc}[/red]")
+            rem_chunks: list[str] = []
+            rem_done = False
+            for crash_attempt in (1, 2):
+                try:
+                    rem_coord = ProjectCoordinator(project)
+                    rem_coord.start_worker()
+                    rem_chunks = []
+                    for tok in rem_coord.stream_user_task(
+                        rem_prompt,
+                        task_type="implement",
+                        review_mode="never",
+                        model_override=flow_remediation_model,
+                        approval_handler=approval_handler,
+                        recursion_limit=160,
+                    ):
+                        rem_chunks.append(tok)
+                        if verbose:
+                            console.print(tok, end="", highlight=False)
+                    rem_done = True
+                    break
+                except Exception as exc:
+                    err = str(exc)
+                    if _is_backend_crash(err) and crash_attempt == 1:
+                        console.print("[yellow]  ⚡ Backend crash during remediation fix, restarting model...[/yellow]")
+                        _restart_model_backend()
+                        continue
+                    console.print(f"[red]  ✗ Remediation fix failed: {exc}[/red]")
+                    break
+            if not rem_done:
                 break
+            if not verbose:
+                console.print(f"[dim]  fix attempt finished ({len(''.join(rem_chunks))} chars)[/dim]")
 
             # Mechanical re-verification of the fixed steps
             rem_still: list[tuple[dict, list[str]]] = []
@@ -2013,6 +2020,18 @@ def flow_import(
                 if msgs:
                     last = msgs[-1]
                     console.print(f"    Model context: [{last.get('role', '?')}] {last.get('content', '')[:150]}")
+
+
+def _is_backend_crash(err: str) -> bool:
+    """Heuristic: is this exception a crashed/unloaded model backend?"""
+    return (
+        "Engine protocol predict request failed" in err
+        or "Engine protocol startup was aborted" in err
+        or "Model is unloaded" in err
+        or "fetch failed" in err
+        or "Connection error" in err
+        or "RemoteProtocolError" in err
+    )
 
 
 def _restart_model_backend() -> None:
