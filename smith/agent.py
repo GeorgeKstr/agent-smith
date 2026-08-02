@@ -211,12 +211,15 @@ def _split_on_operator(parts: list[str], operator: str) -> list[list[str]]:
 
 
 def _check_protected_paths(parts: list[str], root: str | Path) -> str | None:
-    """Reject destructive commands that target Smith's internal .agent-smith
-    directory (the live DB, skeletal context, logs). Returns an error message
-    if blocked, else None.
+    """Reject destructive commands that escape the workspace or target Smith's
+    internal .agent-smith directory.
 
-    The model must NEVER be able to delete/move/truncate its own state — that
-    is what previously wiped smith.db mid-flow and broke skeletal context.
+    Rules for destructive executables (rm, rmdir, mv, chmod, chown, truncate,
+    dd):
+      1. every operand path must resolve inside the workspace root
+      2. .agent-smith/ (live DB, skeletal context, logs) is always off-limits
+
+    Returns an error message if blocked, else None.
     """
     _DESTRUCTIVE = {"rm", "rmdir", "mv", "chmod", "chown", "truncate", "dd"}
     # Find destructive executables anywhere in the token list, so wrapping
@@ -226,11 +229,37 @@ def _check_protected_paths(parts: list[str], root: str | Path) -> str | None:
         return None
     root_resolved = Path(root).expanduser().resolve()
     smith_dir = root_resolved / ".agent-smith"
+
+    def _path_arg(arg: str) -> str | None:
+        """Extract a filesystem path from an argument token.
+        Handles plain paths and option-value pairs like if=, of=, --output=.
+        Returns None if the token is a flag with no path value."""
+        if "=" in arg:
+            _, val = arg.split("=", 1)
+            if val and (
+                val.startswith("/") or val.startswith("~") or val.startswith(".")
+                or "/" in val
+            ):
+                return val  # option-value pair carrying a path (of=, if=, --output=)
+            if arg.startswith("-") and not val:
+                return None  # bare flag like --recursive
+        if arg.startswith("-"):
+            return None  # other flags (-rf, -r, -f, -S, ...)
+        return arg
+
     for idx in idxs:
-        for arg in parts[idx + 1:]:
-            arg = arg.strip()
-            if not arg or arg.startswith("-"):
-                continue  # flags like -rf, -r, -f, --force are harmless alone
+        exe = Path(parts[idx]).name
+        for raw_arg in parts[idx + 1:]:
+            raw = raw_arg.strip()
+            if not raw:
+                continue
+            # dd: only the output file (of=) is a write target; the input
+            # (if=/dev/zero, if=file) is a read source and not destructive.
+            if exe == "dd" and raw.lower().startswith("if="):
+                continue
+            arg = _path_arg(raw)
+            if arg is None:
+                continue
             target = Path(arg).expanduser()
             if not target.is_absolute():
                 target = root_resolved / target
@@ -240,9 +269,15 @@ def _check_protected_paths(parts: list[str], root: str | Path) -> str | None:
                 continue
             if target == smith_dir or smith_dir in target.parents:
                 return (
-                    f"BLOCKED: cannot {Path(parts[idx]).name} '{arg}' — .agent-smith/ "
+                    f"BLOCKED: cannot {exe} '{raw}' — .agent-smith/ "
                     "holds Smith's live database, skeletal context and logs. "
-                    "Deleting or moving it would destroy agent state. Use other paths."
+                    "Deleting or moving it would destroy agent state."
+                )
+            if target != root_resolved and root_resolved not in target.parents:
+                return (
+                    f"BLOCKED: cannot {exe} '{raw}' — destructive commands are only "
+                    f"allowed inside the project workspace ({root_resolved}). "
+                    f"'{raw}' resolves outside of it."
                 )
     return None
 
