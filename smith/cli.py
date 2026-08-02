@@ -1931,12 +1931,14 @@ def _run_acceptance_checks(project: str, checks: list) -> list[dict]:
                             text += open(p, encoding="utf-8", errors="replace").read()
                         except Exception:
                             pass
-                fails = [s for s in (c.get("contains") or []) if s not in text]
+                text_l = text.lower()
+                fails = [s for s in (c.get("contains") or []) if s.lower() not in text_l]
                 bad = []
                 for s in (c.get("not_contains") or []):
                     # Word-boundary match so 'list_id' does NOT match inside
-                    # 'todo_list_id' (underscore is a word char).
-                    if re.search(r"\b" + re.escape(s) + r"\b", text):
+                    # 'todo_list_id' (underscore is a word char); case-folded so
+                    # 'whereHas' matches 'orWhereHas'.
+                    if re.search(r"\b" + re.escape(s) + r"\b", text, re.IGNORECASE):
                         bad.append(s)
                 if fails or bad:
                     ok = False

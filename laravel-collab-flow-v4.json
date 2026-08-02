@@ -246,6 +246,12 @@
           "not_contains": [
             "list_id"
           ]
+        },
+        {
+          "name": "migrate-runs",
+          "cmd": "php artisan migrate --force",
+          "timeout": 120,
+          "hint": "run bash('php artisan migrate --force') — migrations exist but were never applied"
         }
       ]
     },
@@ -408,8 +414,9 @@
         },
         {
           "name": "seed-runs",
-          "cmd": "php artisan db:seed",
-          "timeout": 120
+          "cmd": "php artisan db:seed --force",
+          "timeout": 120,
+          "hint": "run bash('php artisan db:seed --force') — the DB must be migrated first"
         }
       ]
     }
