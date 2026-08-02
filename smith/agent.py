@@ -272,9 +272,36 @@ def _check_protected_paths(parts: list[str], root: str | Path) -> str | None:
                 return (
                     f"BLOCKED: cannot {exe} '{raw}' — destructive commands are only "
                     f"allowed inside the project workspace ({root_resolved}). "
-                    f"'{raw}' resolves outside of it."
+                    f"'{raw}' resolves outside of it.\n"
+                    f"Allowed alternatives: read outside files with cat/ls/find; "
+                    f"copy files INTO the workspace with cp (cp is allowed); delete/move "
+                    f"only files that are already inside the workspace."
                 )
     return None
+
+
+_BLOCKED_MEMO: dict[str, tuple[int, float]] = {}
+
+
+def _maybe_stop_loop(command: str, err: str) -> str:
+    """Return a hard-stop message if the same command keeps getting blocked,
+    so the model stops retrying in a loop."""
+    import time as _t
+    now = _t.time()
+    key = command.strip()[:200]
+    count, last = _BLOCKED_MEMO.get(key, (0, 0.0))
+    if now - last > 30:
+        count = 0
+    count += 1
+    _BLOCKED_MEMO[key] = (count, now)
+    if count >= 4:
+        return (
+            err
+            + "\n\nSTOP: This exact command has been blocked repeatedly and will never "
+            "be allowed. Do NOT retry it. Choose a different approach (cp for copying "
+            "into the workspace, cat/ls for reading) or finish your task now."
+        )
+    return err
 
 
 def _get_allowed_commands(db) -> set[str]:
@@ -403,7 +430,7 @@ def _exec_shell_chain(
     # Defense in depth: never touch .agent-smith even from nested segments.
     protected_err = _check_protected_paths(parts, cwd)
     if protected_err:
-        return {"exit_code": 1, "output": protected_err, "operators": []}
+        return {"exit_code": 1, "output": _maybe_stop_loop(" ".join(parts), protected_err), "operators": []}
     _REDIRECT_RE = _re.compile(r"^(\d+)?(>|>>|<|>&|>\|)(/[^\s]*|\S*)?$")
     clean_parts = [p for p in parts if not _REDIRECT_RE.match(p)]
     has_merge_stderr = any("2>&1" in p or "2>" in p or "1>&2" in p for p in parts)
@@ -1122,7 +1149,7 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         protected_err = _check_protected_paths(parts, root)
         if protected_err:
             _log_error("bash", {"command": command}, protected_err)
-            return protected_err
+            return _maybe_stop_loop(command, protected_err)
 
         # ── Detect shell metacharacters and auto-process them ─────────
         # Many models (especially Qwen, DeepSeek, etc.) habitually use shell
