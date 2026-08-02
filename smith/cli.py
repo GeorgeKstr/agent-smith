@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .agent import smith_recursion_limit, ApprovalHandler, ApprovalRequest, AutoApprovalHandler
-from .coordinator import ProjectCoordinator
+from .coordinator import ProjectCoordinator, build_review_prompt
 from .db import ProjectDB
 from .registry_server import register_agent, start_registry_if_needed, REGISTRY_URL
 from .compaction import CompactionEngine, auto_compact_run
@@ -1390,6 +1390,23 @@ def flow_import(
         except (TypeError, ValueError):
             flow_review_iterations = 0
 
+    # ── Review policy: when do step-level model reviews run? ──────────
+    # 'always'   — every attempt runs an auto-review after the implement run
+    #              (current default; the review can catch semantic issues).
+    # 'on_failure'— implement runs skip the auto-review; a review runs ONLY
+    #              when the mechanical acceptance gate fails (to gather
+    #              defects for the correction pass). Saves a full model run
+    #              per passing attempt — the dominant cost in the pipeline.
+    review_policy = "always"
+    if isinstance(raw, dict):
+        rp = str(raw.get("review_policy", "always")).lower()
+        if rp in ("on_failure", "on-failure"):
+            review_policy = "on_failure"
+        elif rp in ("always", "auto"):
+            review_policy = "always"
+    if review_policy == "on_failure":
+        console.print("[dim]Review policy: on_failure (reviews only when acceptance fails)[/dim]")
+
     # ── Flow remediation: large-model fix iterations for failed steps ─
     # Failed steps keep their last implementation; the remediation model
     # (typically larger than the step models) gets N fix+review iterations
@@ -1602,7 +1619,7 @@ def flow_import(
                     for token in coord.stream_user_task(
                         run_prompt,
                         task_type=task_type,
-                        review_mode=review,
+                        review_mode=("never" if review_policy == "on_failure" else review),
                         model_override=model_override,
                         review_model_override=review_model_override,
                         review_extra_context=acceptance_text or None,
@@ -1656,8 +1673,41 @@ def flow_import(
 
             full_output = attempt_output
 
-            # ── VERIFICATION GATE: mechanical acceptance + model review ──
+            # ── VERIFICATION GATE: mechanical acceptance + (conditional) model review ──
             step_failures = []
+            acc_results = _run_acceptance_checks(project, acceptance_checks)
+            for r in acc_results:
+                mark = "✓" if r["ok"] else "✗"
+                style = "green" if r["ok"] else "red"
+                console.print(f"  [{style}]{mark} acceptance {r['name']}[/{style}]: {r['detail']}")
+            acc_failures = [r for r in acc_results if not r["ok"]]
+            for r in acc_failures:
+                step_failures.append(f"Acceptance {r['name']}: {r['detail']}")
+
+            # review_policy=on_failure: run the model review NOW only if the
+            # mechanical gate failed (its verdict + findings feed the correction
+            # pass). Skipping it on passing attempts saves a full model run.
+            if review_policy == "on_failure" and review != "never":
+                if acc_failures:
+                    try:
+                        rchunks: list[str] = []
+                        for token in coord.stream_user_task(
+                            build_review_prompt(acceptance_text or None),
+                            task_type="review",
+                            review_mode="never",
+                            model_override=review_model_override,
+                            approval_handler=approval_handler,
+                        ):
+                            rchunks.append(token)
+                            if verbose:
+                                console.print(token, end="", highlight=False)
+                        if not verbose:
+                            console.print(f"[dim]  review finished ({len(''.join(rchunks))} chars)[/dim]")
+                    except Exception as exc:
+                        console.print(f"[dim]  review error: {exc}[/dim]")
+                else:
+                    console.print("  [dim]· review skipped (acceptance passed; review_policy=on_failure)[/dim]")
+
             known_review_ids = {
                 r["id"] for r in db.recent_runs(limit=6) if r.get("task_type") == "review"
             }
@@ -1670,15 +1720,6 @@ def flow_import(
                 console.print(f"  [green]✓ Review verdict: PASS[/green]")
             else:
                 console.print(f"  [dim]· no review verdict (reviews off or inconclusive)[/dim]")
-
-            acc_results = _run_acceptance_checks(project, acceptance_checks)
-            for r in acc_results:
-                mark = "✓" if r["ok"] else "✗"
-                style = "green" if r["ok"] else "red"
-                console.print(f"  [{style}]{mark} acceptance {r['name']}[/{style}]: {r['detail']}")
-            for r in acc_results:
-                if not r["ok"]:
-                    step_failures.append(f"Acceptance {r['name']}: {r['detail']}")
 
             if not step_failures:
                 break  # verification passed

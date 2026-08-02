@@ -13,6 +13,38 @@ from .indexer import index_file, scan_project
 from .registry import classify_prompt
 
 
+def build_review_prompt(review_extra_context: str | None = None) -> str:
+    """Prompt for a step review run. Shared by the auto-review inside
+    stream_user_task and by the flow's on-failure review (review_policy)."""
+    review_prompt = (
+        "Review the most recent Smith changes for correctness, missed requirements, "
+        "safety issues, and whether checks are sufficient.\n\n"
+        "VERIFICATION RULES:\n"
+        "1. NEVER run 'ls -R' or any recursive directory listing. On a real project "
+        "that floods your context with thousands of vendor/ lines and hides the "
+        "actual state. Always use TARGETED checks: 'ls <specific path>', "
+        "'test -f <path>', 'grep -rn \"symbol\" <path>', 'php artisan route:list'.\n"
+        "2. Verify every file the task required was ACTUALLY created on disk with a "
+        "targeted ls/test -f. A missing, empty, or stub file means the step FAILS — "
+        "never assume it exists from the summary.\n"
+        "3. Actively run the project's tests and linters (php artisan test / pytest / "
+        "npm test / go test ...). If tests fail, the step FAILS.\n"
+        "4. Check wiring (routes, config, migrations) where relevant.\n\n"
+    )
+    if review_extra_context:
+        review_prompt += (
+            f"REQUIRED ACCEPTANCE CHECKS FOR THIS STEP — every one of these must "
+            f"pass or the step FAILS:\n{review_extra_context}\n\n"
+        )
+    review_prompt += (
+        "Then return a concise review with: what you ran, results, issues found, "
+        "and a final verdict on its own line, e.g. 'Verdict: PASS', "
+        "'Verdict: FAIL', or 'Verdict: WARN'. A FAIL or WARN verdict means the "
+        "step must be fixed before continuing."
+    )
+    return review_prompt
+
+
 class ProjectCoordinator:
     def __init__(self, root_path: str | Path):
         self.db = ProjectDB(root_path)
@@ -123,32 +155,7 @@ class ProjectCoordinator:
                     # Compaction is best-effort; don't fail the task
                     self.db.record_event(None, "compaction_error", {"error": str(exc)})
             if review_mode in {"auto", "always"} and task_type == "implement":
-                review_prompt = (
-                    "Review the most recent Smith changes for correctness, missed requirements, "
-                    "safety issues, and whether checks are sufficient.\n\n"
-                    "VERIFICATION RULES:\n"
-                    "1. NEVER run 'ls -R' or any recursive directory listing. On a real project "
-                    "that floods your context with thousands of vendor/ lines and hides the "
-                    "actual state. Always use TARGETED checks: 'ls <specific path>', "
-                    "'test -f <path>', 'grep -rn \"symbol\" <path>', 'php artisan route:list'.\n"
-                    "2. Verify every file the task required was ACTUALLY created on disk with a "
-                    "targeted ls/test -f. A missing, empty, or stub file means the step FAILS — "
-                    "never assume it exists from the summary.\n"
-                    "3. Actively run the project's tests and linters (php artisan test / pytest / "
-                    "npm test / go test ...). If tests fail, the step FAILS.\n"
-                    "4. Check wiring (routes, config, migrations) where relevant.\n\n"
-                )
-                if review_extra_context:
-                    review_prompt += (
-                        f"REQUIRED ACCEPTANCE CHECKS FOR THIS STEP — every one of these must "
-                        f"pass or the step FAILS:\n{review_extra_context}\n\n"
-                    )
-                review_prompt += (
-                    "Then return a concise review with: what you ran, results, issues found, "
-                    "and a final verdict on its own line, e.g. 'Verdict: PASS', "
-                    "'Verdict: FAIL', or 'Verdict: WARN'. A FAIL or WARN verdict means the "
-                    "step must be fixed before continuing."
-                )
+                review_prompt = build_review_prompt(review_extra_context)
                 yield "\n\n--- Review ---\n"
                 yield from stream_agent(
                     self.db,
