@@ -1836,6 +1836,7 @@ def flow_import(
                     review_mode="never",
                     model_override=flow_remediation_model,
                     approval_handler=approval_handler,
+                    recursion_limit=160,
                 ):
                     rem_chunks.append(tok)
                     if verbose:
@@ -1891,6 +1892,7 @@ def flow_import(
                     review_mode="never",
                     model_override=flow_remediation_model,
                     approval_handler=approval_handler,
+                    recursion_limit=160,
                 ):
                     rev_chunks.append(tok)
                     if verbose:

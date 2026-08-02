@@ -2308,7 +2308,7 @@ def build_fallback_final_response(db: ProjectDB, run_id: str, task_type: str) ->
     return "\n".join(lines)
 
 
-def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode: str = "auto", model_override: dict[str, str] | None = None, cancel_event: threading.Event | None = None, approval_handler: ApprovalHandler | None = None):
+def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode: str = "auto", model_override: dict[str, str] | None = None, cancel_event: threading.Event | None = None, approval_handler: ApprovalHandler | None = None, recursion_limit: int | None = None):
     db.init()
     _reset_progress_counters()
     # Collect everything into a transcript for history replay
@@ -2335,7 +2335,7 @@ def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode
     db.record_event(run_id, "context_built", {"snapshot_id": snapshot_id, "chars": len(context)})
     yield _yield_and_save(f"[smith] context ready: {len(context)} chars\n")
 
-    limit = smith_recursion_limit()
+    limit = recursion_limit or smith_recursion_limit()
     yield _yield_and_save(f"[smith] starting model/tool loop...\n")
     yield _yield_and_save(f"[smith] recursion limit: {limit}\n")
     agent = build_agent_with_handler(db, task_type=task_type, context_bundle=context, run_id=run_id, model_override=model_override, cancel_event=cancel_event, approval_handler=approval_handler, error_logger=error_logger, model_context=model_context)

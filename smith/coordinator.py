@@ -88,6 +88,7 @@ class ProjectCoordinator:
         review_extra_context: str | None = None,
         cancel_event: threading.Event | None = None,
         approval_handler: ApprovalHandler | None = None,
+        recursion_limit: int | None = None,
     ) -> Generator[str, None, None]:
         task_type = task_type or classify_prompt(prompt)
         # User tasks wait only for the current small index/tool unit.
@@ -102,6 +103,7 @@ class ProjectCoordinator:
                 model_override=model_override,
                 cancel_event=cancel_event,
                 approval_handler=approval_handler,
+                recursion_limit=recursion_limit,
             ):
                 output_chunks.append(chunk)
                 yield chunk

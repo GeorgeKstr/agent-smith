@@ -359,7 +359,8 @@
       "acceptance": [
         {
           "name": "lists-index",
-          "file": "resources/views/lists/index.blade.php"
+          "file": "resources/views/lists/index.blade.php",
+          "hint": "create resources/views/lists/index.blade.php (MISSING) — a blade view listing the user's todo lists with links to show/create"
         },
         {
           "name": "lists-show",
@@ -367,11 +368,13 @@
           "contains": [
             "items",
             "collaborators"
-          ]
+          ],
+          "hint": "create resources/views/lists/show.blade.php (MISSING) — blade view showing list name/description, items with toggle+delete forms, and collaborators/invitations sections"
         },
         {
           "name": "lists-form",
-          "file": "resources/views/lists/_form.blade.php"
+          "file": "resources/views/lists/_form.blade.php",
+          "hint": "create resources/views/lists/_form.blade.php (MISSING) — the shared create/edit list form partial"
         },
         {
           "name": "invitations-show",
@@ -379,7 +382,8 @@
           "contains": [
             "accept",
             "token"
-          ]
+          ],
+          "hint": "create resources/views/invitations/show.blade.php (MISSING) — blade view with an accept-invitation form posting to invitations.accept"
         }
       ]
     },
