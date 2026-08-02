@@ -23,4 +23,3 @@ smith/backups/
 *.desktop
 server_output.log
 scripts/
-*.sh
