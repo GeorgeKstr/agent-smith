@@ -134,13 +134,17 @@ class ProjectCoordinator:
                 review_prompt = (
                     "Review the most recent Smith changes for correctness, missed requirements, "
                     "safety issues, and whether checks are sufficient.\n\n"
+                    "STEP 1 — VERIFY FILES EXIST: list the project files with ls/find and "
+                    "confirm every file the task required was ACTUALLY created on disk. "
+                    "If a required file is missing, empty, or a stub, the step FAILS — do not "
+                    "assume it exists from the summary.\n\n"
                     "IMPORTANT: You MUST actively test the changes. Use bash to:\n"
                     "1. Run the project's test suite (pytest, npm test, go test, cargo test, etc.)\n"
                     "2. Run linters (ruff, eslint, shellcheck) and type checkers (mypy, tsc)\n"
                     "3. Try to run or import the changed code to catch syntax/runtime errors\n"
                     "4. If no tests exist, at minimum check that imports resolve and the code parses\n\n"
                     "Then return a concise review with: what you ran, results, issues found, "
-                    "and a final PASS/FAIL/WARN verdict."
+                    "and a final PASS/FAIL/WARN verdict. A FAIL verdict means the step must be fixed."
                 )
                 yield "\n\n--- Review ---\n"
                 yield from stream_agent(

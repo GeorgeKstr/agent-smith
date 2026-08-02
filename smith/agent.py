@@ -26,6 +26,47 @@ from .sandbox import get_sandbox_backend
 load_dotenv()
 
 
+def _family_guidance(family: str) -> str:
+    """Return family-specific behavioral rules appended to the system prompt.
+
+    Each family has its own failure modes observed in the field:
+    - qwen (incl. omnicoder-9b, qwen3.5 base): loops on failed bash commands,
+      tries to write files via heredocs/cat/echo, re-writes the same file
+      repeatedly, and deletes files it just wrote.
+    - gemma: verbose, repeats the same tool call, sometimes answers without
+      calling tools at all, poor at formatting edit JSON.
+    - llama/mistral/phi: shorter-context reasoning; keep instructions crisp.
+    """
+    if family == "qwen":
+        return (
+            "\nFAMILY-SPECIFIC RULES (qwen/omnicoder):\n"
+            "- NEVER create or modify files with bash (cat/echo/heredoc/printf/python -c). "
+            "Always use the `write` and `edit` tools for files.\n"
+            "- Never `rm` a file you just wrote — use `edit` to change it.\n"
+            "- If a bash command fails, do NOT retry the same command. Diagnose the error "
+            "and either fix the cause or move on with a different approach.\n"
+            "- Do NOT rewrite the same file more than 2 times. After a successful write, "
+            "use `edit` for any follow-up changes.\n"
+            "- Finish with a short plain-text summary. Output ONLY the summary — no XML."
+        )
+    if family == "gemma":
+        return (
+            "\nFAMILY-SPECIFIC RULES (gemma):\n"
+            "- Work in small steps: ONE tool call per response, then wait for the result.\n"
+            "- Never call the same tool twice with the same arguments.\n"
+            "- If you don't need a tool, answer directly — do not invent tool calls.\n"
+            "- Keep responses SHORT. No long explanations, no repeated text."
+        )
+    if family in ("llama", "mistral", "phi", "deepseek", "glm"):
+        return (
+            "\nFAMILY-SPECIFIC RULES:\n"
+            "- One tool call at a time; wait for the result before the next.\n"
+            "- Never retry the same failing tool call. Change the approach.\n"
+            "- Keep responses SHORT."
+        )
+    return ""
+
+
 def _text_tool_prompt(profile, model_id: str = "") -> str:
     """Build text-based tool calling instructions for local models.
 
@@ -735,6 +776,14 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         if not profile.can_write:
             err_msg = "WRITE_BLOCKED: This task profile cannot write files."
             _log_error("write", {"path": path}, err_msg)
+            return err_msg
+        if not isinstance(content, str):
+            err_msg = (
+                f"WRITE_ARG_ERROR: `content` must be a string, got {type(content).__name__}. "
+                "Pass the file content as a quoted string, e.g. content=\"...\". "
+                "Do NOT pass a JSON object/dict."
+            )
+            _log_error("write", {"path": path, "content_type": type(content).__name__}, err_msg)
             return err_msg
         try:
             if cancel_event is not None and cancel_event.is_set():
@@ -1734,9 +1783,72 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         "read_skeletal_context": read_skeletal_context,
         "edit_skeletal_context": edit_skeletal_context,
     }
-    _is_gemma = "gemma" in (model_id or "").lower()
+    from .providers import model_family as _model_family
+    _family = _model_family(model_id)
+    _is_gemma = _family == "gemma"
     _tool_names = [n for n in profile.tools if n in all_tools and not (_is_gemma and n == "edit")]
-    return [all_tools[name] for name in _tool_names]
+
+    # ── Repeat-call guard: stop models from hammering the same call ──────
+    # qwen-family models (omnicoder) loop on failing commands (observed:
+    # `composer install` 21×, heredoc write attempts, rm+rewrite cycles).
+    # Gemma is known to repeat the same tool call verbatim. This guard
+    # hard-stops an IDENTICAL (tool, args) call after N repeats within a
+    # short window, returning a directive instead of running it again.
+    import json as _json_mod
+    import time as _time_mod
+    from functools import wraps as _wraps
+
+    _repeat_memo: dict[str, tuple[int, float]] = {}
+    repeat_threshold = {
+        "gemma": 3,      # gemma repeats verbatim — stop fast
+        "qwen": 4,       # omnicoder loops on failing commands
+        "llama": 4,
+        "mistral": 4,
+        "phi": 4,
+    }.get(_family, 6)
+    # Read-only tools are legitimately re-called (e.g. re-reading a file after
+    # edits); only guard stateful tools hard, and read-only tools loosely.
+    _READONLY_TOOLS = {
+        "ls", "read", "grep", "find", "fetch", "docs",
+        "search_project_context", "get_file_summary", "get_related_files",
+        "read_skeletal_context",
+    }
+    _REPEAT_WINDOW = 180.0  # seconds
+
+    def _guard_tool(tname: str, bt) -> None:
+        """Wrap a BaseTool instance's .func with the repeat guard."""
+        orig_func = bt.func
+        threshold = repeat_threshold * 2 if tname in _READONLY_TOOLS else repeat_threshold
+
+        @_wraps(orig_func)
+        def guarded(*args, **kwargs):
+            try:
+                key = _json_mod.dumps(
+                    (tname, args, kwargs), sort_keys=True, default=str
+                )[:250]
+            except Exception:
+                key = tname
+            now = _time_mod.time()
+            count, last = _repeat_memo.get(key, (0, 0.0))
+            if now - last > _REPEAT_WINDOW:
+                count = 0
+            count += 1
+            _repeat_memo[key] = (count, now)
+            if count >= threshold:
+                return (
+                    f"HARD_STOP: you have called {tname} with the exact same arguments "
+                    f"{count} times in a row and it is not working. Do NOT call it again. "
+                    "Diagnose why it keeps failing, try a fundamentally DIFFERENT approach, "
+                    "or finish the task now with a short summary of what you have done."
+                )
+            return orig_func(*args, **kwargs)
+
+        bt.func = guarded
+
+    selected = [all_tools[name] for name in _tool_names]
+    for tname in _tool_names:
+        _guard_tool(tname, all_tools[tname])
+    return selected
 
 
 def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str, run_id: str | None = None, model_override: dict[str, str] | None = None, cancel_event=None, approval_handler: ApprovalHandler | None = None, error_logger: ToolErrorLogger | None = None, model_context: list[dict[str, Any]] | None = None):
@@ -1750,6 +1862,7 @@ def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str,
     # (build_chat_model_for_task already decided based on model family + env var)
     text_tool_mode = getattr(llm, "text_tool_mode", False)
     _model_id = getattr(llm, "model_name", "") or getattr(llm, "model", "")
+    from .providers import model_family as _model_family
 
     if text_tool_mode:
         tool_instructions = _text_tool_prompt(profile, model_id=_model_id)
@@ -1792,6 +1905,7 @@ def build_agent_with_handler(db: ProjectDB, task_type: str, context_bundle: str,
         "7. Never loop. If you lack information, ask or use grep/find first.\n"
         "8. After your final tool call, output a brief summary of what you changed, then STOP.\n"
         "9. If the task is done, just report what was accomplished. Do not invent extra work.\n"
+        f"{_family_guidance(_model_family(_model_id))}\n"
     )
     return create_agent(model=llm, tools=make_tools(db, task_type, run_id, cancel_event=cancel_event, approval_handler=actual_handler, error_logger=error_logger, model_context=model_context, model_id=_model_id), system_prompt=system_prompt)
 

@@ -465,6 +465,21 @@ def extract_tool_calls_from_text(text: str, available_tool_names: set[str] | Non
     if not results:
         results.extend(_parse_md_json_tool(text))
 
+    # Post-process: params that must always be plain strings, never dict/list.
+    # Observed failure: models emit write(content={...JSON...}) → the JSON
+    # object gets coerced to a dict → LangChain can't encode it → cryptic
+    # "No closing quotation". Re-serialize to a JSON string instead so the
+    # write proceeds with real text content.
+    _STRING_PARAMS = {"write": {"content"}, "note": {"content"}}
+    for tc in results:
+        params = tc.get("args") or {}
+        for pname in _STRING_PARAMS.get(tc.get("name", ""), ()):
+            v = params.get(pname)
+            if v is not None and not isinstance(v, str):
+                import json as _json
+
+                params[pname] = _json.dumps(v, ensure_ascii=False)
+
     # Filter by available tool names if provided
     if available_tool_names:
         results = [tc for tc in results if tc["name"] in available_tool_names]

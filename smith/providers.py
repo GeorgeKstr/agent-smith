@@ -141,6 +141,28 @@ def get_project_model_selection(db: ProjectDB, task_type: str = "ask") -> dict[s
     return {"provider_id": "lmstudio", "model_id": provider["default_model"]}
 
 
+def model_family(model_id: str) -> str:
+    """Classify a model_id into a known family for behavioral steering.
+
+    Returns one of: "gemma", "qwen", "glm", "deepseek", "llama",
+    "mistral", "phi", "gpt", "other".
+    """
+    mid = (model_id or "").lower()
+    for family, keys in (
+        ("gemma", ("gemma",)),
+        ("qwen", ("qwen", "omnicoder", "coder-next")),
+        ("glm", ("glm", "chatglm", "zhipu")),
+        ("deepseek", ("deepseek",)),
+        ("llama", ("llama", "hermes", "nous-hermes")),
+        ("mistral", ("mistral", "mixtral", "codestral", "ministral")),
+        ("phi", ("phi",)),
+        ("gpt", ("gpt-", "gpt-oss", "o1", "o3", "openai")),
+    ):
+        if any(k in mid for k in keys):
+            return family
+    return "other"
+
+
 def _should_use_text_tools(model_id: str) -> bool:
     """Determine if text-based tool calling should be used for this model.
 
@@ -160,23 +182,18 @@ def _should_use_text_tools(model_id: str) -> bool:
     # ── Model-family heuristic ──────────────────────────────────────────
     # These families are known to emit textual tool calls (<|tool_call>,
     # <tool_call>, etc.) rather than native OpenAI function-calling JSON.
-    model_lower = model_id.lower()
-
-    _TEXT_MODE_PATTERNS = (
-        "gemma",       # Gemma 4 — native tool streaming is broken in langchain, use text parser
-        "glm",         # GLM models — uses <function=...> XML format, no native support
-        "qwen",        # Qwen3-Coder — emits <function=...> XML tool calls, no native support
-        "omnicoder",   # omnicoder-9b is qwen3.5-9b based — same <function=...> XML conventions
-        "deepseek",    # DeepSeek local variants
-        "llama",       # Llama 3.1 / Llama 2 / etc. — many local variants lack native support
-        "phi",         # Microsoft Phi models
-        "mistral",     # Mistral variants without native support
-        "mixtral",     # Mixtral variants
-    )
-
-    for pattern in _TEXT_MODE_PATTERNS:
-        if pattern in model_lower:
-            return True
+    family = model_family(model_id)
+    _TEXT_MODE_FAMILIES = {
+        "gemma",      # Gemma 4 — native tool streaming is broken in langchain, use text parser
+        "glm",        # GLM models — uses <function=...> XML format, no native support
+        "qwen",       # Qwen3-Coder / omnicoder-9b (qwen3.5 base) — <function=...> XML
+        "deepseek",   # DeepSeek local variants
+        "llama",      # Llama 3.1 / Llama 2 / etc. — many local variants lack native support
+        "phi",        # Microsoft Phi models
+        "mistral",    # Mistral variants without native support
+    }
+    if family in _TEXT_MODE_FAMILIES:
+        return True
 
     # ── Default: native ─────────────────────────────────────────────────
     return False
