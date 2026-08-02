@@ -1380,26 +1380,42 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
 
     @tool
     def read_skeletal_context() -> str:
-        """Read the project's skeletal context graph — a structured guide showing
-        architecture, component relationships, and progress markers. Use this
-        before implementing or reviewing to understand the project plan."""
+        """Read the project SPEC (SPEC.md) — the authoritative plan, schema,
+        and progress document. Read this before implementing or reviewing.
+        Falls back to the stored copy if the file is missing."""
+        spec_path = Path(root) / "SPEC.md"
+        try:
+            if spec_path.exists():
+                content = spec_path.read_text(encoding="utf-8").strip()
+                if content:
+                    return content
+        except Exception:
+            pass
         items = db.list_context_items(kinds=["skeletal_context"], limit=1)
         if items:
             return items[0]["content"]
-        return "(no skeletal context yet — run the flow setup step first)"
+        return "(no SPEC yet — run the flow setup step first)"
 
     @tool
     def edit_skeletal_context(content: str) -> str:
-        """Update the project's skeletal context graph. This is a markdown document
-        that guides the entire project. Each step should update relevant sections
-        with progress, findings, and architectural decisions.
+        """Update the project SPEC (SPEC.md) — the single source of truth.
+        Writes SPEC.md on disk and mirrors it to the project DB so the Web UI
+        and future runs see the same document. Keep the schema contract section
+        intact; only add or update progress/decisions.
 
         Args:
-            content: The full updated content for the skeletal context.
+            content: The full updated SPEC content (markdown).
         """
         content = content.strip()[:12000]
         if not content:
             return "EDIT_SKELETAL_ERROR: content is required"
+        file_written = False
+        try:
+            Path(root).mkdir(parents=True, exist_ok=True)
+            Path(root, "SPEC.md").write_text(content + "\n", encoding="utf-8")
+            file_written = True
+        except Exception:
+            pass
         db.upsert_context_item(
             "skeletal_context",
             "Project Skeletal Context",
@@ -1407,8 +1423,8 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             priority=15,
             source_run_id=run_id,
         )
-        db.record_event(run_id, "tool_edit_skeletal", {"chars": len(content)}, actor="agent")
-        return "SKELETAL_CONTEXT_UPDATED"
+        db.record_event(run_id, "tool_edit_skeletal", {"chars": len(content), "spec_file": file_written}, actor="agent")
+        return "SPEC_UPDATED (SPEC.md + project DB)"
         return f"NOTE_SAVED: '{title}' ({len(content)} chars). This note is now in the project context and visible to the developer."
 
     @tool
@@ -2316,14 +2332,6 @@ def stream_agent(db: ProjectDB, prompt: str, task_type: str = "ask", review_mode
 
     yield _yield_and_save("[smith] building context...\n")
     context, snapshot_id = db.build_context_bundle(prompt, budget_chars=profile.context_budget_chars, run_id=run_id)
-    # Inject skeletal context if available
-    skeletal_items = db.list_context_items(kinds=["skeletal_context"], limit=1)
-    if skeletal_items:
-        skel = skeletal_items[0]["content"]
-        skel_budget = max(2000, profile.context_budget_chars // 5)
-        if len(skel) > skel_budget:
-            skel = skel[:skel_budget] + "\n...(truncated — use read_skeletal_context for full content)"
-        context = f"SKELETAL PROJECT CONTEXT (plan & progress):\n{skel}\n\n{context}"
     db.record_event(run_id, "context_built", {"snapshot_id": snapshot_id, "chars": len(context)})
     yield _yield_and_save(f"[smith] context ready: {len(context)} chars\n")
 

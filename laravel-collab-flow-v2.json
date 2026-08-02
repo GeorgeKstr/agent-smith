@@ -1,0 +1,137 @@
+{
+  "flow_context": "## Goal\nBuild a collaborative todo app in Laravel 10: signup/login, personal todo lists,\ncreate/edit/delete lists, share lists by email invitation, collaborators can view\nand edit shared lists. SQLite database, Tailwind via CDN (no npm/vite).\n\n## SCHEMA CONTRACT — the ONLY source of truth for names. Copy these EXACTLY.\nNEVER invent alternative names. These names are used by every step.\n\n### Users table (default Laravel, do not modify)\ncolumns: id, name, email, password, timestamps\n\n### todo_lists table\ncolumns: id, name (string), description (text nullable), owner_id (foreignId -> users,\ncascade delete), timestamps\nTodoList model fillable: ['name', 'description', 'owner_id']\n- The owner column is **owner_id**. NEVER use 'user_id' on todo_lists.\n- Relationship methods: owner(), items(), collaborators(), invitations()\n\n### todo_items table\ncolumns: id, todo_list_id (foreignId -> todo_lists, cascade), title (string),\ncompleted (boolean, default false), due_date (date nullable), created_by\n(foreignId -> users, nullable), timestamps\nTodoItem model fillable: ['todo_list_id', 'title', 'completed', 'due_date', 'created_by']\n- The item text column is **title**. NEVER use 'content'.\n- The done-flag column is **completed**. NEVER use 'is_completed'.\n- Relationship methods: todoList() (NOT list()), creator()\n\n### todo_list_user pivot table\ncolumns: id, todo_list_id, user_id, role (string default 'collaborator'), timestamps,\nunique(todo_list_id, user_id)\nTo attach a collaborator ALWAYS use the exact Eloquent syntax:\n    $list->collaborators()->attach($user->id, ['role' => 'collaborator']);\nor\n    $list->collaborators()->syncWithoutDetaching([$user->id => ['role' => 'collaborator']]);\nNEVER pass ['user_id' => X, 'role' => Y] — that is invalid Eloquent syntax.\n\n### invitations table\ncolumns: id, todo_list_id (foreignId -> todo_lists, cascade), email (string),\ntoken (string unique), accepted_at (timestamp nullable), timestamps\nInvitation model fillable: ['todo_list_id', 'email', 'token', 'accepted_at']\n- The list FK is **todo_list_id**. NEVER use 'list_id'.\n- Relationship method: todoList() (NOT list())\n\n### Route names (use route('name') in views and redirects)\nlists.index, lists.create, lists.store, lists.show, lists.edit, lists.update,\nlists.destroy, lists.collaborators.store, lists.collaborators.remove,\nlists.items.store, items.update, items.destroy,\nlists.invitations.store, invitations.show, invitations.accept, login, register, logout\n\n### .env configuration (REQUIRED for the app to run)\nAPP_NAME=TodoLists, DB_CONNECTION=sqlite, and NO DB_HOST/DB_PORT/DB_DATABASE/\nDB_USERNAME/DB_PASSWORD lines. database/database.sqlite must exist.\nIf you find a configuration problem you MUST FIX it with the write tool — never\nstop and merely report it. A report without a fix is a failed step.\n",
+  "approval": "auto",
+  "setup": {
+    "prompt": "Check prerequisites with bash('php -v'), bash('composer --version'), bash('php -m') (sqlite, mbstring, xml, curl needed; install missing ones with sudo dnf install -y ...). Then create a concise skeletal context document with edit_skeletal_context(content) covering the SCHEMA CONTRACT in the FLOW section: architecture (auth, TodoList, TodoItem, Invitation, pivot), the exact table/column names, and the step plan. Output 'SETUP COMPLETE' when done. If the skeletal context call is too large, keep the document short — the contract in the flow section is authoritative anyway.",
+    "model": {
+      "provider_id": "lmstudio",
+      "model_id": "gemma-4-12b"
+    }
+  },
+  "flow_review_model": {
+    "provider_id": "lmstudio",
+    "model_id": "gemma-4-12b"
+  },
+  "steps": [
+    {
+      "label": "scaffold-laravel",
+      "task_type": "implement",
+      "prompt": "Scaffold Laravel 10 INTO THE PROJECT ROOT (current directory). The dir is NOT empty (it contains .agent-smith), so:\n1. bash('composer create-project laravel/laravel:^10.0 app_tmp --no-interaction')\n2. bash('cp -a app_tmp/. .')   (copies ALL files incl. hidden ones; do NOT use globs like mv tmp/*)\n3. bash('rm -rf app_tmp')\nNever use shell operators (&&, |, >, #) or heredocs.\n\nThen apply the .env configuration from the SCHEMA CONTRACT EXACTLY:\n1. bash('cp .env.example .env')\n2. write tool: edit .env to set APP_NAME=TodoLists and DB_CONNECTION=sqlite, and DELETE every DB_HOST/DB_PORT/DB_DATABASE/DB_USERNAME/DB_PASSWORD line.\n3. bash('touch database/database.sqlite')\n4. bash('php artisan key:generate')\n5. bash('php artisan migrate --force')\n\nACCEPTANCE (all must be true; if any is false, FIX it and re-check, never stop early):\n- bash('php artisan --version') prints Laravel Framework 10.x\n- bash('grep -c sqlite .env') prints 1 and the .env has no DB_HOST line\n- bash('ls database/database.sqlite') succeeds\n- bash('php artisan migrate:status') shows no pending migrations",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review": "auto",
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      }
+    },
+    {
+      "label": "auth-controllers",
+      "task_type": "implement",
+      "prompt": "Create ONLY the auth controllers and routes (views come in the next step):\n1. app/Http/Controllers/Auth/LoginController.php: showLoginForm() returns view('auth.login'); login() validates email+password, Auth::attempt, regenerate session, redirect()->intended(route('lists.index')); logout() -> Auth::logout, invalidate session, redirect('/').\n2. app/Http/Controllers/Auth/RegisterController.php: showRegistrationForm() returns view('auth.register'); register() validates name/email/password/password_confirmation, User::create with Hash::make, Auth::login, redirect()->intended(route('lists.index')).\n3. app/Http/Controllers/HomeController.php: index() redirects guests to route('login') and authed users to route('lists.index').\n4. routes/web.php: GET / -> HomeController@index; guest group: GET/POST /login (names 'login'), GET/POST /register (name 'register'); auth group: POST /logout (name 'logout'). DO NOT add any list/item/invitation routes here — a later step adds them.\n\nACCEPTANCE: bash('php artisan route:list') shows exactly: login (GET/POST), register (GET/POST), logout (POST), and GET /.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review": "auto",
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      }
+    },
+    {
+      "label": "auth-views",
+      "task_type": "implement",
+      "prompt": "Create the layout and auth views (Tailwind via CDN). MANDATORY file manifest — create EXACTLY these files, all extending the layout:\n1. resources/views/layouts/app.blade.php — base layout: <script src=\"https://cdn.tailwindcss.com\"></script> in head; nav bar with app name 'Todo Collab', and @auth a Logout POST form using route('logout'), @else Login/Register links using route('login')/route('register'); @yield('content') main section.\n2. resources/views/auth/login.blade.php — email + password fields, @csrf, error display for invalid credentials.\n3. resources/views/auth/register.blade.php — name, email, password, password_confirmation fields, @csrf, inline validation errors.\n4. resources/views/welcome.blade.php — replaces the default Laravel welcome: app name, links to route('login') and route('register').\n\nEvery form MUST include @csrf. Use route() with the exact names from the SCHEMA CONTRACT.\n\nACCEPTANCE: all 4 files exist (bash('ls resources/views/auth/')). No file is optional.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review": "auto",
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      }
+    },
+    {
+      "label": "models-migrations",
+      "task_type": "implement",
+      "prompt": "Create models and migrations using EXACTLY the SCHEMA CONTRACT names. Use bash('php artisan make:model TodoList --migration') (and the same for TodoItem, Invitation) then EDIT the generated files with the write tool to match the contract columns.\n\n1. TodoList model: fillable ['name','description','owner_id']; relations owner() (belongsTo User, 'owner_id'), items() hasMany, collaborators() belongsToMany User via 'todo_list_user' withPivot('role'), invitations() hasMany Invitation.\n2. TodoItem model: fillable ['todo_list_id','title','completed','due_date','created_by']; relations todoList() belongsTo, creator() belongsTo User 'created_by'.\n3. Invitation model: fillable ['todo_list_id','email','token','accepted_at']; relation todoList() belongsTo.\n4. Migrations — column names MUST be exactly:\n   - create_todo_lists_table: name string, description text nullable, owner_id foreignId constrained users cascadeDelete\n   - create_todo_items_table: todo_list_id foreignId constrained cascadeDelete, title string, completed boolean default false, due_date date nullable, created_by foreignId users nullable\n   - create_todo_list_user_table: todo_list_id foreignId, user_id foreignId, role string default 'collaborator', unique(['todo_list_id','user_id'])\n   - create_invitations_table: todo_list_id foreignId constrained cascadeDelete, email string, token string unique, accepted_at timestamp nullable\n5. bash('php artisan migrate --force')\n6. bash('php artisan make:factory TodoListFactory --model=TodoList') and TodoItemFactory (definition uses User::factory() for owner_id and TodoList::factory() for todo_list_id).\n\nACCEPTANCE: bash('php artisan migrate:status') shows all 4 new tables ran; bash('ls database/factories/') contains TodoListFactory.php and TodoItemFactory.php.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review": "auto",
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      }
+    },
+    {
+      "label": "controllers-policies-routes",
+      "task_type": "implement",
+      "prompt": "Create controllers, policies and routes. Use the SCHEMA CONTRACT names and route names EXACTLY. Never invent field names.\n\n1. TodoListController (app/Http/Controllers/TodoListController.php):\n   - index(): lists where owner_id == auth user OR collaborators contains user (whereHas on 'collaborators'); view 'lists.index' with $lists.\n   - create()/store(): validate name (required), description nullable; create with owner_id = Auth::id(); redirect()->route('lists.index').\n   - show(): authorize('view', $list); pass $list, $items = $list->items, $collaborators = $list->collaborators to view 'lists.show'.\n   - edit()/update(): authorize('update'); validate name/description; redirect lists.index.\n   - destroy(): authorize('delete'); $list->delete(); redirect lists.index.\n   - storeCollaborator(): validate email required|email; find user by email; add with EXACT syntax: $list->collaborators()->syncWithoutDetaching([$user->id => ['role' => 'collaborator']]); redirect back with success.\n   - removeCollaborator(): authorize('update'); $list->collaborators()->detach($user->id); back with success.\n\n2. TodoItemController:\n   - store(TodoList $list): authorize('update', $list); validate title required, due_date nullable date; $list->items()->create(['title'=>..., 'due_date'=>...]); redirect()->route('lists.show', $list->id).\n   - update(TodoItem $item): authorize('update', $item->todoList); validate title nullable, completed nullable boolean; $item->update(...); redirect()->route('lists.show', $item->todo_list_id). NOTE: use $item->todo_list_id (there is no $item->list_id).\n   - destroy(TodoItem $item): authorize('update', $item->todoList); delete; redirect lists.show with todo_list_id.\n\n3. InvitationController:\n   - store(TodoList $list): authorize('update'); validate email; token = Str::random(32); Invitation::create(['todo_list_id'=>$list->id, 'email'=>..., 'token'=>...]); redirect()->route('lists.show', $list->id).\n   - show(token): find invitation by token; view 'invitations.show' with $invitation.\n   - accept(token): find by token; the LOGGED-IN user's email must equal $invitation->email (use Auth::user()->email — NEVER a request field); attach: $invitation->todoList->collaborators()->syncWithoutDetaching([Auth::id() => ['role'=>'collaborator']]); $invitation->update(['accepted_at'=>now()]); redirect()->route('lists.show', $invitation->todo_list_id).\n\n4. Policies: TodoListPolicy — view/update: owner_id == user id OR collaborator; delete: owner_id == user id ONLY. InvitationPolicy — accept: user email == invitation email. Register in AuthServiceProvider.\n\n5. routes/web.php (auth middleware group):\n   - Route::resource('lists', TodoListController::class)\n   - POST lists/{list}/collaborators -> storeCollaborator, name lists.collaborators.store\n   - DELETE lists/{list}/collaborators/{user} -> removeCollaborator, name lists.collaborators.remove\n   - POST lists/{list}/items -> TodoItemController@store, name lists.items.store\n   - PUT items/{item} -> update, name items.update\n   - DELETE items/{item} -> destroy, name items.destroy\n   - POST lists/{list}/invitations -> store, name lists.invitations.store\n   - GET invitations/{token} -> show, name invitations.show\n   - POST invitations/{token}/accept -> accept, name invitations.accept\n\nACCEPTANCE: bash('php artisan route:list') shows every route name above. The file app/Policies/TodoListPolicy.php uses $list->owner_id (never $list->user_id).",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review": "auto",
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      }
+    },
+    {
+      "label": "views",
+      "task_type": "implement",
+      "prompt": "Create Blade views. MANDATORY file manifest — create EXACTLY these files, none optional:\n1. resources/views/lists/index.blade.php — grid of list cards (name, description, item count via $list->items->count(), owner name via $list->owner->name, View link to lists.show, Edit link to lists.edit when owner), 'Create List' button to lists.create, empty state.\n2. resources/views/lists/create.blade.php and resources/views/lists/edit.blade.php — reuse resources/views/lists/_form.blade.php (name field required, description textarea, @csrf, inline errors).\n3. resources/views/lists/show.blade.php — REQUIRED sections, all present:\n   - header: list name, description, owner name; if owner: Edit link (lists.edit) + Delete form (DELETE lists.destroy with confirm)\n   - 'Add item' form POST to lists.items.store (title input + due_date date input)\n   - items list: each item row with a toggle-complete form (PUT items.update with hidden title + hidden completed=1/0), item title (line-through when completed), due date, Delete form (DELETE items.destroy)\n   - Collaborators section: each collaborator name+email, remove form (DELETE lists.collaborators.remove) for owner only, empty state\n   - Invite section (owner only): email input form POST to lists.invitations.store\n   - Pending invitations list (owner only): email + invite link url('/invitations/'.$invitation->token)\n4. resources/views/invitations/show.blade.php — invitation title ($invitation->todoList->name), invited email, error display, Accept button form POST to invitations.accept if logged in (else Login link).\nAll forms @csrf. Use route() names from the SCHEMA CONTRACT.\n\nACCEPTANCE: bash('ls resources/views/lists/') shows index, show, create, edit, _form — all 5 present. bash('ls resources/views/invitations/') shows show.blade.php.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review": "auto",
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      }
+    },
+    {
+      "label": "tests",
+      "task_type": "implement",
+      "prompt": "Create feature tests. They MUST pass — run and fix until green:\n1. tests/Feature/AuthTest.php: guest redirected from /lists to /login; register creates user; login works; logout redirects to '/'.\n2. tests/Feature/TodoListTest.php: create list (POST /lists with name, NOT title; asserts redirect to /lists and database has the name); owner sees own list (factory with owner_id); non-owner gets 403 on GET; owner deletes; non-owner delete -> 403.\n3. tests/Feature/CollaborationTest.php: invite by email creates invitation row; accept (POST invitations/{token}/accept as the invited user) adds collaborator and redirects to lists.show; collaborator can view list (200); collaborator cannot delete (403).\n4. tests/Feature/TodoItemTest.php: owner and collaborator add items; toggle completed via PUT items/{id} with is_completed; delete item.\nUse TodoList::factory()->create(['owner_id' => ...]) and TodoItem::factory()->create(['todo_list_id' => ...]). If a factory class is missing, create it in database/factories/.\nRun bash('php artisan test') — ALL tests must pass. If any fail, fix the code or test and re-run until the suite is green. Report the final pass count.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review": "auto",
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      }
+    },
+    {
+      "label": "seed-demo-data",
+      "task_type": "implement",
+      "prompt": "Create and run the seeder (database/seeders/DatabaseSeeder.php). Use the SCHEMA CONTRACT names: items use 'title' and 'completed' (never content/is_completed); lists use 'owner_id'.\n1. Users (firstOrCreate by email, password Hash::make('password')): alice@example.com, bob@example.com, carol@example.com.\n2. Alice owns 'Groceries' (5 items: titles 'Grocery item 1..5', every even one completed=true) and 'Weekend Trip' (4 items, none completed).\n3. Bob owns 'Work Tasks' (3 items).\n4. Invite carol@example.com to 'Weekend Trip': Invitation::create(['todo_list_id'=>..., 'email'=>'carol@example.com', 'token'=>bin2hex(random_bytes(16))]); then accept it: $invitation->update(['accepted_at'=>now()]); $weekendTrip->collaborators()->attach($carol->id, ['role' => 'collaborator']).\n5. bash('php artisan db:seed').\nACCEPTANCE: bash('php artisan tinker --execute=\"echo App\\\\Models\\\\TodoList::count();\"') prints 3; TodoItem::count() prints 12; the Weekend Trip list has carol as a collaborator (TodoList::where('name','Weekend Trip')->first()->collaborators()->count() == 1). If the seed fails partway, FIX the seeder and re-run until the counts match.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review": "auto",
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      }
+    }
+  ]
+}

@@ -91,7 +91,6 @@ def scan_project(db: ProjectDB) -> int:
             count += 1
         else:
             db.set_file_index_status(path, "clean", last_hash=sha, indexed_hash=sha)
-    db.upsert_context_item("current_state", "Index scan", f"Queued {count} files for indexing.", priority=1)
     db.refresh_index_counters(message=f"Scan finished. Queued {count} file(s).")
     return count
 

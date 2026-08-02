@@ -57,8 +57,6 @@ class ProjectCoordinator:
             elif kind == "index_file":
                 result = index_file(self.db, payload["path"])
                 self.db.record_event(None, "index_file_finished", result)
-            elif kind == "refresh_project_summary":
-                self.refresh_project_summary()
             else:
                 self.db.record_event(None, "job_skipped", {"kind": kind, "payload": payload})
             self.db.finish_job(job_id, "done")
@@ -79,15 +77,6 @@ class ProjectCoordinator:
 
     def resume_indexing(self) -> None:
         self.db.set_index_paused(False)
-
-    def refresh_project_summary(self) -> None:
-        rows = self.db.search_file_summaries("main app server config cli database", limit=20)
-        if not rows:
-            content = "Project has not been indexed enough to build a summary yet."
-        else:
-            bullets = "\n".join(f"- {r['path']}: {r['summary'][:300]}" for r in rows)
-            content = f"Indexed project files suggest this structure:\n{bullets}"
-        self.db.upsert_context_item("project_summary", "Project Summary", content, priority=10)
 
     def stream_user_task(
         self,

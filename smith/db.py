@@ -846,27 +846,25 @@ class ProjectDB:
         sections: list[str] = []
         inputs: list[tuple[str, str, float, str]] = []
 
-        for item in self.list_context_items(
-            ["project_summary", "current_state", "decision", "known_issue", "todo", "architecture_note"],
-            limit=20,
-        ):
-            sections.append(f"## {item['kind']}: {item['title']}\n{item['content']}")
-            inputs.append(("context_item", str(item["id"]), float(item.get("priority") or 0), item["kind"]))
+        # 1) Project SPEC — the authoritative plan/schema, always injected.
+        #    Mirrors SPEC.md on disk (kept in sync by the skeletal-context
+        #    tools and the CLI flow importer). Given half the budget so small
+        #    models keep it in-window; truncation points at the full file.
+        spec_items = self.list_context_items(kinds=["skeletal_context"], limit=1)
+        if spec_items:
+            spec = spec_items[0]["content"]
+            spec_budget = max(2000, budget_chars // 2)
+            if len(spec) > spec_budget:
+                spec = spec[:spec_budget] + "\n...(truncated — read SPEC.md / read_skeletal_context for the full spec)"
+            sections.append(f"## PROJECT SPEC (source of truth — follow EXACTLY)\n{spec}")
+            inputs.append(("spec", str(spec_items[0]["id"]), 15.0, "skeletal_context"))
 
-        # Keep chat/task threads isolated by default. Previously every new run
-        # injected the last 5 Smith runs, which made "new thread" feel like it
-        # still had previous conversation context. Project/file memory remains
-        # available through context_items and file summaries.
-        if os.getenv("SMITH_INCLUDE_RECENT_RUNS", "0").lower() in {"1", "true", "yes"}:
-            recent = self.recent_runs(limit=5)
-            if recent:
-                text = "\n".join(f"- {r['started_at']} [{r['task_type']}]: {r.get('final_summary') or r.get('user_prompt')}" for r in recent)
-                sections.append(f"## Recent Smith Runs\n{text}")
-
+        # 2) Relevant notes / memory (FTS match against the prompt)
         for row in self.search_context(prompt, limit=6):
             sections.append(f"## Relevant memory: {row['title']}\n{row['content']}")
             inputs.append(("context_search", str(row["id"]), 5.0, "fts match"))
 
+        # 3) Indexed file summaries (FTS match against the prompt)
         for row in self.search_file_summaries(prompt, limit=10):
             symbols = ", ".join(json_loads(row.get("symbols_json") or "[]", []))
             sections.append(f"## File: {row['path']}\nSummary: {row['summary']}\nSymbols: {symbols}")

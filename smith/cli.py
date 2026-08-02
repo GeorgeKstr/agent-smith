@@ -1230,6 +1230,7 @@ def flow_import(
 
     {
       "flow_context": "## Goal\\nBuild a Laravel todo app with auth.",
+      "spec": "## SCHEMA CONTRACT\\n...",  // seeds SPEC.md + auto-injects into every run
       "approval": "auto",
       "flow_review_model": {"provider_id": "lmstudio", "model_id": "gemma-4-12b"},
       "setup": {"prompt": "...", "model": {"provider_id": "...", "model_id": "..."}},
@@ -1252,6 +1253,14 @@ def flow_import(
     The "flow_context" field is injected into every step so the agent
     knows the overall goal. Completed steps are tracked and shown as
     progress automatically.
+
+    The top-level "spec" field is the project's source of truth. On import
+    it is written to SPEC.md at the project root and seeded into the
+    skeletal_context item, which build_context_bundle injects into EVERY
+    run (setup, steps, reviews, final review) as "PROJECT SPEC". Only
+    seeds if absent, so re-imports never clobber model progress. The
+    read_skeletal_context / edit_skeletal_context tools operate on the
+    same document (SPEC.md on disk, mirrored to the DB for the Web UI).
 
     Top-level "approval": "auto" enables auto-approval (same as --auto-approve).
     Top-level "flow_review_model" is the default review model for steps that
@@ -1298,6 +1307,29 @@ def flow_import(
     db = project_db(project)
     from smith.agent import ToolErrorLogger
     error_logger_global = ToolErrorLogger(db)
+
+    # ── Project SPEC: seed SPEC.md + mirror into the skeletal context ──────
+    # The top-level "spec" field is the source of truth. It is written to
+    # SPEC.md at the project root and mirrored into the skeletal_context item,
+    # which build_context_bundle injects into EVERY run automatically. Only
+    # seeds if absent — re-imports never clobber model progress.
+    if isinstance(raw, dict) and raw.get("spec"):
+        spec_text = str(raw["spec"]).strip()
+        if spec_text:
+            spec_path = _Path(project).expanduser().resolve() / "SPEC.md"
+            try:
+                if not spec_path.exists():
+                    spec_path.parent.mkdir(parents=True, exist_ok=True)
+                    spec_path.write_text(spec_text + "\n", encoding="utf-8")
+                    console.print(f"[green]  ✓ SPEC.md written ({len(spec_text)} chars)[/green]")
+                else:
+                    console.print(f"[dim]  SPEC.md already exists — keeping current version[/dim]")
+            except Exception as exc:
+                console.print(f"[yellow]  ! Could not write SPEC.md: {exc}[/yellow]")
+            existing = db.list_context_items(kinds=["skeletal_context"], limit=1)
+            if not existing:
+                db.upsert_context_item("skeletal_context", "Project Skeletal Context", spec_text, priority=15)
+                console.print(f"[dim]  ✓ Skeletal context seeded from spec (injected into every run)[/dim]")
 
     # ── Approval mode: --auto-approve flag OR JSON top-level approval ──────
     # Web UI exports {"approval": "auto"} / "user" (pause). CLI has no pause

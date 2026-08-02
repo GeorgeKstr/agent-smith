@@ -287,16 +287,6 @@ class CompactionEngine:
             commands_run=commands_run,
         )
 
-        # Also store as a context_item for inclusion in future context bundles
-        title = f"Run: {user_prompt[:80]}"
-        self.db.upsert_context_item(
-            kind="compaction",
-            title=title,
-            content=summary,
-            priority=8,
-            source_run_id=run_id,
-        )
-
         return self.get_entry_by_run(run_id)
 
     def _build_implementation_summary(
