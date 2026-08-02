@@ -1669,6 +1669,7 @@ def flow_import(
             console.print(f"[red]  ✗ Step failed verification after {max_attempts} attempt(s)[/red]")
             for d in step_failures[:5]:
                 console.print(f"[dim]    - {d[:160]}[/dim]")
+            console.print("[dim]  → keeping last implementation on disk; continuing to next step[/dim]")
             results.append({
                 "label": label,
                 "prompt": prompt[:200],
@@ -1726,10 +1727,14 @@ def flow_import(
             + "\n".join(
                 f"  - {r['label']} [{r['status']}]" for r in results
             )
+            + _flow_deficiency_block(results)
             + "\n\n"
             "Verify the implementation as a whole: architecture consistency, missing "
             "pieces, security issues, test coverage, and whether the original goal is met. "
             "Use tools to inspect the code (read files, run tests) before concluding.\n\n"
+            "STEPS THAT FAILED VERIFICATION must be reported in 'remaining gaps' with their "
+            "exact defects (their last implementation was KEPT on disk — do not silently "
+            "pretend they are fine; list what is missing/broken and factor it into the verdict).\n\n"
             "Return a concise final review with: what you verified, overall assessment, "
             "remaining gaps, and a final PASS/FAIL/WARN verdict."
         )
@@ -1773,7 +1778,16 @@ def flow_import(
         )
     console.print(table)
 
-    # Show global error summary
+    # Known deficiencies from failed steps (kept implementations) — the flow output
+    # must carry the note of what failed / is missing for downstream consumers.
+    failed_steps = [r for r in results if r.get("status") == "failed" and r.get("defects")]
+    if failed_steps:
+        console.print()
+        console.print("[bold yellow]Known deficiencies (steps that failed verification — last implementation kept on disk):[/bold yellow]")
+        for r in failed_steps:
+            console.print(f"[yellow]- {r['label']}[/yellow]")
+            for d in r.get("defects", [])[:6]:
+                console.print(f"  [dim]  * {d[:200]}[/dim]")
     error_summary = error_logger_global.error_summary()
     if error_summary["total_errors"] > 0:
         console.print()
@@ -1811,6 +1825,27 @@ def _restart_model_backend() -> None:
         # Touch LM Studio's API so it knows to reload on next request
     except Exception:
         pass
+
+
+def _flow_deficiency_block(results: list[dict]) -> str:
+    """Render a 'known deficiencies' block for the final flow review.
+
+    Failed steps keep their last implementation on disk and the flow continues;
+    the block lets the final review (and later consumers) see exactly what
+    failed / is missing instead of pretending the step is fine.
+    """
+    failed = [r for r in results if r.get("status") == "failed" and r.get("defects")]
+    if not failed:
+        return ""
+    lines = [
+        "",
+        "STEPS THAT FAILED VERIFICATION (last implementation KEPT on disk; defects below):"
+    ]
+    for r in failed:
+        lines.append(f"- {r['label']}:")
+        for d in r.get("defects", [])[:6]:
+            lines.append(f"    * {d[:300]}")
+    return "\n".join(lines)
 
 
 def _extract_flow_step_summary(output: str, max_chars: int = 120) -> str:
