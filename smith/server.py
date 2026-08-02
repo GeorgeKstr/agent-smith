@@ -985,11 +985,20 @@ async def stream_sync_generator_to_ws(ws: WebSocket, generator, cancel_event: th
 @app.websocket("/ws/run")
 async def ws_run(ws: WebSocket):
     await ws.accept()
+
+    async def safe_send(payload: dict) -> bool:
+        """Send a JSON message, tolerating a client that already closed."""
+        try:
+            await ws.send_json(payload)
+            return True
+        except (RuntimeError, WebSocketDisconnect):
+            return False
+
     try:
         first = await ws.receive_json()
         token = first.get("token")
         if ACCESS_TOKEN and token != ACCESS_TOKEN:
-            await ws.send_json({"type": "error", "message": "Invalid token"})
+            await safe_send({"type": "error", "message": "Invalid token"})
             await ws.close()
             return
 
@@ -1016,7 +1025,7 @@ async def ws_run(ws: WebSocket):
             approval_handler = WebSocketApprovalHandler(loop)
             approval_task = asyncio.create_task(approval_handler.poll(ws))
 
-        await ws.send_json({"type": "started", "project_id": coord.db.project_id})
+        await safe_send({"type": "started", "project_id": coord.db.project_id})
         gen = coord.stream_user_task(
             prompt,
             task_type=task_type,
@@ -1032,7 +1041,7 @@ async def ws_run(ws: WebSocket):
             text=f"{task_type or 'auto'} prompt completed",
             ws=ws,
         )
-        await ws.send_json({"type": "done"})
+        await safe_send({"type": "done"})
     except WebSocketDisconnect:
         try:
             cancel_event.set()
@@ -1040,7 +1049,8 @@ async def ws_run(ws: WebSocket):
             pass
         return
     except Exception as exc:
-        await ws.send_json({"type": "error", "message": str(exc)})
+        # Client may have already closed — never raise from the error send.
+        await safe_send({"type": "error", "message": str(exc)})
     finally:
         if approval_task is not None:
             try:
