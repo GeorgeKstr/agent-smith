@@ -1225,14 +1225,27 @@ def flow_import(
 ):
     """Import and execute tasks from a flow JSON file.
 
-    The flow JSON file can be either a plain array or an object with
-    optional "flow_context" and "tasks" keys:
+    The flow JSON file can be either a plain array or an object. The SAME
+    format is shared with the Web UI (flow builder export):
 
     {
       "flow_context": "## Goal\\nBuild a Laravel todo app with auth.",
-      "tasks": [
-        {"prompt": "...", "task_type": "implement", "label": "step-1"},
-        {"prompt": "...", "task_type": "implement", "label": "step-2"}
+      "approval": "auto",
+      "flow_review_model": {"provider_id": "lmstudio", "model_id": "gemma-4-12b"},
+      "setup": {"prompt": "...", "model": {"provider_id": "...", "model_id": "..."}},
+      "tasks": [   // "steps" is accepted as an alias
+        {
+          "prompt": "...",
+          "task_type": "implement",   // "ask" | "implement" | "review"
+          "label": "step-1",
+          "review": "auto",           // "auto" | "never" | "always"
+          "model": {"provider_id": "...", "model_id": "..."},
+          // flat form is also accepted (Web UI exports this):
+          "provider_id": "...", "model_id": "...",
+          "review_model": {"provider_id": "...", "model_id": "..."},
+          // or flat: "review_provider_id": "...", "review_model_id": "..."
+          "review_enabled": true       // Web UI: review: "never" + enabled
+        }
       ]
     }
 
@@ -1240,12 +1253,9 @@ def flow_import(
     knows the overall goal. Completed steps are tracked and shown as
     progress automatically.
 
-    Each task supports:
-    - prompt (required): The user prompt for the agent.
-    - task_type (optional): "ask", "implement", or "review". Auto-detected if omitted.
-    - review (optional): "auto", "never", or "always". Defaults to "auto".
-    - label (optional): A display label for the task.
-    - model (optional): {"provider_id": "...", "model_id": "..."} to override the model for this task.
+    Top-level "approval": "auto" enables auto-approval (same as --auto-approve).
+    Top-level "flow_review_model" is the default review model for steps that
+    don't specify their own.
     """
     import json as _json
     from pathlib import Path as _Path
@@ -1261,19 +1271,23 @@ def flow_import(
         typer.echo(f"[red]Failed to parse flow JSON: {exc}[/red]")
         raise typer.Exit(1)
 
-    # Support both new {"flow_context": ..., "tasks": [...]} and old [...] formats
+    # Support both new {"flow_context": ..., "tasks": [...]} and old [...] formats.
+    # Also accept the Web UI's export shape: {"steps": [...], "approval": ...,
+    # "flow_review_model": ..., "setup": ...} — `steps` and `tasks` are aliases.
     if isinstance(raw, list):
         flow_context = ""
         tasks = raw
     elif isinstance(raw, dict):
         flow_context = (raw.get("flow_context") or raw.get("context") or "").strip()
-        tasks = raw.get("tasks", [])
+        tasks = raw.get("tasks")
+        if tasks is None:
+            tasks = raw.get("steps", [])
     else:
-        typer.echo("[red]Flow JSON must be an array or an object with 'tasks'.[/red]")
+        typer.echo("[red]Flow JSON must be an array or an object with 'tasks'/'steps'.[/red]")
         raise typer.Exit(1)
 
     if not isinstance(tasks, list) or not tasks:
-        typer.echo("[red]Flow JSON must contain a non-empty 'tasks' array.[/red]")
+        typer.echo("[red]Flow JSON must contain a non-empty 'tasks'/'steps' array.[/red]")
         raise typer.Exit(1)
 
     if flow_context:
@@ -1285,14 +1299,44 @@ def flow_import(
     from smith.agent import ToolErrorLogger
     error_logger_global = ToolErrorLogger(db)
 
-    approval_handler: ApprovalHandler = AutoApprovalHandler() if auto_approve else CLIApprovalHandler()
-    if auto_approve:
+    # ── Approval mode: --auto-approve flag OR JSON top-level approval ──────
+    # Web UI exports {"approval": "auto"} / "user" (pause). CLI has no pause
+    # UI, so "user"/"pause" maps to the interactive CLI approval handler.
+    json_auto = False
+    if isinstance(raw, dict):
+        approval_val = str(raw.get("approval", "")).strip().lower()
+        json_auto = approval_val in ("auto", "automatic")
+        if approval_val in ("user", "pause", "manual"):
+            json_auto = False
+    approval_handler: ApprovalHandler = (
+        AutoApprovalHandler() if (auto_approve or json_auto) else CLIApprovalHandler()
+    )
+    if auto_approve or json_auto:
         console.print("[yellow]Auto-approve enabled[/yellow]")
+
+    # ── Default review model from JSON (flow_review_model) ─────────────────
+    flow_review_model: dict[str, str] | None = None
+    if isinstance(raw, dict) and raw.get("flow_review_model"):
+        frm = raw["flow_review_model"]
+        if isinstance(frm, dict):
+            pid = frm.get("provider_id")
+            mid = frm.get("model_id")
+            if pid and mid:
+                flow_review_model = {"provider_id": pid, "model_id": mid}
+                console.print(
+                    f"[dim]Flow review model: {mid} ({pid})[/dim]"
+                )
 
     # ── Flow setup step: analyze flow + build skeletal context ──────
     if setup_step and isinstance(setup_step, dict):
         setup_prompt = setup_step.get("prompt", "")
         setup_model = setup_step.get("model")
+        if not isinstance(setup_model, dict) or not setup_model.get("provider_id"):
+            if setup_step.get("provider_id") and setup_step.get("model_id"):
+                setup_model = {
+                    "provider_id": setup_step["provider_id"],
+                    "model_id": setup_step["model_id"],
+                }
         if setup_prompt:
             console.print()
             console.print("[bold cyan]── Flow Setup ──[/bold cyan]")
@@ -1366,13 +1410,41 @@ def flow_import(
         task_type = task.get("task_type")
         review = task.get("review", "auto")
         label = task.get("label", f"task-{i + 1}")
+
+        # ── Model override: accept BOTH shapes ───────────────────────────
+        #   Web UI: {"provider_id": ..., "model_id": ...}   (flat)
+        #   CLI:    {"model": {"provider_id": ..., "model_id": ...}}  (nested)
         model_override = task.get("model")
+        if not isinstance(model_override, dict) or not model_override.get("provider_id"):
+            if task.get("provider_id") and task.get("model_id"):
+                model_override = {
+                    "provider_id": task["provider_id"],
+                    "model_id": task["model_id"],
+                }
+
+        # ── Review model override: accept both shapes ────────────────────
+        #   Web UI: flat review_provider_id / review_model_id (+ review_enabled)
+        #   CLI:    nested review_model: {"provider_id", "model_id"}
         review_model_override = None
-        if task.get("review_provider_id") and task.get("review_model_id"):
+        if isinstance(task.get("review_model"), dict):
+            rvm = task["review_model"]
+            if rvm.get("provider_id") and rvm.get("model_id"):
+                review_model_override = {
+                    "provider_id": rvm["provider_id"],
+                    "model_id": rvm["model_id"],
+                }
+        if review_model_override is None and task.get("review_provider_id") and task.get("review_model_id"):
             review_model_override = {
                 "provider_id": task["review_provider_id"],
                 "model_id": task["review_model_id"],
             }
+        if review_model_override is None and flow_review_model:
+            review_model_override = dict(flow_review_model)
+
+        # ── Web UI exports review: "never" + review_enabled flag; treat
+        #    review_enabled=true as review_mode "auto" when review is "never". ──
+        if review == "never" and task.get("review_enabled") is True:
+            review = "auto"
 
         # ── Build augmented prompt with flow context + progress ──────
         augmented_prompt = prompt
