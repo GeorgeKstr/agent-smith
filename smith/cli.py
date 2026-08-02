@@ -1557,6 +1557,46 @@ def flow_import(
                 snippet = a.get("assistant_text_snippet", "")[:120]
                 console.print(f"[dim]    - [{atype}] {snippet}[/dim]")
 
+    # ── Final flow review (optional, uses flow_review_model) ───────────
+    if flow_review_model:
+        console.print()
+        console.print("[bold cyan]── Flow Review ──[/bold cyan]")
+        console.print(f"[dim]Model: {flow_review_model.get('model_id')} ({flow_review_model.get('provider_id')})[/dim]")
+        flow_review_prompt = (
+            f"Review the ENTIRE flow for the project. Flow goal:\n{flow_context or '(none)'}\n\n"
+            f"Steps completed ({len(results)}):\n"
+            + "\n".join(
+                f"  - {r['label']} [{r['status']}]" for r in results
+            )
+            + "\n\n"
+            "Verify the implementation as a whole: architecture consistency, missing "
+            "pieces, security issues, test coverage, and whether the original goal is met. "
+            "Use tools to inspect the code (read files, run tests) before concluding.\n\n"
+            "Return a concise final review with: what you verified, overall assessment, "
+            "remaining gaps, and a final PASS/FAIL/WARN verdict."
+        )
+        try:
+            flow_review_coord = ProjectCoordinator(project)
+            flow_review_coord.start_worker()
+            flow_review_chunks: list[str] = []
+            for token in flow_review_coord.stream_user_task(
+                flow_review_prompt,
+                task_type="review",
+                review_mode="never",
+                model_override=flow_review_model,
+                approval_handler=approval_handler,
+            ):
+                flow_review_chunks.append(token)
+                if verbose:
+                    console.print(token, end="", highlight=False)
+            flow_review_output = "".join(flow_review_chunks)
+            if not verbose:
+                for line in flow_review_output.splitlines():
+                    if "Verdict" in line or "FAIL" in line or "PASS" in line or "[smith]" in line:
+                        console.print(line.strip()[:200])
+        except Exception as exc:
+            console.print(f"[red]  ✗ Flow review failed: {exc}[/red]")
+
     # Final summary
     console.print()
     console.print("[bold]══ Flow Results ══[/bold]")
