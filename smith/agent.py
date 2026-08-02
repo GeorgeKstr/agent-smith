@@ -70,7 +70,8 @@ def _text_tool_prompt(profile, model_id: str = "") -> str:
         elif tname == "bash":
             tool_lines.append(
                 "- bash(command=\"ls -la\", timeout=60): Run a SINGLE command. "
-                "No shell operators (&&, |, >, #)."
+                "No shell operators (&&, |, >, #). Never use heredocs/cat/echo/python "
+                "to write files — use `write` instead."
             )
         elif tname == "search_project_context":
             tool_lines.append(
@@ -1108,7 +1109,9 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
           - # (comments) — remove them
           - >, >>, < (redirects) — not supported
           - $VAR, $(cmd) (expansions) — not supported
-        Pass a SINGLE command with plain arguments. Example: ls -la
+          - heredocs (<< EOF) — not supported
+        To create or edit FILES use the `write` / `edit` tools — never cat/echo/
+        heredocs/python. Pass a SINGLE command with plain arguments. Example: ls -la
         """
         if not profile.can_run_commands:
             err_msg = "This task profile cannot run commands."
@@ -1133,7 +1136,10 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
             err_msg = (
                 f"COMMAND_PARSE_ERROR: could not parse command: {exc}\n"
                 "Remove shell comments (# ...), fix any unmatched quotes, "
-                "and remove newlines from inside the command string."
+                "and remove newlines from inside the command string.\n"
+                "TIP: to create or edit FILES, use the `write` tool (or `edit` tool) "
+                "instead of heredocs/cat/echo/python tricks — those need a shell, "
+                "and this tool deliberately has none."
             )
             _log_error("bash", {"command": command}, err_msg)
             return err_msg
