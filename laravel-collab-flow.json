@@ -1,0 +1,143 @@
+{
+  "flow_context": "## Goal\nBuild a collaborative todo app in Laravel 10 with: user signup/login, personal todo lists, the ability to create/edit/delete lists, share lists with other users, and invite collaborators by email. Collaborators can view and edit shared lists. Use SQLite for the database and Tailwind (CDN) for styling — no npm/vite build step.",
+  "approval": "auto",
+  "setup": {
+    "prompt": "Set up the project and create a skeletal context document. First check that php (>= 8.1), composer, and the required PHP extensions (sqlite, mbstring, xml, curl) are installed — use bash('php -v'), bash('composer --version'), bash('php -m'). If anything is missing, install it with sudo dnf install -y ... . Then create the skeletal context document with edit_skeletal_context(content) describing the collaborative todo app: architecture, components (auth, TodoList, TodoItem, Invitation, pivot), prerequisites, and a step plan. Keep the document concise. Output 'SETUP COMPLETE' when done.",
+    "model": {
+      "provider_id": "lmstudio",
+      "model_id": "gemma-4-12b"
+    }
+  },
+  "flow_review_model": {
+    "provider_id": "lmstudio",
+    "model_id": "gemma-4-12b"
+  },
+  "steps": [
+    {
+      "label": "scaffold-laravel",
+      "task_type": "implement",
+      "prompt": "Scaffold a Laravel 10 application INTO THE PROJECT ROOT (the current directory). The directory is NOT empty (it contains the .agent-smith folder), so do this:\n1. bash('composer create-project laravel/laravel:^10.0 app_tmp --no-interaction')\n2. bash('cp -a app_tmp/. .')  (this copies ALL files including hidden ones like .env.example and .gitignore up into the project root - do NOT use shell globs like mv tmp/*)\n3. bash('rm -rf app_tmp')\n\nNever use shell operators (&&, |, >, #) or heredocs.\n\nThen:\n1. bash('cp .env.example .env')\n2. Use the write tool to edit .env: set APP_NAME=TodoLists, DB_CONNECTION=sqlite, and remove the DB_HOST/DB_PORT/DB_DATABASE/DB_USERNAME/DB_PASSWORD lines.\n3. bash('touch database/database.sqlite')\n4. bash('php artisan key:generate')\n5. bash('php artisan migrate --force')\n\nVerify with bash('php artisan --version') and bash('php artisan migrate:status'). The app must be at the project root (artisan, app/, routes/ directly in the current directory).",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 1,
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review": "auto"
+    },
+    {
+      "label": "auth-login-signup",
+      "task_type": "implement",
+      "prompt": "Build manual authentication (NO Breeze, NO npm):\n\n1. Update routes/web.php with:\n   - GET /login -> Auth\\LoginController@showLoginForm\n   - POST /login -> Auth\\LoginController@login\n   - POST /logout -> Auth\\LoginController@logout\n   - GET /register -> Auth\\RegisterController@showRegistrationForm\n   - POST /register -> Auth\\RegisterController@register\n   - GET / -> HomeController@index (redirect to /login if guest, /lists if authed)\n\n2. Create app/Http/Controllers/Auth/LoginController.php (login uses Auth::attempt, regenerate session, redirect to /lists), RegisterController.php (validates name/email/password/password_confirmation, creates user, logs in), and app/Http/Controllers/HomeController.php.\n\n3. Create views with Tailwind via CDN (add <script src=\"https://cdn.tailwindcss.com\"></script> in the layout head):\n   - resources/views/layouts/app.blade.php — base layout with nav bar showing app name and (if logged in) Logout button\n   - resources/views/auth/login.blade.php — email + password form with error display\n   - resources/views/auth/register.blade.php — name, email, password, password confirmation\n\n4. Register auth middleware protection: add 'auth' middleware to the web routes group for authenticated pages (or use ->middleware('auth') on the routes that need it).\n\n5. In app/Http/Controllers/Controller.php keep the base controller unchanged.\n\nVerify: bash('php artisan route:list') shows the auth routes. The login/register pages must render without errors (you can check with bash('php artisan route:list') and by reviewing your code).",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 1,
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review": "auto"
+    },
+    {
+      "label": "models-migrations",
+      "task_type": "implement",
+      "prompt": "Create models and migrations for collaborative todo lists:\n\n1. TodoList model (app/Models/TodoList.php): fillable name, description, owner_id. Relationships: belongsTo User (owner), hasMany TodoItem, belongsToMany User (collaborators) via todo_list_user pivot.\n\n2. TodoItem model (app/Models/TodoItem.php): fillable todo_list_id, title, completed, due_date, created_by. Relationships: belongsTo TodoList, belongsTo User (creator).\n\n3. Invitation model (app/Models/Invitation.php): fillable todo_list_id, email, token, accepted_at. Relationships: belongsTo TodoList. A unique token string generated per invitation.\n\n4. Migrations (create with php artisan make:model ... --migration, then EDIT the generated migration files with the write tool):\n   - create_todo_lists_table: id, name (string), description (text nullable), owner_id (foreignId constrained users, cascade delete), timestamps\n   - create_todo_items_table: id, todo_list_id (foreignId constrained, cascade), title (string), completed (boolean default false), due_date (date nullable), created_by (foreignId users nullable), timestamps\n   - create_todo_list_user_table: id, todo_list_id (foreignId), user_id (foreignId), role (string default 'collaborator'), timestamps, unique(todo_list_id, user_id)\n   - create_invitations_table: id, todo_list_id (foreignId cascade), email (string), token (string unique), accepted_at (timestamp nullable), timestamps\n\n5. Register models in app/Models with $guarded = [] or proper $fillable.\n\n6. Run bash('php artisan migrate --force') and verify all 4 new tables exist with bash('php artisan migrate:status').",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 1,
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review": "auto"
+    },
+    {
+      "label": "controllers-policies-routes",
+      "task_type": "implement",
+      "prompt": "Create controllers, policies and routes for collaborative lists:\n\n1. TodoListController (app/Http/Controllers/TodoListController.php) with resource methods:\n   - index: lists owned by OR shared with the authenticated user\n   - create, store: validate name/description, create list owned by current user\n   - show: show list with its items and collaborators (owner or collaborator only)\n   - edit, update: owner or collaborator can edit\n   - destroy: ONLY the owner can delete (also cascade items)\n   - storeCollaborator: add a user by email (search users by email; if the user exists add to pivot with role 'collaborator'; ignore if already added)\n   - removeCollaborator: remove a user from the list (owner only)\n\n2. TodoItemController (app/Http/Controllers/TodoItemController.php) nested under lists:\n   - store: add item to a list (title required, due_date optional) — owner or collaborator\n   - update: edit title/complete toggle\n   - destroy: delete item\n\n3. InvitationController (app/Http/Controllers/InvitationController.php):\n   - store: owner creates an invitation by email (generate a token with Str::random(32), save, and 'send' it by just saving the row — do NOT need a real mailer)\n   - show: GET /invitations/{token} shows the invitation (list title + inviter email) to anyone logged in\n   - accept: POST /invitations/{token}/accept — if the logged-in user's email matches the invitation email, add them to the list pivot and mark accepted_at; if not matching, error message\n\n4. Policies:\n   - TodoListPolicy: view/update if owner or collaborator; delete only if owner\n   - InvitationPolicy: accept if invitation email == user email\n   - Register in app/Providers/AuthServiceProvider.php\n\n5. Routes in routes/web.php (all under auth middleware except login/register):\n   - resource lists => TodoListController (only index/create/store/show/edit/update/destroy)\n   - POST lists/{list}/collaborators => storeCollaborator\n   - DELETE lists/{list}/collaborators/{user} => removeCollaborator\n   - POST lists/{list}/items => TodoItemController@store\n   - PUT items/{item} => TodoItemController@update\n   - DELETE items/{item} => TodoItemController@destroy\n   - POST lists/{list}/invitations => InvitationController@store\n   - GET invitations/{token} => InvitationController@show\n   - POST invitations/{token}/accept => InvitationController@accept\n\nVerify bash('php artisan route:list') shows all routes.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 1,
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review": "auto"
+    },
+    {
+      "label": "views",
+      "task_type": "implement",
+      "prompt": "Create Blade views (Tailwind via CDN, extend layouts/app.blade.php):\n\n1. lists/index.blade.php: grid of todo list cards. Each card shows list name, description, item count, owner name, and a link to view. Empty state when no lists. A 'Create List' button.\n\n2. lists/create.blade.php and lists/edit.blade.php: form with name (required) and description (textarea) fields, validation errors inline, submit button. Reuse a _form partial (lists/_form.blade.php).\n\n3. lists/show.blade.php: THE main screen:\n   - Header with list name, description, owner\n   - 'Add item' form (title input + due date input + submit)\n   - Items list: checkbox to toggle completion (form PUT to items/{item}), title, due date, delete button (form DELETE)\n   - Collaborators section: list of collaborator names + emails, with remove buttons (owner only)\n   - Invite section (owner only): email input posting to lists/{list}/invitations, showing pending invitations with their accept URLs (route('invitations.show', token))\n   - Edit/Delete list buttons (delete = form DELETE to lists/{list})\n\n4. invitations/show.blade.php: shows the invitation (list name, inviter email) with an Accept button posting to invitations/{token}/accept, and an error message display for email mismatch.\n\n5. dashboard welcome page at / showing app name and login/register links when guest.\n\nAll forms must use @csrf. All GET/POST/DELETE forms must be proper HTML forms (no JS fetch). Check the controllers' route names when writing forms (use route() helper with named routes — name the routes in web.php if needed).",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 1,
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review": "auto"
+    },
+    {
+      "label": "tests",
+      "task_type": "implement",
+      "prompt": "Create feature tests for the collaborative todo app:\n\n1. tests/Feature/AuthTest.php: guest redirected from /lists to /login; user can register (POST /register creates user + logs in); user can login/logout.\n\n2. tests/Feature/TodoListTest.php: authenticated user can create a list (POST /lists); list appears in index; owner can edit and delete; another user cannot see or delete the list.\n\n3. tests/Feature/CollaborationTest.php: user A creates a list, invites user B by email (POST lists/{list}/invitations); the invitation row is created with a token; user B accepts via POST invitations/{token}/accept; user B can now view the list (GET /lists/{list} returns 200); user B cannot delete the list (403 or redirect).\n\n4. tests/Feature/TodoItemTest.php: owner can add an item (POST lists/{list}/items); collaborator can add an item; item can be toggled complete and deleted.\n\nUse RefreshDatabase and Laravel's actingAs / post helpers. Then run bash('php artisan test') and fix ALL failures until the suite passes. If a test fails because of missing route names or view variables, fix the controller/view code accordingly. Report the final test count.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 2,
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review": "auto"
+    },
+    {
+      "label": "seed-demo-data",
+      "task_type": "implement",
+      "prompt": "Create and run a database seeder (database/seeders/DatabaseSeeder.php):\n\n1. Create 3 users: alice@example.com (password), bob@example.com (password), carol@example.com (password) — all with password 'password'.\n\n2. Alice owns two lists: 'Groceries' (with 5 items, some completed) and 'Weekend Trip' (with 4 items).\n\n3. Bob owns one list: 'Work Tasks' (with 3 items).\n\n4. Invite carol@example.com to 'Weekend Trip': create an Invitation row with a token, then accept it (set accepted_at and add carol to the list pivot) so carol is a collaborator.\n\n5. Run bash('php artisan db:seed') and verify with bash('php artisan tinker --execute=\"echo App\\\\Models\\\\TodoList::count()\"') that lists exist (expect 3).\n\nReport the demo credentials clearly: alice@example.com / password, bob@example.com / password, carol@example.com / password.",
+      "model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review_enabled": true,
+      "review_provider_id": "lmstudio",
+      "review_model_id": "gemma-4-12b",
+      "review_iterations": 1,
+      "review_model": {
+        "provider_id": "lmstudio",
+        "model_id": "gemma-4-12b"
+      },
+      "review": "auto"
+    }
+  ]
+}
