@@ -1847,11 +1847,13 @@ def flow_import(
                 f"fixing: {', '.join(r['label'] for r in pending)}"
             )
             rem_prompt = (
-                "FLOW-LEVEL REMEDIATION. The following flow steps failed verification. "
-                "Their last implementation is ON DISK — fix ONLY the defects below with "
-                "MINIMAL TARGETED EDITS. Do not rewrite working code, do not re-scaffold, "
-                "do not touch other steps. Use tools to edit, then verify with the "
-                "acceptance commands below (and run the test suite if present).\n\n"
+                "FLOW-LEVEL REMEDIATION — repair the defects below with MINIMAL TARGETED EDITS. "
+                "Rules:\n"
+                "- Create exactly the missing files listed (one write each); edit only the "
+                "broken lines in existing files. Do NOT rewrite working code, do not re-scaffold, "
+                "do not touch other steps.\n"
+                "- Do NOT investigate or re-read working files — the defects below are precise.\n"
+                "- BE TERSE: batch independent writes/edits in one response, no preamble.\n\n"
                 + "\n".join(
                     f"STEP: {r['label']} (failed — defects to fix):\n"
                     + "\n".join(f"  - {d[:400]}" for d in (r.get("defects") or [])[:10])

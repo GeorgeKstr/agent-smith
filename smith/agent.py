@@ -52,17 +52,20 @@ def _family_guidance(family: str) -> str:
     if family == "gemma":
         return (
             "\nFAMILY-SPECIFIC RULES (gemma):\n"
-            "- Work in small steps: ONE tool call per response, then wait for the result.\n"
+            "- BATCH INDEPENDENT TOOL CALLS: several reads, writes, or bash calls that don't "
+            "depend on each other MAY go in ONE response (the harness executes them in order). "
+            "A single well-formed call is always better than several malformed ones.\n"
             "- Never call the same tool twice with the same arguments.\n"
             "- If you don't need a tool, answer directly — do not invent tool calls.\n"
-            "- Keep responses SHORT. No long explanations, no repeated text."
+            "- BE TERSE: emit tool calls directly with NO preamble, planning prose, or "
+            "explanations between calls. One-line final summary only."
         )
     if family in ("llama", "mistral", "phi", "deepseek", "glm"):
         return (
             "\nFAMILY-SPECIFIC RULES:\n"
-            "- One tool call at a time; wait for the result before the next.\n"
-            "- Never retry the same failing tool call. Change the approach.\n"
-            "- Keep responses SHORT."
+            "- BATCH INDEPENDENT TOOL CALLS in one response (reads, writes, bash that don't "
+            "depend on each other); never retry a failing call, change approach.\n"
+            "- BE TERSE: tool calls only, no preamble, no explanations between calls."
         )
     return ""
 
