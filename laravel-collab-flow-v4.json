@@ -14,6 +14,11 @@
     }
   },
   "review_iterations": 2,
+  "flow_remediation_iterations": 2,
+  "flow_remediation_model": {
+    "provider_id": "lmstudio",
+    "model_id": "qwen3-coder-30b-a3b"
+  },
   "steps": [
     {
       "label": "scaffold-laravel",

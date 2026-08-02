@@ -1390,6 +1390,28 @@ def flow_import(
         except (TypeError, ValueError):
             flow_review_iterations = 0
 
+    # ── Flow remediation: large-model fix iterations for failed steps ─
+    # Failed steps keep their last implementation; the remediation model
+    # (typically larger than the step models) gets N fix+review iterations
+    # to close the gaps. Defaults off; enable via "flow_remediation_iterations".
+    flow_remediation_iterations = 0
+    flow_remediation_model: dict[str, str] | None = (
+        dict(flow_review_model) if flow_review_model else None
+    )
+    if isinstance(raw, dict):
+        try:
+            flow_remediation_iterations = max(0, int(raw.get("flow_remediation_iterations", 0)))
+        except (TypeError, ValueError):
+            flow_remediation_iterations = 0
+        rmdl = raw.get("flow_remediation_model")
+        if isinstance(rmdl, dict) and rmdl.get("provider_id") and rmdl.get("model_id"):
+            flow_remediation_model = {"provider_id": rmdl["provider_id"], "model_id": rmdl["model_id"]}
+    if flow_remediation_iterations and flow_remediation_model:
+        console.print(
+            f"[dim]Flow remediation: {flow_remediation_model['model_id']} "
+            f"({flow_remediation_model['provider_id']}) × {flow_remediation_iterations} iterations[/dim]"
+        )
+
     # ── Flow setup step: analyze flow + build skeletal context ──────
     if setup_step and isinstance(setup_step, dict):
         setup_prompt = setup_step.get("prompt", "")
@@ -1678,6 +1700,7 @@ def flow_import(
                 "tool_errors": 0,
                 "error_types": [],
                 "defects": step_failures,
+                "acceptance": acceptance_checks,
             })
             flow_progress.append(f"❌ {label}: verification failed — {step_failures[0][:100]}")
             continue  # next task
@@ -1760,6 +1783,145 @@ def flow_import(
         except Exception as exc:
             console.print(f"[red]  ✗ Flow review failed: {exc}[/red]")
 
+    # ── Flow remediation: fix+review iterations for failed steps ──────
+    # Failed steps keep their last implementation on disk. The remediation
+    # model (typically a larger model) gets N iterations: a minimal-targeted
+    # fix pass, mechanical re-run of the failed steps' acceptance checks,
+    # then a review pass that can override a wrong check. Steps that close
+    # flip to "remediated"; the rest stay "failed" and are carried into the
+    # final output's deficiencies note.
+    if (
+        flow_remediation_iterations
+        and flow_remediation_model
+        and any(r.get("status") == "failed" for r in results)
+    ):
+        console.print()
+        console.print("[bold cyan]── Flow Remediation ──[/bold cyan]")
+        console.print(
+            f"[dim]Fix model: {flow_remediation_model['model_id']} "
+            f"({flow_remediation_model['provider_id']}) | iterations: {flow_remediation_iterations}[/dim]"
+        )
+        for rem_it in range(1, flow_remediation_iterations + 1):
+            pending = [r for r in results if r.get("status") == "failed"]
+            if not pending:
+                console.print("[green]  ✓ No failed steps remain[/green]")
+                break
+            console.print(
+                f"[bold]Iteration {rem_it}/{flow_remediation_iterations}[/bold] — "
+                f"fixing: {', '.join(r['label'] for r in pending)}"
+            )
+            rem_prompt = (
+                "FLOW-LEVEL REMEDIATION. The following flow steps failed verification. "
+                "Their last implementation is ON DISK — fix ONLY the defects below with "
+                "MINIMAL TARGETED EDITS. Do not rewrite working code, do not re-scaffold, "
+                "do not touch other steps. Use tools to edit, then verify with the "
+                "acceptance commands below (and run the test suite if present).\n\n"
+                + "\n".join(
+                    f"STEP: {r['label']} (failed — defects to fix):\n"
+                    + "\n".join(f"  - {d[:400]}" for d in (r.get("defects") or [])[:10])
+                    for r in pending
+                )
+                + "\n\nACCEPTANCE CHECKS for these steps (ALL must pass after your edits):\n"
+                + "\n".join(
+                    _render_acceptance_checks(r.get("acceptance") or []) for r in pending
+                )
+            )
+            try:
+                rem_coord = ProjectCoordinator(project)
+                rem_coord.start_worker()
+                rem_chunks: list[str] = []
+                for tok in rem_coord.stream_user_task(
+                    rem_prompt,
+                    task_type="implement",
+                    review_mode="never",
+                    model_override=flow_remediation_model,
+                    approval_handler=approval_handler,
+                ):
+                    rem_chunks.append(tok)
+                    if verbose:
+                        console.print(tok, end="", highlight=False)
+                if not verbose:
+                    console.print(f"[dim]  fix attempt finished ({len(''.join(rem_chunks))} chars)[/dim]")
+            except Exception as exc:
+                console.print(f"[red]  ✗ Remediation fix failed: {exc}[/red]")
+                break
+
+            # Mechanical re-verification of the fixed steps
+            rem_still: list[tuple[dict, list[str]]] = []
+            for r in pending:
+                acc = _run_acceptance_checks(project, r.get("acceptance") or [])
+                bad = [a for a in acc if not a["ok"]]
+                for a in acc:
+                    mark = "✓" if a["ok"] else "✗"
+                    style = "green" if a["ok"] else "red"
+                    console.print(f"  [{style}]{mark} rem-acceptance {a['name']}[/{style}]: {a['detail']}")
+                if bad:
+                    rem_still.append((r, [f"Acceptance {a['name']}: {a['detail']}" for a in bad]))
+                else:
+                    r["status"] = "remediated"
+                    r.setdefault("corrections", 0)
+                    r["corrections"] += 1
+                    r.setdefault("remediation", []).append(
+                        f"iteration {rem_it}: acceptance checks pass"
+                    )
+                    console.print(f"[green]  ✓ Remediated: {r['label']}[/green]")
+            if not rem_still:
+                console.print("[green]  ✓ All failed steps now pass acceptance — remediation complete[/green]")
+                break
+
+            # Review pass on the remaining failures (can override a wrong check)
+            rev_prompt = (
+                "REMEDIATION REVIEW. The following steps STILL fail their acceptance checks after a fix attempt. "
+                "Inspect the ACTUAL files with tools (read them, run the commands). Determine whether the code is "
+                "genuinely broken, or the check is wrong/too strict. Report the real remaining defect precisely.\n\n"
+                + "\n".join(
+                    f"STEP: {label} (still failing):\n" + "\n".join(f"  - {d[:300]}" for d in defs[:10])
+                    for label, defs in rem_still
+                )
+                + "\n\nEnd with 'Verdict: PASS/FAIL/WARN' on its own line. PASS = the code is correct "
+                "as-is (the check may be too strict); FAIL = real defects remain."
+            )
+            try:
+                rev_coord = ProjectCoordinator(project)
+                rev_coord.start_worker()
+                rev_chunks: list[str] = []
+                for tok in rev_coord.stream_user_task(
+                    rev_prompt,
+                    task_type="review",
+                    review_mode="never",
+                    model_override=flow_remediation_model,
+                    approval_handler=approval_handler,
+                ):
+                    rev_chunks.append(tok)
+                    if verbose:
+                        console.print(tok, end="", highlight=False)
+                rev_text = "".join(rev_chunks)
+            except Exception as exc:
+                console.print(f"[red]  ✗ Remediation review failed: {exc}[/red]")
+                rev_text = ""
+            verdict, rev_body = _extract_review_verdict(rev_text)
+            console.print(f"  [yellow]Remediation review verdict: {verdict}[/yellow]")
+            if verdict == "PASS":
+                for r, _ in rem_still:
+                    r["status"] = "remediated"
+                    r.setdefault("corrections", 0)
+                    r["corrections"] += 1
+                    r.setdefault("remediation", []).append(
+                        f"iteration {rem_it}: review PASS (code correct; check may be too strict)"
+                    )
+                console.print("[green]  ✓ Review confirms the remaining steps are correct[/green]")
+                break
+            if verdict in ("FAIL", "WARN") and rev_body:
+                for r, defs in rem_still:
+                    r["defects"] = list(r.get("defects") or []) + defs
+                    r["defects"].append(f"Remediation review {verdict}: {rev_body[:300]}")
+                    r.setdefault("remediation", []).append(f"iteration {rem_it}: review {verdict}")
+        rem_left = [r["label"] for r in results if r.get("status") == "failed"]
+        if rem_left:
+            console.print(f"[red]  ✗ Still failing after remediation: {', '.join(rem_left)}[/red]")
+        else:
+            console.print("[green]  ✓ Remediation complete — no failed steps remain[/green]")
+
     # Final summary
     console.print()
     console.print("[bold]══ Flow Results ══[/bold]")
@@ -1769,7 +1931,7 @@ def flow_import(
     table.add_column("Type")
     table.add_column("Tool Errors")
     for r in results:
-        status_style = "green" if r["status"] == "completed" else "red"
+        status_style = "green" if r["status"] in ("completed", "remediated") else "red"
         table.add_row(
             r["label"],
             f"[{status_style}]{r['status']}[/{status_style}]",
