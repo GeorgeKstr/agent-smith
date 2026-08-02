@@ -105,8 +105,11 @@
         {
           "name": "home-controller",
           "file": "app/Http/Controllers/HomeController.php",
-          "contains": [
-            "/login"
+          "contains_any": [
+            "/login",
+            "route('login')",
+            "url('login')",
+            "login"
           ]
         },
         {
