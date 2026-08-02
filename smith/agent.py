@@ -1823,9 +1823,26 @@ def make_tools(db: ProjectDB, task_type: str, run_id: str | None = None, cancel_
         @_wraps(orig_func)
         def guarded(*args, **kwargs):
             try:
-                key = _json_mod.dumps(
-                    (tname, args, kwargs), sort_keys=True, default=str
-                )[:250]
+                # For bash, normalize away benign composer/flag variations so
+                # `composer create-project X --prefer-dist --ignore-platform-reqs`
+                # and the plain form count as the SAME repeating call.
+                if tname == "bash":
+                    cmd = kwargs.get("command") or (args[0] if args else "")
+                    if isinstance(cmd, str):
+                        cmd = _norm_re.sub(
+                            r"(\s--(?:prefer-dist|prefer-source|no-interaction|no-progress|"
+                            r"ignore-platform-reqs|no-audit|no-scripts|quiet|verbose))+",
+                            " ",
+                            cmd,
+                        )
+                        cmd = _norm_re.sub(r"\s+", " ", cmd).strip()
+                        key = _json_mod.dumps(("bash", cmd), default=str)[:250]
+                    else:
+                        key = _json_mod.dumps((tname, args, kwargs), sort_keys=True, default=str)[:250]
+                else:
+                    key = _json_mod.dumps(
+                        (tname, args, kwargs), sort_keys=True, default=str
+                    )[:250]
             except Exception:
                 key = tname
             now = _time_mod.time()

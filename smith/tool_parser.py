@@ -151,14 +151,15 @@ def _extract_gemini_call_args(body: str) -> dict[str, Any]:
         if pos >= body_len:
             break
 
-        # Read key (word characters until colon)
+        # Read key (word characters until colon or equals — gemma emits BOTH
+        # key:value (instructed <|\"|> format) and key=value (python-style))
         key_start = pos
-        while pos < body_len and body[pos] not in (':', '}', ','):
+        while pos < body_len and body[pos] not in (':', '=', '}', ','):
             pos += 1
-        if pos >= body_len or body[pos] != ':':
+        if pos >= body_len or body[pos] not in (':', '='):
             break
         key = body[key_start:pos].strip()
-        pos += 1  # skip colon
+        pos += 1  # skip colon/equals
 
         # Skip whitespace after colon
         while pos < body_len and body[pos] in (' ', '\t'):
